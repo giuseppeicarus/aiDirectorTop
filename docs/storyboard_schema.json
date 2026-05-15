@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CinematicAI Storyboard",
+  "type": "object",
+  "required": ["project", "scenes"],
+  "properties": {
+    "project": {
+      "type": "object",
+      "required": ["id", "title", "genre", "style", "aspect_ratio", "fps", "total_duration_sec"],
+      "properties": {
+        "id": { "type": "string", "description": "UUID v4" },
+        "title": { "type": "string" },
+        "genre": { "type": "string", "enum": ["cinematic", "documentary", "commercial", "short_film", "music_video", "horror", "sci-fi", "romance", "action"] },
+        "style": { "type": "string", "description": "Visual style description, e.g. 'noir, high contrast, 1940s'" },
+        "aspect_ratio": { "type": "string", "enum": ["16:9", "21:9", "4:3", "1:1", "9:16"] },
+        "fps": { "type": "integer", "enum": [24, 25, 30, 60] },
+        "total_duration_sec": { "type": "integer", "minimum": 5, "maximum": 600 }
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description", "duration_sec", "shots"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^scene_[0-9]{3}$" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "time_of_day": { "type": "string", "enum": ["dawn", "morning", "afternoon", "golden_hour", "dusk", "night", "interior"] },
+          "mood": { "type": "string" },
+          "color_palette": { "type": "array", "items": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" } },
+          "duration_sec": { "type": "number", "minimum": 1 },
+          "shots": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "description", "shot_type", "camera_movement", "duration_sec", "first_frame", "last_frame"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^shot_[0-9]{3}_[0-9]{3}$" },
+                "description": { "type": "string" },
+                "shot_type": { "type": "string", "enum": ["extreme_wide", "wide", "medium_wide", "medium", "close_up", "extreme_close_up", "over_the_shoulder", "pov"] },
+                "camera_movement": { "type": "string", "enum": ["static", "pan_left", "pan_right", "tilt_up", "tilt_down", "dolly_in", "dolly_out", "tracking", "handheld", "crane", "drone", "whip_pan"] },
+                "lens_mm": { "type": "integer", "minimum": 8, "maximum": 300 },
+                "depth_of_field": { "type": "string", "enum": ["shallow", "medium", "deep"] },
+                "duration_sec": { "type": "number", "minimum": 1, "maximum": 30 },
+                "first_frame": {
+                  "type": "object",
+                  "required": ["prompt", "negative_prompt"],
+                  "properties": {
+                    "prompt": { "type": "string", "minLength": 20 },
+                    "negative_prompt": { "type": "string" },
+                    "seed": { "type": ["integer", "null"] },
+                    "cfg_scale": { "type": "number", "default": 7.0 },
+                    "steps": { "type": "integer", "default": 30 }
+                  }
+                },
+                "last_frame": {
+                  "type": "object",
+                  "required": ["prompt", "negative_prompt"],
+                  "properties": {
+                    "prompt": { "type": "string", "minLength": 20 },
+                    "negative_prompt": { "type": "string" },
+                    "seed": { "type": ["integer", "null"] },
+                    "cfg_scale": { "type": "number", "default": 7.0 },
+                    "steps": { "type": "integer", "default": 30 }
+                  }
+                },
+                "motion_prompt": { "type": "string", "description": "Short motion description for img2video, max 20 words" },
+                "comfyui_workflow": { "type": "string", "enum": ["img2video_wan21", "img2video_cogvideo", "img2video_animatediff"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

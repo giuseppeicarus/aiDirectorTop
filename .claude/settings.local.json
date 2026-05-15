@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(build-phase)",
+      "Bash(powershell *)",
+      "Bash(mkdir -p assets)",
+      "Bash(ls assets/)",
+      "Bash(cd /d \"F:\\\\SOLO_AI\\\\AidirectorTOP\")",
+      "Bash(dir /s src/ui)",
+      "Bash(findstr /R \"^[^:].*\\\\.[a-z]\")",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":8765\")",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(taskkill /PID 43308 /F)",
+      "Bash(taskkill /PID 36964 /F)",
+      "Bash(Get-Process -Name python -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object Id, CPU, WorkingSet64, StartTime)",
+      "Bash(Format-Table)",
+      "Bash(taskkill /F /PID 13240)",
+      "Bash(venv/Scripts/python.exe -m uvicorn src.core.main:app --port 8765 --host 127.0.0.1)",
+      "Bash(Read /f/SOLO_AI/AidirectorTOP/C:/Users/giuse/AppData/Local/Temp/claude/F--SOLO-AI-AidirectorTOP/99e806c4-8160-4ba6-89fe-4e0eebd20834/tasks/b3efjo5j4.output)",
+      "Bash(taskkill //F //PID 13240)",
+      "Bash(cmd.exe *)",
+      "Bash(powershell.exe *)",
+      "Bash(Test-Path \"F:\\\\SOLO_AI\\\\AidirectorTOP\\\\src\\\\core\\\\pipeline_registry.py\")",
+      "Bash(Test-Path \"F:\\\\SOLO_AI\\\\AidirectorTOP\\\\src\\\\core\\\\api\\\\queue_routes.py\")",
+      "Bash(Select-String \"queue_router\" \"F:\\\\SOLO_AI\\\\AidirectorTOP\\\\src\\\\core\\\\main.py\")",
+      "Bash(Select-Object -ExpandProperty Line)",
+      "Bash(findstr \":8765 :5173\")",
+      "Bash(taskkill /PID 9612 /F)",
+      "Bash(taskkill /PID 39608 /F)",
+      "Bash(cmd *)",
+      "Bash(dir F:\\\\SOLO_AI\\\\AidirectorTOP\\\\base_workflow_comfyui *)",
+      "Bash(Get-Content *)",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(\"venv/Scripts/python.exe\" -c \"import sys; sys.path.insert\\(0,'.'\\); from src.core.api.workflow_routes import router; print\\('workflow_routes OK'\\); from src.core.workflow.pipeline import CinematicPipeline; print\\('pipeline OK'\\); from src.core.api.pipeline_routes import router as pr; print\\('pipeline_routes OK'\\)\")",
+      "Bash(awk '{print $5}')"
+    ]
+  }
+}

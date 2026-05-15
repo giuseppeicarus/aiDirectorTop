@@ -1,0 +1,110 @@
+{
+  "model": "claude-sonnet-4-6",
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(src/**)",
+      "Write(config/**)",
+      "Write(scripts/**)",
+      "Write(docs/**)",
+      "Write(tests/**)",
+      "Write(package.json)",
+      "Write(requirements.txt)",
+      "Write(pyproject.toml)",
+      "Write(electron-builder.yml)",
+      "Write(.env.example)",
+      "Write(README.md)",
+      "Write(CLAUDE.md)",
+      "Write(.claude/**)",
+      "Bash(python *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(git status)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git branch *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(echo *)",
+      "Bash(curl -s *)",
+      "Bash(ffmpeg *)",
+      "Bash(pytest *)",
+      "Bash(vitest *)",
+      "Bash(electron *)",
+      "Bash(electron-builder *)"
+    ],
+    "deny": [
+      "Write(.env)",
+      "Write(**/.env)",
+      "Write(**/secrets.*)",
+      "Bash(rm -rf /)",
+      "Bash(sudo *)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard HEAD~*)",
+      "Bash(DROP TABLE *)",
+      "Bash(curl * | bash)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write(**/*.py)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] Writing Python file: checking for hardcoded secrets...' && grep -n 'sk-\\|api_key\\s*=\\s*[\"'\"'\"']' \"$CLAUDE_TOOL_INPUT_PATH\" 2>/dev/null && echo 'WARNING: Possible hardcoded secret detected!' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write(**/*.py)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python -m py_compile \"$CLAUDE_TOOL_INPUT_PATH\" 2>&1 && echo '[OK] Python syntax valid' || echo '[WARN] Python syntax error in $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write(**/*.ts)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] TypeScript file written: $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write(**/*.jsx)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] React component written: $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Session End] Remind: commit changes with git add -A && git commit -m \"feat: <description>\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

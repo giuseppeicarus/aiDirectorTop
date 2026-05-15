@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg0: #07070d;
+  --bg1: #0f0f18;
+  --bg2: #16161f;
+  --bg3: #1e1e2a;
+  --border: #252533;
+  --border2: #32324a;
+  --gold: #c9a84c;
+  --gold2: #e6c46a;
+  --gold-dim: #c9a84c22;
+  --text: #e8e4dd;
+  --text2: #9090a8;
+  --text3: #555568;
+  --green: #22c55e;
+  --red: #ef4444;
+  --blue: #3b82f6;
+  --amber: #f59e0b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg0);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg1); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.font-display { font-family: 'Playfair Display', Georgia, serif; }
+
+.gold-gradient {
+  background: linear-gradient(135deg, var(--gold), var(--gold2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Drag region for frameless window */
+.drag-region { -webkit-app-region: drag; }
+.no-drag      { -webkit-app-region: no-drag; }

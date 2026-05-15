@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.env
+.env.*
+*.egg-info/
+dist/
+build/
+*.pyc
+
+# Node
+node_modules/
+dist-renderer/
+dist-electron/
+.vite/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+config/local.yaml
+*.key
+*secrets*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Build outputs
+backend-dist/
+*.spec
+
+# Test cache
+.pytest_cache/
+.vitest/
+coverage/
+
+# User data (never commit)
+~/.cinematic-studio/

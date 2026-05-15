@@ -1,0 +1,125 @@
+# CinematicAI Studio — Default Configuration
+# Copy to ~/.cinematic-studio/config.yaml and customize
+
+app:
+  version: "1.0.0"
+  data_dir: "~/.cinematic-studio"
+  log_level: "INFO"  # DEBUG|INFO|WARNING|ERROR
+  backend_port: 8765
+
+# ─── LLM Configuration ────────────────────────────────────────────────────────
+# Per-role overrides (se vuoto, tutti i ruoli usano la config `llm` principale)
+llm_roles: {}
+# Esempio: llm_roles: {story_analyst: {provider: openai, model: gpt-4o, temperature: 0.85}}
+
+llm:
+  provider: "lmstudio"          # openai|anthropic|ollama|lmstudio|groq
+  model: "google/gemma-3n-e4b"
+  api_key: "${OPENAI_API_KEY}"  # use env var or paste key directly
+  base_url: http://192.168.1.2:8083/v1              # override for local models (e.g. http://localhost:1234/v1)
+  temperature: 0.7
+  max_tokens: 4096
+  timeout_sec: 120
+  retry_attempts: 3
+  retry_delay_sec: 2.0
+
+# ─── ComfyUI Nodes ────────────────────────────────────────────────────────────
+comfyui:
+  nodes:
+    - host: "localhost"
+      port: 8188
+      name: "Local GPU"
+      enabled: true
+      # auth: null  # set to "user:password" if ComfyUI has auth
+  
+  # Parallelism limits
+  max_parallel_frame_jobs: 4   # txt2img jobs in parallel
+  max_parallel_video_jobs: 2   # img2video jobs in parallel
+  
+  # Timeouts
+  queue_timeout_sec: 30
+  execution_timeout_sec: 300
+  websocket_recv_timeout_sec: 10
+  
+  # Default models (must match what's installed in ComfyUI)
+  models:
+    checkpoint: "v1-5-pruned-emaonly.ckpt"  # change to your model
+    vae: null  # null = use checkpoint's built-in VAE
+    video: "wan2.1_i2v_480p.safetensors"   # img2video model
+
+# ─── Output Settings ──────────────────────────────────────────────────────────
+output:
+  default_resolution:
+    width: 1920
+    height: 1080
+  fps: 24
+  video_codec: "libx264"
+  video_crf: 18              # 0=lossless, 51=worst, 18=high quality
+  video_preset: "slow"       # ultrafast|fast|medium|slow|veryslow
+  transition_duration_sec: 0.5
+  transition_type: "fade"    # fade|wipe|dissolve|none
+  ffmpeg_path: null          # null = use system PATH
+
+# ─── Generation Defaults ──────────────────────────────────────────────────────
+generation:
+  default_genre: "cinematic"
+  default_style: "photorealistic, dramatic lighting, film grain"
+  default_aspect_ratio: "16:9"
+  default_duration_sec: 60
+  default_num_scenes: 3
+  
+  frame_generation:
+    steps: 30
+    cfg_scale: 7.0
+    width: 1024
+    height: 576
+    sampler: "dpm_2_ancestral"
+    scheduler: "karras"
+    
+  negative_prompt_default: "ugly, deformed, blurry, low quality, watermark, text, bad anatomy, extra limbs"
+
+# ─── UI Settings ──────────────────────────────────────────────────────────────
+ui:
+  theme: "dark"
+  language: "en"
+  auto_preview: true
+  show_advanced_settings: false
+
+# ─── LLM Roles (pipeline cinematografica multi-LLM) ───────────────────────────
+# Ogni ruolo puo usare un provider/modello diverso.
+# Se non specificato, usa la config llm globale sopra.
+llm_roles:
+  story_analyst:
+    provider: "lmstudio"
+    model: "google/gemma-3n-e4b"
+    api_key: "${ANTHROPIC_API_KEY}"
+    temperature: 0.85
+    max_tokens: 2000
+
+  narrative_director:
+    provider: "lmstudio"
+    model: "google/gemma-3n-e4b"
+    api_key: "${ANTHROPIC_API_KEY}"
+    temperature: 0.70
+    max_tokens: 4000
+
+  cinematographer:
+    provider: "lmstudio"
+    model: "google/gemma-3n-e4b"
+    api_key: "${OPENAI_API_KEY}"
+    temperature: 0.55
+    max_tokens: 6000
+
+  prompt_engineer:
+    provider: "lmstudio"
+    model: "google/gemma-3n-e4b"
+    api_key: "${OPENAI_API_KEY}"
+    temperature: 0.65
+    max_tokens: 8000
+
+  continuity_checker:
+    provider: "lmstudio"
+    model: "google/gemma-3n-e4b"
+    api_key: "${OPENAI_API_KEY}"
+    temperature: 0.20
+    max_tokens: 3000
