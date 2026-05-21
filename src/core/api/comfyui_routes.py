@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.core.comfyui.client import ComfyUIClient
 from src.core.comfyui.pool import ComfyUINodePool
 from src.core.config import ComfyUINodeConfig, get_config, reload_config
+from src.core.utils.comfyui_nodes import normalize_nodes_primary
 
 router = APIRouter()
 
@@ -34,12 +35,14 @@ def _write_user_config(data: dict) -> None:
     )
 
 
-def _save_nodes(nodes: list) -> None:
+def _save_nodes(nodes: list, *, prefer_primary_index: Optional[int] = None) -> list[dict]:
     """Salva la lista di nodi nel config utente e ricarica la cache."""
+    nodes = normalize_nodes_primary(nodes, prefer_index=prefer_primary_index)
     cfg = _read_user_config()
     cfg.setdefault("comfyui", {})["nodes"] = nodes
     _write_user_config(cfg)
     reload_config()
+    return nodes
 
 
 def _current_nodes_raw() -> list[dict]:
@@ -50,7 +53,10 @@ def _current_nodes_raw() -> list[dict]:
             "host":    n.host,
             "port":    n.port,
             "enabled": n.enabled,
-            "auth":    n.auth,
+            "primary": n.primary,
+            "auth_type": n.auth_type,
+            "auth":      n.auth,
+            "token":     n.token,
         }
         for n in get_config().comfyui.nodes
     ]
@@ -61,7 +67,10 @@ class NodeConfigIn(BaseModel):
     host: str = "localhost"
     port: int = 8188
     enabled: bool = True
+    primary: bool = False
+    auth_type: str = "none"
     auth: Optional[str] = None
+    token: Optional[str] = None
 
 
 # ── Node config CRUD ──────────────────────────────────────────────────────────
@@ -76,9 +85,11 @@ async def list_node_configs():
 async def add_node(body: NodeConfigIn):
     """Aggiunge un nuovo nodo ComfyUI alla configurazione."""
     nodes = _current_nodes_raw()
+    new_index = len(nodes)
     nodes.append(body.model_dump())
-    _save_nodes(nodes)
-    return {"nodes": nodes, "added_index": len(nodes) - 1}
+    prefer = new_index if body.primary else None
+    nodes = _save_nodes(nodes, prefer_primary_index=prefer)
+    return {"nodes": nodes, "added_index": new_index}
 
 
 @router.put("/nodes/config/{index}")
@@ -88,7 +99,8 @@ async def update_node(index: int, body: NodeConfigIn):
     if index < 0 or index >= len(nodes):
         raise HTTPException(status_code=404, detail=f"Nodo {index} non trovato")
     nodes[index] = body.model_dump()
-    _save_nodes(nodes)
+    prefer = index if body.primary else None
+    nodes = _save_nodes(nodes, prefer_primary_index=prefer)
     return {"nodes": nodes}
 
 
@@ -99,7 +111,7 @@ async def delete_node(index: int):
     if index < 0 or index >= len(nodes):
         raise HTTPException(status_code=404, detail=f"Nodo {index} non trovato")
     removed = nodes.pop(index)
-    _save_nodes(nodes)
+    nodes = _save_nodes(nodes)
     return {"removed": removed, "nodes": nodes}
 
 
@@ -110,8 +122,13 @@ async def test_node_connection(body: NodeConfigIn):
     Restituisce online, latency_ms, vram, queue_depth.
     """
     node_cfg = ComfyUINodeConfig(
-        host=body.host, port=body.port, name=body.name,
-        enabled=True, auth=body.auth,
+        host=body.host,
+        port=body.port,
+        name=body.name,
+        enabled=True,
+        auth_type=body.auth_type,
+        auth=body.auth,
+        token=body.token,
     )
     return await _probe_node(node_cfg)
 
@@ -199,6 +216,7 @@ async def _probe_node(node_cfg: ComfyUINodeConfig) -> dict:
         "name":          node_cfg.name,
         "host":          node_cfg.host,
         "port":          node_cfg.port,
+        "primary":       node_cfg.primary,
         "online":        False,
         "latency_ms":    None,
         "queue_depth":   None,

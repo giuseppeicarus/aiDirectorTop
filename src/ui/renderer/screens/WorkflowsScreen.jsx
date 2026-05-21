@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Workflow, Plus, Save, Trash2, ChevronDown, ChevronUp,
   Eye, Code2, Settings2, Copy, AlertCircle, CheckCircle,
-  Loader2, X, FileJson, RotateCcw,
+  Loader2, X, FileJson, RotateCcw, Download,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -21,15 +21,18 @@ const MIN_CANVAS_W = 3200
 const MIN_CANVAS_H = 2400
 
 const WORKFLOW_TYPES = [
-  { value: 'txt2img',       label: 'Text → Image' },
-  { value: 'txt2video',     label: 'Text → Video' },
-  { value: 'img2video',     label: 'Image → Video' },
-  { value: 'img_audio2video', label: 'Image+Audio → Video' },
+  { value: 'txt2img',              label: 'Text → Image' },
+  { value: 'txt2video',            label: 'Text → Video' },
+  { value: 'img2video',            label: 'Image → Video' },
+  { value: 'img2video_lastframe',  label: 'Image → Video + Last Frame' },
+  { value: 'img_audio2video',      label: 'Image+Audio → Video' },
+  { value: 'director',             label: 'Director' },
 ]
 
 const INJECT_PARAMS = [
   'prompt', 'negative_prompt', 'width', 'height', 'seed',
-  'first_image', 'audio', 'duration_sec', 'fps', 'audio_start_sec',
+  'first_image', 'last_image', 'audio', 'duration_sec', 'duration_frames',
+  'fps', 'audio_start_sec', 'local_prompts', 'segment_lengths', 'timeline_data',
 ]
 
 // Node colour by class_type category
@@ -521,6 +524,11 @@ function WorkflowEditor({ initialData, onSave, onDelete }) {
     }
   }
 
+  async function handleDownload() {
+    const json = JSON.stringify(wf, null, 2)
+    await window.studio.workflow.exportJson(meta.id, json)
+  }
+
   const nodeCount = Object.keys(wf).length
   const edgeCount = Object.values(wf).reduce((acc, node) =>
     acc + Object.values(node.inputs || {}).filter(isRef).length, 0)
@@ -573,6 +581,13 @@ function WorkflowEditor({ initialData, onSave, onDelete }) {
               <RotateCcw size={11} /> Layout
             </button>
           )}
+          <button
+            onClick={handleDownload}
+            title="Scarica workflow JSON per ComfyUI"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] rounded border border-[#252533] text-[var(--text3)] hover:text-[var(--gold)] hover:border-[var(--gold)]/40 transition-colors"
+          >
+            <Download size={11} /> Export
+          </button>
           <button
             onClick={handleSave}
             disabled={!dirty || saving}
@@ -805,22 +820,92 @@ function NewWorkflowModal({ onClose, onCreate }) {
 
 // ── Workflow List (left panel) ────────────────────────────────────────────────
 
-const TYPE_LABELS = {
-  txt2img:        'T→IMG',
-  txt2video:      'T→VID',
-  img2video:      'IMG→VID',
-  img_audio2video: 'IMG+A→VID',
-}
-const TYPE_COLORS = {
-  txt2img:        'text-purple-300 bg-purple-900/30 border-purple-500/30',
-  txt2video:      'text-blue-300 bg-blue-900/30 border-blue-500/30',
-  img2video:      'text-green-300 bg-green-900/30 border-green-500/30',
-  img_audio2video: 'text-amber-300 bg-amber-900/30 border-amber-500/30',
-}
+// ── Workflow type → category metadata ─────────────────────────────────────────
+
+const CATEGORIES = [
+  {
+    type: 'txt2img',
+    label: 'Text → Image',
+    icon: '🖼',
+    color: 'text-purple-300',
+    border: 'border-purple-500/40',
+    badge: 'text-purple-300 bg-purple-900/30 border-purple-500/30',
+  },
+  {
+    type: 'txt2video',
+    label: 'Text → Video',
+    icon: '🎬',
+    color: 'text-blue-300',
+    border: 'border-blue-500/40',
+    badge: 'text-blue-300 bg-blue-900/30 border-blue-500/30',
+  },
+  {
+    type: 'img2video',
+    label: 'Image → Video',
+    icon: '🎞',
+    color: 'text-green-300',
+    border: 'border-green-500/40',
+    badge: 'text-green-300 bg-green-900/30 border-green-500/30',
+  },
+  {
+    type: 'img2video_lastframe',
+    label: 'Image → Video + Last Frame',
+    icon: '🔗',
+    color: 'text-orange-300',
+    border: 'border-orange-500/40',
+    badge: 'text-orange-300 bg-orange-900/30 border-orange-500/30',
+  },
+  {
+    type: 'img2img',
+    label: 'Image → Image',
+    icon: '🔄',
+    color: 'text-teal-300',
+    border: 'border-teal-500/40',
+    badge: 'text-teal-300 bg-teal-900/30 border-teal-500/30',
+  },
+  {
+    type: 'img_audio2video',
+    label: 'Audio+Image → Video',
+    icon: '🎵',
+    color: 'text-amber-300',
+    border: 'border-amber-500/40',
+    badge: 'text-amber-300 bg-amber-900/30 border-amber-500/30',
+  },
+  {
+    type: 'director',
+    label: 'Director',
+    icon: '🎥',
+    color: 'text-[#c9a84c]',
+    border: 'border-[#c9a84c]/50',
+    badge: 'text-[#c9a84c] bg-[#c9a84c]/10 border-[#c9a84c]/30',
+  },
+]
+
+const CAT_MAP = Object.fromEntries(CATEGORIES.map(c => [c.type, c]))
 
 function WorkflowList({ workflows, selectedId, onSelect, onNew }) {
+  const [collapsed, setCollapsed] = useState({})
+
+  function toggleCat(type) {
+    setCollapsed(c => ({ ...c, [type]: !c[type] }))
+  }
+
+  // Group workflows by type; unknown types go into a fallback bucket
+  const grouped = {}
+  workflows.forEach(wf => {
+    const t = wf.type || 'other'
+    if (!grouped[t]) grouped[t] = []
+    grouped[t].push(wf)
+  })
+
+  // Render categories in order (only if they have workflows or are known)
+  const orderedTypes = [
+    ...CATEGORIES.map(c => c.type).filter(t => grouped[t]),
+    ...Object.keys(grouped).filter(t => !CAT_MAP[t]),
+  ]
+
   return (
-    <div className="w-56 shrink-0 border-r border-[#252533] flex flex-col bg-[#0f0f18] overflow-hidden">
+    <div className="w-60 shrink-0 border-r border-[#252533] flex flex-col bg-[#0f0f18] overflow-hidden">
       <div className="flex items-center justify-between px-3 py-3 border-b border-[#252533]">
         <span className="text-xs font-semibold text-[var(--text)]">Workflow</span>
         <button onClick={onNew}
@@ -829,32 +914,63 @@ function WorkflowList({ workflows, selectedId, onSelect, onNew }) {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {workflows.map(wf => (
-          <button
-            key={wf.id}
-            onClick={() => onSelect(wf.id)}
-            className={clsx(
-              'w-full text-left px-2.5 py-2.5 rounded-md transition-colors',
-              selectedId === wf.id
-                ? 'bg-[#1e1e2a] text-[var(--text)]'
-                : 'text-[var(--text2)] hover:bg-[#16161f] hover:text-[var(--text)]'
-            )}
-          >
-            <div className="flex items-start gap-2">
-              <span className={clsx(
-                'text-[8px] px-1 py-0.5 rounded border font-mono shrink-0 mt-0.5',
-                TYPE_COLORS[wf.type] || 'text-gray-400 bg-gray-900/30 border-gray-500/30'
-              )}>
-                {TYPE_LABELS[wf.type] || wf.type}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-medium leading-tight truncate">{wf.name}</p>
-                <p className="text-[9px] text-[var(--text3)] font-mono truncate mt-0.5">{wf.file}</p>
-              </div>
+      <div className="flex-1 overflow-y-auto">
+        {orderedTypes.length === 0 && (
+          <p className="text-[11px] text-[var(--text3)] px-3 py-4 text-center">Nessun workflow configurato</p>
+        )}
+        {orderedTypes.map(type => {
+          const cat = CAT_MAP[type] || { label: type, icon: '⚙', color: 'text-gray-300', border: 'border-gray-500/40', badge: 'text-gray-300 bg-gray-900/30 border-gray-500/30' }
+          const items = grouped[type] || []
+          const isOpen = !collapsed[type]
+
+          return (
+            <div key={type}>
+              {/* Category header */}
+              <button
+                onClick={() => toggleCat(type)}
+                className={clsx(
+                  'w-full flex items-center gap-2 px-3 py-2 border-b border-[#1e1e2a] hover:bg-[#16161f] transition-colors',
+                  isOpen ? 'bg-[#12121a]' : 'bg-[#0f0f18]'
+                )}
+              >
+                <span className="text-[11px] shrink-0">{cat.icon}</span>
+                <span className={clsx('text-[10px] font-semibold tracking-wider flex-1 text-left', cat.color)}>
+                  {cat.label}
+                </span>
+                <span className="text-[9px] text-[var(--text3)] font-mono mr-1">{items.length}</span>
+                {isOpen
+                  ? <ChevronUp size={10} className="text-[var(--text3)] shrink-0" />
+                  : <ChevronDown size={10} className="text-[var(--text3)] shrink-0" />}
+              </button>
+
+              {/* Workflow items */}
+              {isOpen && (
+                <div className="py-1">
+                  {items.map(wf => (
+                    <button
+                      key={wf.id}
+                      onClick={() => onSelect(wf.id)}
+                      className={clsx(
+                        'w-full text-left px-3 py-2 transition-colors border-l-2 ml-0',
+                        selectedId === wf.id
+                          ? `bg-[#1e1e2a] text-[var(--text)] ${cat.border}`
+                          : 'border-transparent text-[var(--text2)] hover:bg-[#16161f] hover:text-[var(--text)]'
+                      )}
+                    >
+                      <p className="text-[11px] font-medium leading-tight truncate">{wf.name}</p>
+                      <p className="text-[9px] text-[var(--text3)] font-mono truncate mt-0.5">{wf.file}</p>
+                      {wf.models?.length > 0 && (
+                        <p className="text-[8px] text-[var(--text3)] truncate mt-0.5 opacity-60">
+                          {wf.models[0]}
+                        </p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </button>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

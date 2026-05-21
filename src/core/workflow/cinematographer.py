@@ -33,18 +33,39 @@ async def generate_shot_list(
         for scene in sequence.scenes:
             raw = await adapter.generate_json(
                 system=CINEMATOGRAPHER_SYSTEM,
-                user=build_cinematographer_prompt(arc, inp, audio, prev_memory),
+                user=build_cinematographer_prompt(arc, inp, audio, prev_memory, sequence, scene),
                 temperature=getattr(role_cfg, "temperature", 0.55),
                 max_tokens=6000,
             )
 
-            shots_raw = raw if isinstance(raw, list) else raw.get("shots", [])
+            # Unwrap response — LLM may return array or wrapped object
+            if isinstance(raw, list):
+                shots_raw = raw
+            else:
+                shots_raw = None
+                for key in ("shots", "result", "data", "shot_list", "items", "scene_shots", "frames"):
+                    if key in raw and isinstance(raw[key], list):
+                        shots_raw = raw[key]
+                        break
+                if shots_raw is None:
+                    for v in raw.values():
+                        if isinstance(v, list) and v:
+                            shots_raw = v
+                            break
+                if shots_raw is None:
+                    shots_raw = []
+                    log.warning("cinematographer_no_list_found", keys=list(raw.keys()))
+
+            log.info("cinematographer_scene_raw", count=len(shots_raw),
+                     scene=getattr(scene, 'id', '?'))
+
             scene_shots = []
             for s in shots_raw:
                 try:
                     scene_shots.append(CinematicShot(**s))
                 except Exception as e:
-                    log.warning("cinematographer_shot_parse_failed", error=str(e), shot_keys=list(s.keys()))
+                    log.warning("cinematographer_shot_parse_failed", error=str(e),
+                                shot_keys=list(s.keys()) if isinstance(s, dict) else type(s).__name__)
             all_shots.extend(scene_shots)
 
             # Aggiorna memory con l'ultimo shot della scena

@@ -29,7 +29,7 @@ async def test_queue_prompt_returns_id():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -46,7 +46,7 @@ async def test_health_check_returns_stats():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -63,7 +63,7 @@ async def test_is_alive_true():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -74,7 +74,7 @@ async def test_is_alive_false_on_connection_error():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
+    mock_client.request = AsyncMock(side_effect=ConnectionError("refused"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -88,7 +88,7 @@ async def test_get_queue_depth_empty():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -106,7 +106,7 @@ async def test_get_history_returns_output():
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         client = ComfyUIClient(_node())
@@ -125,6 +125,134 @@ def test_node_base_url():
 def test_node_ws_url():
     node = _node("10.0.0.1", 8188)
     assert node.ws_url == "ws://10.0.0.1:8188/ws"
+
+
+async def test_download_output_single_headers_kwarg():
+    """Evita TypeError: got multiple values for keyword argument 'headers'."""
+    node = ComfyUINodeConfig(
+        host="62.0.0.1",
+        port=58539,
+        name="RunPod",
+        auth_type="token",
+        token="secret-token",
+    )
+    client = ComfyUIClient(node)
+    client._session_ready = True
+
+    mock_response = MagicMock()
+    mock_response.content = b"\x89PNG\r\n"
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+
+    mock_http = MagicMock()
+    mock_http.request = AsyncMock(return_value=mock_response)
+    mock_http.cookies = {}
+    client._http = mock_http
+    client._resolved_paths["view"] = "/view"
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        dest = Path(tmp.name)
+
+    await client.download_output("ComfyUI_00001_.png", dest)
+
+    mock_http.request.assert_called_once()
+    _, call_kwargs = mock_http.request.call_args
+    assert "headers" in call_kwargs
+    assert call_kwargs["headers"]["Authorization"] == "Bearer secret-token"
+    assert call_kwargs["params"]["filename"] == "ComfyUI_00001_.png"
+    dest.unlink(missing_ok=True)
+
+
+def test_token_node_uses_bearer_not_query_params():
+    """RunPod proxy: Bearer su API, non ?token= su POST."""
+    node = ComfyUINodeConfig(
+        host="62.0.0.1",
+        port=58539,
+        name="RunPod",
+        auth_type="token",
+        token="secret-token",
+    )
+    client = ComfyUIClient(node)
+    extra = client._http_extra()
+    assert extra["headers"]["Authorization"] == "Bearer secret-token"
+    assert "params" not in extra
+    assert "token=" not in client._ws_connect_url()
+
+
+def test_node_token_query_params_only_with_auth_type():
+    node = ComfyUINodeConfig(
+        host="62.107.25.198",
+        port=58539,
+        auth_type="token",
+        token="secret-token",
+        name="Remote",
+    )
+    assert node.query_params() == {"token": "secret-token"}
+
+    ignored = ComfyUINodeConfig(
+        host="62.107.25.198",
+        port=58539,
+        auth_type="none",
+        token="secret-token",
+        name="Remote",
+    )
+    assert ignored.query_params() == {}
+    assert ignored.token is None
+
+
+def test_url_with_token_reinjects_on_redirect():
+    node = ComfyUINodeConfig(
+        host="62.107.25.198",
+        port=58539,
+        auth_type="token",
+        token="secret",
+        name="Remote",
+    )
+    client = ComfyUIClient(node)
+    url = client._url_with_token("/system-stats")
+    assert "token=secret" in url
+    assert url.endswith("/system-stats?token=secret") or "system-stats?token=secret" in url
+
+
+async def test_health_check_with_token_params():
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {"devices": []}
+    ok.raise_for_status = MagicMock()
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=ok)
+    mock_client.request = AsyncMock(return_value=ok)
+
+    node = ComfyUINodeConfig(
+        host="62.107.25.198",
+        port=58539,
+        auth_type="token",
+        token="abc",
+        name="Remote",
+    )
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        client = ComfyUIClient(node)
+        result = await client.health_check()
+
+    assert result == {"devices": []}
+    call = mock_client.request.call_args_list[-1]
+    assert call.kwargs.get("params") == {"token": "abc"}
+
+
+def test_normalize_host_from_pasted_url_without_credentials():
+    node = ComfyUINodeConfig(
+        host="http://62.107.25.198:58539/?token=abc123",
+        port=8188,
+        auth_type="none",
+        name="Remote",
+    )
+    assert node.host == "62.107.25.198"
+    assert node.port == 58539
+    assert node.token is None
 
 
 # ── Workflow builder ──────────────────────────────────────────────────────────

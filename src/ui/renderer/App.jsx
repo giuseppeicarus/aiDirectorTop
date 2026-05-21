@@ -13,6 +13,11 @@ import ProjectDetailScreen from './screens/ProjectDetailScreen'
 import QueueScreen from './screens/QueueScreen'
 import WorkflowsScreen from './screens/WorkflowsScreen'
 import CopilotScreen from './screens/CopilotScreen'
+import ToolsScreen from './screens/ToolsScreen'
+import ModelsScreen from './screens/ModelsScreen'
+import DirectorCinemaScreen from './screens/DirectorCinemaScreen'
+import TrailerScreen from './screens/TrailerScreen'
+import CreateReelScreen from './screens/CreateReelScreen'
 
 export default function App() {
   return (
@@ -25,12 +30,19 @@ export default function App() {
         <Route path="projects/:id/storyboard" element={<StoryboardScreen />} />
         <Route path="projects/:id/pipeline"   element={<PipelineScreen />} />
         <Route path="projects/:id/copilot"   element={<CopilotScreen />} />
+        <Route path="projects/:id/trailer"    element={<TrailerScreen />} />
         <Route path="nodes"                   element={<NodesScreen />} />
         <Route path="services"                element={<ServicesScreen />} />
         <Route path="media"                   element={<MediaLibraryScreen />} />
         <Route path="frame-cut-optimizer"     element={<FrameCutOptimizerScreen />} />
         <Route path="queue"                   element={<QueueScreen />} />
         <Route path="workflows"               element={<WorkflowsScreen />} />
+        <Route path="tools"                   element={<ToolsScreen />} />
+        <Route path="models"                  element={<ModelsScreen />} />
+        <Route path="director"                element={<DirectorCinemaScreen />} />
+        <Route path="trailer"                 element={<TrailerScreen />} />
+        <Route path="createreel"              element={<CreateReelScreen />} />
+        <Route path="projects/:id/reel"       element={<CreateReelScreen />} />
         <Route path="settings"               element={<SettingsScreen />} />
       </Route>
     </Routes>

@@ -5,9 +5,9 @@
   "main": "src/ui/main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:vite\" \"npm run dev:electron\"",
-    "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "dev:electron": "wait-on http://localhost:5300 && electron .",
     "dev:vite": "vite",
-    "dev:backend": "python -m uvicorn src.core.main:app --reload --port 8765",
+    "dev:backend": "python -m uvicorn src.core.main:app --reload --reload-dir src/core --reload-delay 2 --port 8765",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "electron-builder",

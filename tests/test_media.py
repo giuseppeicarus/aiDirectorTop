@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.core.database import Base
 from src.core.models.media import MediaItemORM, MediaItemSchema
+from src.core.utils.media_registry import cleanup_missing_media
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -90,6 +91,46 @@ def test_media_item_schema_size_mb():
         created_at=datetime.now(),
     )
     assert schema.size_mb == 2.0
+
+
+async def test_cleanup_missing_media(db_session, tmp_path):
+    existing = tmp_path / "keep.png"
+    existing.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    db_session.add(MediaItemORM(
+        id=str(uuid.uuid4()),
+        filename="keep.png",
+        filepath=str(existing),
+        type="image",
+        project_id="p1",
+        project_title="T",
+        width=1,
+        height=1,
+        size_bytes=8,
+    ))
+    db_session.add(MediaItemORM(
+        id=str(uuid.uuid4()),
+        filename="gone.png",
+        filepath=str(tmp_path / "missing.png"),
+        type="image",
+        project_id="p1",
+        project_title="T",
+        width=1,
+        height=1,
+        size_bytes=8,
+    ))
+    await db_session.commit()
+
+    result = await cleanup_missing_media(db_session)
+    await db_session.commit()
+
+    assert result["removed_count"] == 1
+    assert result["removed"][0]["filename"] == "gone.png"
+
+    from sqlalchemy import select
+    rows = (await db_session.execute(select(MediaItemORM))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].filename == "keep.png"
 
 
 def test_media_item_schema_from_orm():

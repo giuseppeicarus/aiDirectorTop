@@ -12,7 +12,7 @@ from typing import List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from src.core.utils.http_files import file_response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_config
 from src.core.database import get_db
 from src.core.models.media import MediaItemORM, MediaItemSchema, MediaUploadResult
+from src.core.utils.media_registry import cleanup_missing_media
 
 router = APIRouter()
 
@@ -69,7 +70,7 @@ async def serve_file(item_id: str, db: AsyncSession = Depends(get_db)):
     if not path.exists():
         raise HTTPException(status_code=404, detail="File non trovato su disco")
 
-    return FileResponse(str(path), filename=item.filename)
+    return file_response(path, inline=True)
 
 
 @router.get("/thumb/{item_id}")
@@ -82,11 +83,11 @@ async def serve_thumb(item_id: str, db: AsyncSession = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Media non trovato")
 
+    path = Path(item.filepath)
+
     # Only generate thumbs for images
     if item.type != "image":
-        return RedirectResponse(url=f"/api/media/file/{item_id}")
-
-    path = Path(item.filepath)
+        return file_response(path, inline=True)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File non trovato su disco")
 
@@ -101,10 +102,9 @@ async def serve_thumb(item_id: str, db: AsyncSession = Depends(get_db)):
                 img = img.convert("RGB")
                 img.save(str(thumb_path), "JPEG", quality=80)
         except (ImportError, Exception):
-            # Pillow not available or error generating thumb — redirect to original
-            return RedirectResponse(url=f"/api/media/file/{item_id}")
+            return file_response(path, inline=True)
 
-    return FileResponse(str(thumb_path), media_type="image/jpeg")
+    return file_response(thumb_path, inline=True)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +223,130 @@ async def list_shots(project_id: str):
 # Existing list + stats endpoints
 # ---------------------------------------------------------------------------
 
+@router.post("/cleanup")
+async def cleanup_media(db: AsyncSession = Depends(get_db)):
+    """Elimina dal DB i media senza file su disco (record orfani)."""
+    return await cleanup_missing_media(db)
+
+
+@router.post("/scan")
+async def scan_and_register_media(
+    project_id: Optional[str] = Query(None, description="Scansiona solo questo progetto (ometti per tutti)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Scansiona le cartelle frames/clips/final di tutti i progetti (o uno specifico)
+    e registra nel DB i file media già presenti su disco ma non ancora indicizzati.
+    Utile per recuperare media generati da pipeline che non hanno completato la registrazione.
+    """
+    import json as _json
+
+    cfg = get_config()
+    projects_root = cfg.app.data_path / "projects"
+    if not projects_root.exists():
+        return {"scanned": 0, "registered": 0, "skipped": 0}
+
+    IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+    VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+
+    # Fetch existing filepaths already in DB (to skip duplicates)
+    from sqlalchemy import select as sa_select
+    result = await db.execute(sa_select(MediaItemORM.filepath))
+    known_paths: set[str] = {row[0] for row in result if row[0]}
+
+    dirs_to_scan: list[Path] = []
+    if project_id:
+        candidate = projects_root / project_id
+        if candidate.is_dir():
+            dirs_to_scan.append(candidate)
+    else:
+        dirs_to_scan = [p for p in projects_root.iterdir() if p.is_dir()]
+
+    scanned = registered = skipped = 0
+
+    for proj_dir in dirs_to_scan:
+        pid = proj_dir.name
+        # Derive project title from project.json or pipeline_state.json
+        ptitle = pid
+        meta_path = proj_dir / "project.json"
+        if meta_path.exists():
+            try:
+                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                ptitle = meta.get("title") or pid
+            except Exception:
+                pass
+        else:
+            state_path = proj_dir / "pipeline_state.json"
+            if state_path.exists():
+                try:
+                    st = _json.loads(state_path.read_text(encoding="utf-8"))
+                    arc = st.get("data", {}).get("story_arc", {})
+                    ptitle = arc.get("title") or pid
+                except Exception:
+                    pass
+
+        for subdir in ("frames", "clips", "final", "storyboard"):
+            folder = proj_dir / subdir
+            if not folder.is_dir():
+                continue
+            for fpath in folder.iterdir():
+                if not fpath.is_file():
+                    continue
+                ext = fpath.suffix.lower()
+                if ext not in IMAGE_EXT and ext not in VIDEO_EXT:
+                    continue
+                if ext in (".thumb.jpg",) or fpath.name.endswith(".thumb.jpg"):
+                    continue
+                scanned += 1
+                norm = str(fpath.resolve())
+                if norm in known_paths or str(fpath) in known_paths:
+                    skipped += 1
+                    continue
+
+                mtype = "image" if ext in IMAGE_EXT else "video"
+                width = height = 0
+                if mtype == "image":
+                    try:
+                        from PIL import Image as PILImage
+                        with PILImage.open(fpath) as img:
+                            width, height = img.size
+                    except Exception:
+                        pass
+
+                # Infer shot_id and frame_type from filename pattern: shot_NNN_NNN_first.png
+                shot_id = frame_type = None
+                stem = fpath.stem
+                for ft in ("first", "last"):
+                    if stem.endswith(f"_{ft}"):
+                        frame_type = ft
+                        shot_id = stem[: -(len(ft) + 1)]
+                        break
+                if frame_type is None and subdir == "final":
+                    frame_type = "final"
+
+                item = MediaItemORM(
+                    id=str(uuid4()),
+                    filename=fpath.name,
+                    filepath=str(fpath),
+                    type=mtype,
+                    project_id=pid,
+                    project_title=ptitle,
+                    shot_id=shot_id,
+                    frame_type=frame_type,
+                    width=width,
+                    height=height,
+                    size_bytes=fpath.stat().st_size,
+                    source="generated",
+                    tags=_json.dumps(["scan", pid]),
+                )
+                db.add(item)
+                known_paths.add(str(fpath))
+                registered += 1
+
+    await db.flush()
+    return {"scanned": scanned, "registered": registered, "skipped": skipped}
+
+
 @router.get("/", response_model=List[MediaItemSchema])
 async def list_media(
     type: Optional[str]       = Query(None, description="image | video | audio"),
@@ -230,6 +354,8 @@ async def list_media(
     db: AsyncSession           = Depends(get_db),
 ):
     """Lista tutti i media con filtri opzionali per tipo e progetto."""
+    await cleanup_missing_media(db)
+
     query = select(MediaItemORM).order_by(MediaItemORM.created_at.desc())
 
     if type in ("image", "video", "audio"):

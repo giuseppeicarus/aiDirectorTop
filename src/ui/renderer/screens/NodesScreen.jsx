@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Server, RefreshCw, Cpu, Layers, CheckCircle, XCircle, Clock } from 'lucide-react'
+import { Server, RefreshCw, Layers, Star } from 'lucide-react'
 
 const API = 'http://localhost:8765/api'
 
@@ -84,7 +84,14 @@ export default function NodesScreen() {
               <div className="flex items-center gap-3">
                 <StatusDot online={node.online} quarantined={node.quarantined} />
                 <div>
-                  <div className="font-medium text-sm text-[var(--text)]">{node.name}</div>
+                  <div className="font-medium text-sm text-[var(--text)] flex items-center gap-2">
+                    {node.name}
+                    {node.primary && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded text-[var(--gold)] border border-[var(--gold)]/30 flex items-center gap-0.5">
+                        <Star size={9} className="fill-current" /> Principale
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-[var(--text3)] font-mono">{node.host}:{node.port}</div>
                 </div>
               </div>

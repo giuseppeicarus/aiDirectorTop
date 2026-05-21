@@ -1,9 +1,9 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Wand2, Upload, Music, Mic,
   FileAudio, X, ChevronDown, Info, Film, Image as ImageIcon,
-  Check, Loader2, Zap, Users,
+  Check, Loader2, Zap, Users, Video, Layers, Cpu, Lock,
 } from 'lucide-react'
 import { useProjectStore } from '../stores'
 import clsx from 'clsx'
@@ -65,6 +65,48 @@ const FRAME_MULTS = [
   { label: '2× — Standard (bilanciato)', value: 2 },
   { label: '3× — Alta qualità',          value: 3 },
   { label: '4× — Massima qualità',       value: 4 },
+]
+
+// ── Workflow Categories (static config, options loaded dynamically) ────────────
+
+const WORKFLOW_CATEGORIES = [
+  {
+    key:      'txt2img',
+    type:     'txt2img',
+    label:    'Text → Image',
+    subtitle: 'Genera i frame di riferimento da prompt testuale',
+    Icon:     ImageIcon,
+  },
+  {
+    key:      'img2img',
+    type:     'img2img',
+    label:    'Image → Image',
+    subtitle: 'Refinement / variazione frame (opzionale)',
+    Icon:     Layers,
+    optional: true,
+  },
+  {
+    key:      'img2video',
+    type:     'img2video',
+    label:    'Image First → Video',
+    subtitle: 'Anima il primo frame in clip video',
+    Icon:     Film,
+  },
+  {
+    key:      'img2video_lastframe',
+    type:     'img2video_lastframe',
+    label:    'Image First + Last → Video',
+    subtitle: 'Interpolazione guidata tra primo e ultimo frame',
+    Icon:     Video,
+  },
+  {
+    key:      'img_audio2video',
+    type:     'img_audio2video',
+    label:    'Image + Audio → Video',
+    subtitle: 'Video sincronizzato con audio (richiede audio abilitato)',
+    Icon:     Music,
+    audioOnly: true,
+  },
 ]
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -236,6 +278,98 @@ function AudioDropZone({ audioFile, onFile, onRemove }) {
   )
 }
 
+// ── Workflow Category Selector ────────────────────────────────────────────────
+
+function WorkflowCategory({ catKey, cat, options, selected, onChange, disabled, loading }) {
+  const { label, subtitle, Icon, optional } = cat
+  const isEmpty = !loading && options.length === 0
+
+  return (
+    <div className={clsx('rounded-xl border transition-colors', disabled ? 'border-[#2a2a38] opacity-50' : 'border-[#2a2a38]')}>
+      {/* Category header */}
+      <div className="flex items-center gap-2.5 px-4 pt-3.5 pb-2.5 border-b border-[#2a2a38]">
+        <Icon size={14} className="text-[#c9a84c] shrink-0" />
+        <div className="flex-1 min-w-0">
+          <span className="text-xs font-semibold text-[#f0ede8] tracking-wide">{label}</span>
+          <span className="text-[10px] text-[#555568] ml-2">{subtitle}</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {optional && <span className="text-[9px] text-[#555568] border border-[#2a2a38] rounded px-1.5 py-0.5">opzionale</span>}
+          {disabled && (
+            <div className="flex items-center gap-1 text-[10px] text-[#555568]">
+              <Lock size={10} /> richiede audio
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Options */}
+      <div className="p-3 space-y-2">
+        {loading && (
+          <div className="flex items-center gap-2 px-2 py-3 text-[11px] text-[#555568]">
+            <Loader2 size={12} className="animate-spin" /> Caricamento workflow…
+          </div>
+        )}
+
+        {isEmpty && (
+          <div className="px-3 py-3 text-[11px] text-[#555568] italic">
+            Nessun workflow di questo tipo configurato nel sistema
+          </div>
+        )}
+
+        {options.map(wf => {
+          const active = selected === wf.id
+          return (
+            <button
+              key={wf.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => !disabled && onChange(catKey, wf.id)}
+              className={clsx(
+                'w-full text-left rounded-lg px-3.5 py-3 border-2 transition-all',
+                active
+                  ? 'border-[#c9a84c] bg-[#c9a84c]/8'
+                  : 'border-[#252533] hover:border-[#c9a84c]/30 hover:bg-[#c9a84c]/4',
+                disabled && 'cursor-not-allowed',
+              )}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                {/* Radio dot */}
+                <span className={clsx(
+                  'w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors',
+                  active ? 'border-[#c9a84c] bg-[#c9a84c]' : 'border-[#555568]',
+                )}>
+                  {active && <span className="w-1.5 h-1.5 rounded-full bg-[#0a0a0f]" />}
+                </span>
+
+                <span className={clsx('text-xs font-medium truncate flex-1', active ? 'text-[#f0ede8]' : 'text-[#9090a0]')}>
+                  {wf.name}
+                </span>
+
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1e1e2a] text-[#555568] font-mono shrink-0">
+                  {wf.id}
+                </span>
+              </div>
+
+              {wf.description && (
+                <p className="text-[11px] text-[#555568] leading-relaxed pl-5.5 line-clamp-2">
+                  {wf.description}
+                </p>
+              )}
+
+              {wf.models?.length > 0 && (
+                <p className="text-[9px] text-[#3a3a50] font-mono pl-5.5 mt-1 truncate">
+                  {wf.models[0]}{wf.models.length > 1 ? ` +${wf.models.length - 1}` : ''}
+                </p>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function ProjectCreatorScreen() {
@@ -254,12 +388,44 @@ export default function ProjectCreatorScreen() {
     video_resolution:     '1920x1080',
     frame_resolution_mult: 2,
     lyrics:               '',
+    audio_start_sec:      0,
   })
+
+  // workflow selection: { txt2img: id, img2img: id, img2video: id, img2video_lastframe: id, img_audio2video: id }
+  const [workflows,         setWorkflows]         = useState({})
+  // grouped by type from backend manifest
+  const [wfByType,          setWfByType]          = useState({})
+  const [wfLoading,         setWfLoading]         = useState(true)
 
   const [audioEnabled, setAudioEnabled] = useState(false)
   const [audioFile,    setAudioFile]    = useState(null)
   const [submitting,   setSubmitting]   = useState(false)
   const [submitError,  setSubmitError]  = useState(null)
+
+  // ── Load workflows from backend and auto-select first per category ─────────
+  useEffect(() => {
+    window.studio?.workflow?.list?.()
+      .then(m => {
+        const grouped = {}
+        for (const wf of (m.workflows || [])) {
+          if (!grouped[wf.type]) grouped[wf.type] = []
+          grouped[wf.type].push(wf)
+        }
+        setWfByType(grouped)
+        // Auto-select first available workflow per category
+        setWorkflows(prev => {
+          const next = { ...prev }
+          for (const cat of WORKFLOW_CATEGORIES) {
+            if (!next[cat.key] && grouped[cat.type]?.length > 0) {
+              next[cat.key] = grouped[cat.type][0].id
+            }
+          }
+          return next
+        })
+      })
+      .catch(() => {})
+      .finally(() => setWfLoading(false))
+  }, [])
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -267,6 +433,10 @@ export default function ProjectCreatorScreen() {
   function handleRatioChange(ratio) {
     set('aspect_ratio', ratio)
     set('video_resolution', DEFAULT_RESOLUTION[ratio] || '1920x1080')
+  }
+
+  function handleWorkflowChange(catKey, optionId) {
+    setWorkflows(w => ({ ...w, [catKey]: optionId }))
   }
 
   const frameRes = calcFrameRes(form.video_resolution, form.frame_resolution_mult)
@@ -282,7 +452,9 @@ export default function ProjectCreatorScreen() {
         duration_sec:          Number(form.duration_sec),
         max_clip_sec:          Number(form.max_clip_sec),
         frame_resolution_mult: Number(form.frame_resolution_mult),
+        audio_start_sec:       Number(form.audio_start_sec) || 0,
         lyrics: audioEnabled ? form.lyrics || null : null,
+        workflows_json: JSON.stringify(workflows),
       }
       const project = await createProject(payload)
 
@@ -575,6 +747,31 @@ export default function ProjectCreatorScreen() {
                   />
                 </div>
 
+                {/* Audio start offset */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={label + ' mb-0'}>Inizio audio (secondi)</label>
+                    <span className="text-[10px] text-[#555568]">
+                      Da quale secondo dell'audio inizia la generazione
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={form.audio_start_sec}
+                      onChange={e => set('audio_start_sec', Math.max(0, Number(e.target.value)))}
+                      className={inp + ' w-32 text-center'}
+                    />
+                    <span className="text-xs text-[#555568]">
+                      {form.audio_start_sec > 0
+                        ? `Prima clip da ${form.audio_start_sec}s, seconda da ${(Number(form.audio_start_sec) + Number(form.max_clip_sec)).toFixed(1)}s, ecc.`
+                        : 'Default: parte dall\'inizio del file audio'}
+                    </span>
+                  </div>
+                </div>
+
                 {/* Lyrics */}
                 <div>
                   <div className="flex items-start justify-between mb-1.5">
@@ -608,6 +805,41 @@ export default function ProjectCreatorScreen() {
                 </div>
               </div>
             )}
+          </section>
+
+          {/* ── 5. Workflow AI ── */}
+          <section>
+            <SectionHeader
+              title="Workflow AI"
+              subtitle="seleziona i workflow ComfyUI per ogni fase di generazione"
+            />
+
+            <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg border border-[#2a2a38] bg-[#0d0d16] mb-4">
+              <Cpu size={13} className="text-[#9090a0] shrink-0 mt-0.5" />
+              <div className="text-[11px] text-[#9090a0] leading-relaxed">
+                <p className="font-medium text-[#f0ede8] mb-0.5">Pipeline di generazione</p>
+                <p className="text-[#555568]">
+                  I workflow vengono caricati dai tuoi ComfyUI configurati nel sistema.
+                  Puoi aggiungerne di nuovi dalla sezione{' '}
+                  <span className="text-[#c9a84c]">Workflow</span>.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {WORKFLOW_CATEGORIES.map(cat => (
+                <WorkflowCategory
+                  key={cat.key}
+                  catKey={cat.key}
+                  cat={cat}
+                  options={wfByType[cat.type] || []}
+                  selected={workflows[cat.key]}
+                  onChange={handleWorkflowChange}
+                  disabled={cat.audioOnly && !audioEnabled}
+                  loading={wfLoading}
+                />
+              ))}
+            </div>
           </section>
 
           {/* ── Error ── */}

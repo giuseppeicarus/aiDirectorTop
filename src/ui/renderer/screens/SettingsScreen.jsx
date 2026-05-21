@@ -4,11 +4,29 @@ import {
   Server, Plus, Trash2, Check, X,
   Wifi, WifiOff, Loader2, Edit2, ChevronDown, ChevronUp,
   Cpu, Activity, BookOpen, Clapperboard, Camera, PenLine,
-  ClipboardCheck, ChevronRight, Save, RotateCcw,
+  ClipboardCheck, ChevronRight, Save, RotateCcw, Globe, Star,
+  HardDrive, FolderOpen, ExternalLink,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { apiGet, waitForBackend, API_BASE } from '../utils/apiClient'
 
-const API = 'http://localhost:8765/api'
+// ── Language data ─────────────────────────────────────────────────────────────
+
+const LANGUAGES = [
+  { code: 'it', label: 'Italiano',   llmName: 'Italian'    },
+  { code: 'en', label: 'English',    llmName: 'English'    },
+  { code: 'fr', label: 'Français',   llmName: 'French'     },
+  { code: 'es', label: 'Español',    llmName: 'Spanish'    },
+  { code: 'de', label: 'Deutsch',    llmName: 'German'     },
+  { code: 'pt', label: 'Português',  llmName: 'Portuguese' },
+  { code: 'ja', label: '日本語',      llmName: 'Japanese'   },
+  { code: 'zh', label: '中文',        llmName: 'Chinese'    },
+  { code: 'ko', label: '한국어',      llmName: 'Korean'     },
+  { code: 'ru', label: 'Русский',    llmName: 'Russian'    },
+  { code: 'ar', label: 'العربية',    llmName: 'Arabic'     },
+]
+
+const API = API_BASE
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -40,6 +58,246 @@ function Field({ label, children }) {
 const inp = "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-3 py-2 text-xs text-[var(--text)] focus:border-[var(--gold)] outline-none font-mono"
 const sel = "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-3 py-2 text-xs text-[var(--text)] focus:border-[var(--gold)] outline-none"
 
+// ── Language Section ──────────────────────────────────────────────────────────
+
+function LanguageSection() {
+  const [cfg, setCfg]             = useState({ ui_language: 'it', llm_language: 'Italian' })
+  const [saving, setSaving]       = useState(false)
+  const [saveStatus, setSaveStatus] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      await waitForBackend()
+      try {
+        const d = await apiGet('/llm/language')
+        if (!cancelled) setCfg(c => ({ ...c, ...d }))
+      } catch {
+        /* backend offline */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  function selectUiLanguage(lang) {
+    setCfg(c => ({ ...c, ui_language: lang.code, llm_language: lang.llmName }))
+  }
+
+  function selectLlmLanguage(llmName) {
+    setCfg(c => ({ ...c, llm_language: llmName }))
+  }
+
+  async function save() {
+    setSaving(true)
+    setSaveStatus(null)
+    try {
+      await fetch(`${API}/llm/language`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      })
+      setSaveStatus({ ok: true, msg: 'Salvato — effettivo dalla prossima chiamata LLM' })
+    } catch (e) {
+      setSaveStatus({ ok: false, msg: `Errore: ${e.message}` })
+    } finally {
+      setSaving(false)
+      setTimeout(() => setSaveStatus(null), 4000)
+    }
+  }
+
+  const activeLang   = LANGUAGES.find(l => l.code === cfg.ui_language)   ?? LANGUAGES[0]
+  const activeLlmLang = LANGUAGES.find(l => l.llmName === cfg.llm_language) ?? LANGUAGES[0]
+
+  return (
+    <Section title="Lingua">
+      {/* UI language */}
+      <Field label="Lingua app">
+        <div className="flex flex-wrap gap-1.5">
+          {LANGUAGES.map(lang => (
+            <button
+              key={lang.code}
+              onClick={() => selectUiLanguage(lang)}
+              className={clsx(
+                'px-3 py-1.5 rounded-full text-xs font-mono border transition-colors',
+                cfg.ui_language === lang.code
+                  ? 'border-[var(--gold)] bg-[var(--gold)]/15 text-[var(--gold)]'
+                  : 'border-[var(--border)] text-[var(--text3)] hover:border-[var(--border2)] hover:text-[var(--text2)]'
+              )}
+            >
+              {lang.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-[var(--text3)] mt-2">
+          La lingua dell'interfaccia richiederà un riavvio per essere applicata completamente.
+          Selezionando una lingua qui si imposta anche la lingua di risposta LLM.
+        </p>
+      </Field>
+
+      {/* LLM response language — fine-grained override */}
+      <Field label="Lingua risposte LLM">
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {LANGUAGES.map(lang => (
+            <button
+              key={lang.llmName}
+              onClick={() => selectLlmLanguage(lang.llmName)}
+              className={clsx(
+                'px-3 py-1.5 rounded-full text-xs font-mono border transition-colors',
+                cfg.llm_language === lang.llmName
+                  ? 'border-[var(--gold)] bg-[var(--gold)]/15 text-[var(--gold)]'
+                  : 'border-[var(--border)] text-[var(--text3)] hover:border-[var(--border2)] hover:text-[var(--text2)]'
+              )}
+            >
+              {lang.label}
+            </button>
+          ))}
+        </div>
+        <div className="rounded-lg bg-[var(--bg2)] border border-[var(--border)] px-3 py-2.5 mt-1">
+          <p className="text-[10px] text-[var(--text3)] leading-relaxed">
+            <span className="text-[var(--gold)] font-mono">Effetto immediato</span> — viene iniettato come direttiva in ogni prompt sistema inviato all'LLM.<br />
+            Le descrizioni narrative, le emozioni, i titoli e le note di continuità verranno scritte in <span className="text-[var(--text)] font-mono">{cfg.llm_language}</span>.<br />
+            <span className="text-[var(--text3)]">I prompt di generazione immagine/video rimangono in inglese per garantire la massima qualità dei modelli AI.</span>
+          </p>
+        </div>
+      </Field>
+
+      <div className="flex items-center justify-between pt-4 border-t border-[var(--border)]">
+        <div className="flex items-center gap-2 text-[11px] text-[var(--text3)]">
+          <Globe size={12} />
+          UI: <span className="text-[var(--text2)] font-mono">{activeLang.label}</span>
+          <span className="mx-1 opacity-40">·</span>
+          LLM: <span className="text-[var(--text2)] font-mono">{cfg.llm_language}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {saveStatus && (
+            <span className={`text-xs ${saveStatus.ok ? 'text-[var(--green)]' : 'text-[var(--red)]'}`}>
+              {saveStatus.msg}
+            </span>
+          )}
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 text-xs rounded bg-[var(--gold)]/15 hover:bg-[var(--gold)]/25 text-[var(--gold)] disabled:opacity-50 transition-colors"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            {saving ? 'Salvataggio...' : 'Salva'}
+          </button>
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// ── Storage / cartelle progetto ───────────────────────────────────────────────
+
+function StorageSection() {
+  const [info, setInfo] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setErr(null)
+    try {
+      await waitForBackend()
+      const d = await apiGet('/services/storage')
+      setInfo(d)
+    } catch (e) {
+      setErr(e.message || 'Errore caricamento storage')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  function openPath(p) {
+    if (!p) return
+    window.studio?.shell?.openPath?.(p)
+  }
+
+  return (
+    <Section title="Archiviazione progetti">
+      {loading && (
+        <div className="flex items-center gap-2 text-xs text-[var(--text3)]">
+          <Loader2 size={12} className="animate-spin" /> Caricamento percorsi…
+        </div>
+      )}
+      {err && <p className="text-xs text-[var(--red)]">{err}</p>}
+      {info && (
+        <>
+          <Field label="Cartella dati">
+            <code className="text-[10px] text-[var(--gold)] break-all block mb-2">
+              {info.data_dir}
+            </code>
+            {info.free_gb != null && (
+              <p className="text-[10px] text-[var(--text3)] mb-2">
+                Spazio libero: {info.free_gb} GB / {info.total_gb} GB
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => openPath(info.data_dir)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-[var(--border)]
+                         text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors"
+            >
+              <FolderOpen size={12} /> Apri cartella dati
+            </button>
+          </Field>
+
+          <Field label="Progetti">
+            <code className="text-[10px] text-[var(--gold)] break-all block mb-2">
+              {info.projects_dir}
+            </code>
+            <p className="text-[10px] text-[var(--text3)] mb-2">
+              {info.project_count ?? 0} cartelle — ogni progetto ha un file{' '}
+              <span className="text-[var(--text2)]">project.json</span> con titolo e id.
+            </p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => openPath(info.projects_dir)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-[var(--border)]
+                           text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors"
+              >
+                <HardDrive size={12} /> Apri cartella progetti
+              </button>
+              <button
+                type="button"
+                onClick={load}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded text-[var(--text3)]
+                           hover:text-[var(--text2)] transition-colors"
+              >
+                <RefreshCw size={12} /> Aggiorna
+              </button>
+            </div>
+            {info.projects?.length > 0 && (
+              <ul className="max-h-36 overflow-y-auto border border-[var(--border)] rounded divide-y divide-[var(--border)]">
+                {info.projects.slice(0, 12).map(p => (
+                  <li key={p.id} className="flex items-center justify-between gap-2 px-2 py-1.5 text-[10px]">
+                    <span className="text-[var(--text2)] truncate" title={p.path}>
+                      <span className="text-[var(--gold)] font-mono">{p.title}</span>
+                      <span className="text-[var(--text3)] ml-1">({p.id.slice(0, 8)}…)</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openPath(p.path)}
+                      className="shrink-0 text-[var(--text3)] hover:text-[var(--gold)]"
+                      title="Apri cartella"
+                    >
+                      <ExternalLink size={11} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Field>
+        </>
+      )}
+    </Section>
+  )
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
@@ -50,6 +308,8 @@ export default function SettingsScreen() {
         <h1 className="font-display text-xl text-[var(--text)]">Impostazioni</h1>
       </div>
 
+      <LanguageSection />
+      <StorageSection />
       <LlmSection />
       <LlmAgentsSection />
       <ComfyUINodesSection />
@@ -111,10 +371,17 @@ function LlmSection() {
   const [saveStatus, setSaveStatus] = useState(null)
 
   useEffect(() => {
-    fetch(`${API}/llm/config`)
-      .then(r => r.json())
-      .then(d => setCfg(c => ({ ...c, ...d })))
-      .catch(() => {})
+    let cancelled = false
+    ;(async () => {
+      await waitForBackend()
+      try {
+        const d = await apiGet('/llm/config')
+        if (!cancelled) setCfg(c => ({ ...c, ...d }))
+      } catch {
+        /* backend offline */
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   async function testAndDiscover() {
@@ -318,20 +585,25 @@ function LlmAgentsSection() {
   const [saveStatus, setSaveStatus] = useState(null)
 
   useEffect(() => {
-    fetch(`${API}/llm/roles`)
-      .then(r => r.json())
-      .then(data => {
+    let cancelled = false
+    ;(async () => {
+      await waitForBackend()
+      try {
+        const data = await apiGet('/llm/roles')
+        if (cancelled) return
         const merged = {}
         for (const meta of ROLES_META) {
           merged[meta.key] = { ...ROLE_DEFAULTS(meta), ...(data[meta.key] || {}) }
         }
         setRoles(merged)
-      })
-      .catch(() => {
+      } catch {
+        if (cancelled) return
         const defaults = {}
         for (const meta of ROLES_META) defaults[meta.key] = ROLE_DEFAULTS(meta)
         setRoles(defaults)
-      })
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   function patchRole(key, patch) {
@@ -631,7 +903,60 @@ function LlmAgentsSection() {
 
 // ── ComfyUI Nodes Section ─────────────────────────────────────────────────────
 
-const EMPTY_NODE = { name: 'GPU Node', host: 'localhost', port: 8188, enabled: true, auth: '' }
+const EMPTY_NODE = {
+  name: 'GPU Node',
+  host: 'localhost',
+  port: 8188,
+  enabled: true,
+  primary: false,
+  auth_type: 'none',
+  auth: '',
+  token: '',
+}
+
+const AUTH_TYPE_OPTIONS = [
+  { id: 'none', label: 'Nessuna', hint: 'Rete locale o ComfyUI senza credenziali' },
+  { id: 'token', label: 'Token API', hint: 'RunPod / Vast — parametro ?token=' },
+  { id: 'basic', label: 'Basic auth', hint: 'user:password' },
+]
+
+function inferNodeAuthType(node) {
+  if (node?.auth_type && AUTH_TYPE_OPTIONS.some(o => o.id === node.auth_type)) {
+    return node.auth_type
+  }
+  if (node?.token) return 'token'
+  if (node?.auth) return 'basic'
+  return 'none'
+}
+
+/** Parse pasted ComfyUI URL (only when user clicks Applica). */
+function parseComfyUIUrl(raw) {
+  const s = (raw || '').trim()
+  if (!s) return null
+  try {
+    const url = new URL(s.includes('://') ? s : `http://${s}`)
+    const token = url.searchParams.get('token') || ''
+    return {
+      host: url.hostname,
+      port: url.port ? parseInt(url.port, 10) : 8188,
+      token,
+      auth_type: token ? 'token' : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function nodePayloadFromForm(formData) {
+  const auth_type = formData.auth_type || 'none'
+  return {
+    ...formData,
+    port: parseInt(formData.port, 10),
+    auth_type,
+    token: auth_type === 'token' ? (formData.token || null) : null,
+    auth: auth_type === 'basic' ? (formData.auth || null) : null,
+  }
+}
 
 function ComfyUINodesSection() {
   const [nodes, setNodes]       = useState([])
@@ -647,11 +972,13 @@ function ComfyUINodesSection() {
 
   const loadNodes = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
-      const d = await fetch(`${API}/comfyui/nodes/config`).then(r => r.json())
+      await waitForBackend()
+      const d = await apiGet('/comfyui/nodes/config')
       setNodes(d.nodes || [])
     } catch (e) {
-      setError(`Caricamento fallito: ${e.message}`)
+      setError(`Caricamento fallito: ${e.message}. Verifica che il backend sia avviato (porta 8765).`)
     } finally { setLoading(false) }
   }, [])
 
@@ -682,7 +1009,7 @@ function ComfyUINodesSection() {
       const d = await fetch(`${API}/comfyui/nodes/config/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(nodePayloadFromForm(formData)),
       }).then(r => r.json())
       return d
     } catch (e) {
@@ -697,7 +1024,7 @@ function ComfyUINodesSection() {
     setSaving('saving')
     setError(null)
     try {
-      const payload = { ...formData, port: parseInt(formData.port, 10), auth: formData.auth || null }
+      const payload = nodePayloadFromForm(formData)
       if (editIdx !== null) {
         await fetch(`${API}/comfyui/nodes/config/${editIdx}`, {
           method: 'PUT',
@@ -741,13 +1068,39 @@ function ComfyUINodesSection() {
 
   function openAdd() {
     setEditIdx(null)
-    setFormData(EMPTY_NODE)
+    setFormData({
+      ...EMPTY_NODE,
+      primary: nodes.length === 0,
+    })
     setShowForm(true)
+  }
+
+  async function setPrimaryNode(index) {
+    const node = nodes[index]
+    if (node.primary) return
+    try {
+      await fetch(`${API}/comfyui/nodes/config/${index}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...node, primary: true }),
+      })
+      await loadNodes()
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   function openEdit(index) {
     setEditIdx(index)
-    setFormData({ ...EMPTY_NODE, ...nodes[index], auth: nodes[index].auth || '' })
+    const n = nodes[index]
+    const auth_type = inferNodeAuthType(n)
+    setFormData({
+      ...EMPTY_NODE,
+      ...n,
+      auth_type,
+      auth: auth_type === 'basic' ? (n.auth || '') : '',
+      token: auth_type === 'token' ? (n.token || '') : '',
+    })
     setShowForm(true)
   }
 
@@ -820,6 +1173,7 @@ function ComfyUINodesSection() {
             onEdit={() => openEdit(i)}
             onDelete={() => deleteNode(i)}
             onToggle={() => toggleEnabled(i)}
+            onSetPrimary={() => setPrimaryNode(i)}
           />
         ))}
       </div>
@@ -843,7 +1197,7 @@ function ComfyUINodesSection() {
 
 // ── NodeRow ───────────────────────────────────────────────────────────────────
 
-function NodeRow({ node, index, health, onCheckHealth, onEdit, onDelete, onToggle }) {
+function NodeRow({ node, index, health, onCheckHealth, onEdit, onDelete, onToggle, onSetPrimary }) {
   const h = health
   const checking = h?.checking
   const res      = h?.result
@@ -871,11 +1225,23 @@ function NodeRow({ node, index, health, onCheckHealth, onEdit, onDelete, onToggl
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm text-[var(--text)] font-medium truncate">{node.name}</span>
+            {node.primary && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--gold)]/15 text-[var(--gold)] border border-[var(--gold)]/30">
+                Principale
+              </span>
+            )}
             {!node.enabled && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg3)] text-[var(--text3)]">disabilitato</span>
             )}
           </div>
-          <span className="text-xs font-mono text-[var(--text3)]">{node.host}:{node.port}</span>
+          <span className="text-xs font-mono text-[var(--text3)]">
+            {node.host}:{node.port}
+            {node.auth_type && node.auth_type !== 'none' && (
+              <span className="ml-1.5 text-[var(--text3)] opacity-80">
+                · {node.auth_type === 'token' ? 'token' : 'basic'}
+              </span>
+            )}
+          </span>
         </div>
 
         {/* Health result inline */}
@@ -900,6 +1266,19 @@ function NodeRow({ node, index, health, onCheckHealth, onEdit, onDelete, onToggl
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={onSetPrimary}
+            disabled={node.primary}
+            title={node.primary ? 'Nodo principale' : 'Imposta come principale'}
+            className={clsx(
+              'p-1.5 rounded transition-colors',
+              node.primary
+                ? 'text-[var(--gold)] bg-[var(--gold)]/10'
+                : 'text-[var(--text3)] hover:text-[var(--gold)] hover:bg-[var(--gold)]/10'
+            )}
+          >
+            <Star size={13} className={node.primary ? 'fill-current' : ''} />
+          </button>
           <button
             onClick={onCheckHealth}
             disabled={checking}
@@ -982,6 +1361,30 @@ function VramBar({ free, total }) {
 function NodeForm({ data, isEdit, saving, onChange, onTest, onSave, onCancel }) {
   const [testResult, setTestResult] = useState(null)
   const [testing, setTesting] = useState(false)
+  const [pasteUrl, setPasteUrl] = useState('')
+
+  function applyPastedUrl() {
+    const parsed = parseComfyUIUrl(pasteUrl)
+    if (!parsed) return
+    const patch = { host: parsed.host, port: parsed.port }
+    if (parsed.auth_type === 'token' && parsed.token) {
+      patch.auth_type = 'token'
+      patch.token = parsed.token
+      patch.auth = ''
+    }
+    onChange(patch)
+    setPasteUrl('')
+  }
+
+  function setAuthType(auth_type) {
+    onChange({
+      auth_type,
+      token: auth_type === 'token' ? (data.token || '') : '',
+      auth: auth_type === 'basic' ? (data.auth || '') : '',
+    })
+  }
+
+  const authMeta = AUTH_TYPE_OPTIONS.find(o => o.id === data.auth_type) || AUTH_TYPE_OPTIONS[0]
 
   async function handleTest() {
     setTesting(true)
@@ -997,6 +1400,58 @@ function NodeForm({ data, isEdit, saving, onChange, onTest, onSave, onCancel }) 
         {isEdit ? 'Modifica nodo' : 'Nuovo nodo'}
       </h4>
 
+      <div className="mb-4 p-3 rounded-lg border border-[var(--gold)]/25 bg-[var(--gold)]/5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-medium text-[var(--gold)] flex items-center gap-1.5">
+              <Star size={12} className={data.primary ? 'fill-current' : ''} />
+              Nodo principale
+            </div>
+            <p className="text-[10px] text-[var(--text3)] mt-0.5">
+              Usato per tutta la pipeline. Se offline, si usa un nodo di fallback.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange({ primary: !data.primary })}
+            className={clsx(
+              'relative w-9 h-5 rounded-full transition-colors shrink-0',
+              data.primary ? 'bg-[var(--gold)]' : 'bg-[var(--bg3)]'
+            )}
+          >
+            <span className={clsx(
+              'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
+              data.primary ? 'translate-x-4' : 'translate-x-0.5'
+            )} />
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <label className="block text-[10px] text-[var(--text3)] mb-1">
+          Incolla URL ComfyUI remoto (RunPod / Vast)
+        </label>
+        <div className="flex gap-2">
+          <input
+            className={inp}
+            value={pasteUrl}
+            onChange={e => setPasteUrl(e.target.value)}
+            placeholder="http://IP:58539/?token=..."
+          />
+          <button
+            type="button"
+            onClick={applyPastedUrl}
+            disabled={!pasteUrl.trim()}
+            className="shrink-0 px-3 py-1.5 text-xs rounded border border-[var(--border)] text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] disabled:opacity-40"
+          >
+            Applica
+          </button>
+        </div>
+        <p className="text-[10px] text-[var(--text3)] mt-1">
+          Compila host e porta; se l&apos;URL contiene ?token=, verrà impostato il tipo Token API.
+        </p>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div>
           <label className="block text-[10px] text-[var(--text3)] mb-1">Nome</label>
@@ -1004,8 +1459,8 @@ function NodeForm({ data, isEdit, saving, onChange, onTest, onSave, onCancel }) 
         </div>
         <div className="grid grid-cols-3 gap-2">
           <div className="col-span-2">
-            <label className="block text-[10px] text-[var(--text3)] mb-1">Host</label>
-            <input className={inp} value={data.host} onChange={e => onChange({ host: e.target.value })} placeholder="localhost" />
+            <label className="block text-[10px] text-[var(--text3)] mb-1">Host (solo IP o hostname)</label>
+            <input className={inp} value={data.host} onChange={e => onChange({ host: e.target.value })} placeholder="62.107.25.198" />
           </div>
           <div>
             <label className="block text-[10px] text-[var(--text3)] mb-1">Porta</label>
@@ -1015,9 +1470,54 @@ function NodeForm({ data, isEdit, saving, onChange, onTest, onSave, onCancel }) 
       </div>
 
       <div className="mb-3">
-        <label className="block text-[10px] text-[var(--text3)] mb-1">Auth (opzionale, formato user:password)</label>
-        <input className={inp} value={data.auth || ''} onChange={e => onChange({ auth: e.target.value })} placeholder="user:password" />
+        <label className="block text-[10px] text-[var(--text3)] mb-2">Autenticazione</label>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {AUTH_TYPE_OPTIONS.map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setAuthType(opt.id)}
+              className={clsx(
+                'px-3 py-1.5 text-xs rounded border transition-colors',
+                data.auth_type === opt.id
+                  ? 'border-[var(--gold)] bg-[var(--gold)]/15 text-[var(--gold)]'
+                  : 'border-[var(--border)] text-[var(--text2)] hover:border-[var(--border2)]'
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-[var(--text3)]">{authMeta.hint}</p>
       </div>
+
+      {data.auth_type === 'token' && (
+        <div className="mb-3">
+          <label className="block text-[10px] text-[var(--text3)] mb-1">Token API</label>
+          <input
+            className={inp}
+            type="password"
+            value={data.token || ''}
+            onChange={e => onChange({ token: e.target.value })}
+            placeholder="valore del parametro ?token="
+            autoComplete="off"
+          />
+        </div>
+      )}
+
+      {data.auth_type === 'basic' && (
+        <div className="mb-3">
+          <label className="block text-[10px] text-[var(--text3)] mb-1">Credenziali (user:password)</label>
+          <input
+            className={inp}
+            type="password"
+            value={data.auth || ''}
+            onChange={e => onChange({ auth: e.target.value })}
+            placeholder="user:password"
+            autoComplete="off"
+          />
+        </div>
+      )}
 
       <div className="flex items-center gap-2 mb-4">
         <button

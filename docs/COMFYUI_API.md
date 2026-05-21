@@ -3,6 +3,34 @@
 ## Base URL
 `http://{host}:{port}` (default port: 8188)
 
+### RunPod / proxy Caddy (porta HTTP pubblica del pod)
+
+Il proxy RunPod espone ComfyUI dietro Caddy. Con **solo** `?token=...` su POST `/prompt` la risposta può essere:
+
+```json
+{"exec_info": {"queue_remaining": 0}}
+```
+
+senza `prompt_id` — il workflow **non viene accodato** (il trailer fallisce in fase ComfyUI).
+
+**Configurazione corretta** in `~/.cinematic-studio/config.yaml`:
+
+```yaml
+comfyui:
+  nodes:
+    - name: RunPod Remote
+      host: "IP_DEL_POD"
+      port: 58539          # porta HTTP del Connect, non 8188 (spesso chiusa dall'esterno)
+      auth_type: token
+      token: "TOKEN_RUNPOD"
+      primary: true
+```
+
+CinematicAI invia `Authorization: Bearer <token>` (non `?token=` sulle API POST).
+L'upload `/upload/image` e la coda LTX funzionano con Bearer.
+
+Web UI nel browser: puoi ancora aprire `http://IP:PORT/?token=...` per usare ComfyUI a mano.
+
 ## Endpoints
 
 ### Queue a Workflow

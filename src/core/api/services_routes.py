@@ -108,3 +108,18 @@ async def db_service_status():
 @router.get("/ffmpeg")
 async def ffmpeg_service_status():
     return _check_ffmpeg()
+
+
+@router.get("/storage")
+async def storage_detail():
+    """Percorsi dati su disco e elenco cartelle progetto."""
+    from src.core.utils.project_paths import list_project_dirs, projects_root
+
+    storage = _check_storage()
+    projects_dir = projects_root()
+    return {
+        **storage,
+        "projects_dir": str(projects_dir.resolve()),
+        "projects": list_project_dirs(),
+        "project_count": sum(1 for p in projects_dir.iterdir() if p.is_dir()) if projects_dir.is_dir() else 0,
+    }

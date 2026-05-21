@@ -60,6 +60,16 @@ async def analyze_story(inp: ProjectInput, on_event: Optional[Callable] = None) 
         log.warning("story_analyst_parse_failed", error=str(e))
         result = StoryAnalysis()
 
+    # Ensure minimal useful output even if LLM returned mostly empty
+    if not result.narrative_summary and inp.story_brief:
+        result.narrative_summary = inp.story_brief[:500]
+    if not result.themes and inp.mood_references:
+        result.themes = inp.mood_references[:4]
+    if not result.themes and inp.style_references:
+        result.themes = inp.style_references[:4]
+    if not result.suggested_motifs and inp.visual_references:
+        result.suggested_motifs = inp.visual_references[:4]
+
     if on_event:
         on_event({
             "type": "llm_output_detail",

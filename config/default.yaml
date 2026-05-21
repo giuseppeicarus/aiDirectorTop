@@ -30,17 +30,29 @@ comfyui:
       port: 8188
       name: "Local GPU"
       enabled: true
+      primary: true
       # auth: null  # set to "user:password" if ComfyUI has auth
-  
-  # Parallelism limits
-  max_parallel_frame_jobs: 4   # txt2img jobs in parallel
-  max_parallel_video_jobs: 2   # img2video jobs in parallel
-  
+
+  # Parallelism limits (set to number of GPU nodes you have)
+  max_parallel_frame_jobs: 1   # txt2img jobs in parallel per node
+  max_parallel_video_jobs: 1   # img2video jobs in parallel per node
+
+  # AI Tools — workflow predefiniti (se il selettore WF è su "Default")
+  img2video_workflow: "ltx_img2video"              # ltx_2_3_Image_To_Video.json (senza LoadAudio)
+  img_audio2video_workflow: "ltx_img_audio2video"  # con traccia audio esterna
+
+# Trailer Generator — workflow canonici in base_workflow_comfyui/
+trailer:
+  txt2img_workflow: "z_image_txt2img"           # z-image_Text_To_Image.json
+  img2video_workflow: "ltx_img_audio2video"     # trailer/music video con audio
+  clip_backend: "auto"                          # auto | comfyui | ffmpeg
+  allow_ffmpeg_fallback: true                   # false = solo LTX, errore se ComfyUI down
+
   # Timeouts
   queue_timeout_sec: 30
-  execution_timeout_sec: 300
+  execution_timeout_sec: 600   # seconds per job (increase for slow models)
   websocket_recv_timeout_sec: 10
-  
+
   # Default models (must match what's installed in ComfyUI)
   models:
     checkpoint: "v1-5-pruned-emaonly.ckpt"  # change to your model
@@ -67,7 +79,7 @@ generation:
   default_aspect_ratio: "16:9"
   default_duration_sec: 60
   default_num_scenes: 3
-  
+
   frame_generation:
     steps: 30
     cfg_scale: 7.0
@@ -75,7 +87,7 @@ generation:
     height: 576
     sampler: "dpm_2_ancestral"
     scheduler: "karras"
-    
+
   negative_prompt_default: "ugly, deformed, blurry, low quality, watermark, text, bad anatomy, extra limbs"
 
 # ─── UI Settings ──────────────────────────────────────────────────────────────
@@ -123,3 +135,40 @@ llm_roles:
     api_key: "${OPENAI_API_KEY}"
     temperature: 0.20
     max_tokens: 3000
+
+# ─── LTX Director 2.3 (WhatDreamsCost ComfyUI plugin) ────────────────────────
+# Set enabled: true once the following are installed in ComfyUI:
+#   - LTX-Video 2.3 model files
+#   - WhatDreamsCost custom node pack (provides LTXDirector, LTXDirectorGuide, etc.)
+#
+# mode:
+#   "full_video" — generates the entire video in one LTX Director pass (recommended)
+#                  requires first_frame + last_frame for every shot to be generated first
+#   "per_shot"   — one LTX Director workflow per CinematicShot (more VRAM-friendly)
+ltx_director:
+  enabled: false
+  mode: "full_video"              # "per_shot" | "full_video"
+
+  # Model file names — must match exactly what is in ComfyUI's models/ folders
+  checkpoint: "ltx-video-2b-v0.9.6.safetensors"
+  clip_name1: "t5xxl_fp16.safetensors"
+  clip_name2: ""
+  video_vae: "ltx-video-vae-decode-v0.9.6.safetensors"
+  audio_vae: "ltx-video-2b-v0.9.6.safetensors"
+  upscale_model: "ltxv_spatial_upscaler_0.9.7.safetensors"
+  lora_name: ""                   # empty = no LoRA applied
+  lora_strength: 1.0
+
+  # Sampling parameters
+  stage1_steps: 8
+  stage2_steps: 4
+  cfg_scale: 1.0
+  sampler: "euler"
+  scheduler: "linear"
+  denoise_stage1: 1.0
+  denoise_stage2: 0.4
+
+  # Output resolution and frame rate
+  frame_rate: 24
+  width: 1280
+  height: 720

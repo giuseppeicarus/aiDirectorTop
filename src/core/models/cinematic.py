@@ -5,7 +5,7 @@ Copertura completa: AudioAnalysis → StoryArc → CinematicShot → ContinuityR
 
 from __future__ import annotations
 from typing import List, Literal, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
@@ -20,10 +20,14 @@ class AudioSection(BaseModel):
 
 
 class AudioAnalysis(BaseModel):
-    bpm: float
+    model_config = ConfigDict(extra='ignore')
+    bpm: float = 120.0
     key: Optional[str] = None
+    duration_sec: Optional[float] = None
     sections: List[AudioSection] = []
     emotion_timeline: List[dict] = []   # [{time_sec, emotion, intensity}]
+    beat_times: List[float] = []        # timestamps of each beat in seconds
+    lyric_beats: List[dict] = []        # [{lyric_line, time_sec, end_sec, emotion, energy}]
 
 
 # ── Characters ────────────────────────────────────────────────────────────────
@@ -50,6 +54,7 @@ class ProjectInput(BaseModel):
     runtime_target_sec: int = 60
     aspect_ratio: str = "16:9"
     genre: str = "cinematic"            # music_video|short_film|commercial|cinematic
+    audio_start_sec: float = 0.0        # seconds into the audio file where generation begins
 
 
 # ── LLM 1 Output: Story Analysis ─────────────────────────────────────────────
@@ -63,6 +68,8 @@ class StoryAnalysis(BaseModel):
     suggested_motifs: List[str] = []
     color_mood: str = ""
     narrative_summary: str = ""
+    lyric_beats: List[dict] = []   # [{lyric_line, time_sec, emotion, suggested_visual}] — empty if no lyrics
+    audio_timing: List[dict] = []  # [{section_start, section_end, energy, suggested_camera_speed, duration_shots}]
 
 
 # ── LLM 2 Output: Story Arc ──────────────────────────────────────────────────
@@ -112,26 +119,38 @@ class StoryArc(BaseModel):
 
 class CameraConfig(BaseModel):
     model_config = ConfigDict(extra='ignore')
-    shot_type: str = "medium"       # extreme_wide|wide|medium|close_up|drone|pov etc.
-    movement: str = "static"        # static|dolly_in|dolly_out|pan|orbit|handheld etc.
+    shot_type: str = "medium"
+    movement: str = "static"
     lens_mm: int = 35
-    depth_of_field: str = "medium"  # shallow|medium|deep
+    depth_of_field: str = "medium"
     special: Optional[str] = None
+
+    @field_validator('shot_type', 'movement', 'depth_of_field', mode='before')
+    @classmethod
+    def _str(cls, v): return v if v is not None else ""
 
 
 class LightingConfig(BaseModel):
     model_config = ConfigDict(extra='ignore')
-    time_of_day: str = "afternoon"  # dawn|golden_hour|midday|afternoon|dusk|night etc.
-    mood: str = "warm"              # warm|cold|dramatic_contrast|soft_diffused etc.
+    time_of_day: str = "afternoon"
+    mood: str = "warm"
     sources: List[str] = []
+
+    @field_validator('time_of_day', 'mood', mode='before')
+    @classmethod
+    def _str(cls, v): return v if v is not None else ""
 
 
 class MusicSync(BaseModel):
-    bass: str = ""          # "camera pulse on bass hits"
-    snare: str = ""         # "small cuts on snare"
-    vocals: str = ""        # "slow camera drift follows vocal melody"
+    bass: str = ""
+    snare: str = ""
+    vocals: str = ""
     beat_cuts: bool = False
-    cut_frequency: Optional[str] = None  # "every 2 beats", "every bar"
+    cut_frequency: Optional[str] = None
+
+    @field_validator('bass', 'snare', 'vocals', mode='before')
+    @classmethod
+    def _str(cls, v): return v if v is not None else ""
 
 
 class FramePrompt(BaseModel):
@@ -169,10 +188,21 @@ class CinematicShot(BaseModel):
     first_frame: Optional[FramePrompt] = None
     last_frame: Optional[FramePrompt] = None
     motion_prompt: str = ""
+    ltx_global_prompt: str = ""  # LTX Director 2.3 optimized global prompt
+    first_frame_source: str = "generate"  # "generate" | "from_prev_last" — AI director decides
     comfyui_workflow: str = "img2video_wan21"
     clip_path: Optional[str] = None
     status: str = "pending"
     error: Optional[str] = None
+
+    @field_validator(
+        'shot_id', 'sequence_id', 'scene_id', 'time_start', 'time_end',
+        'scene_description', 'location', 'transition_in', 'transition_out',
+        'emotion', 'motion_prompt', 'ltx_global_prompt', 'status', 'first_frame_source',
+        mode='before',
+    )
+    @classmethod
+    def _str(cls, v): return v if v is not None else ""
 
 
 # ── LLM 5 Output: Continuity Report ──────────────────────────────────────────
@@ -180,10 +210,16 @@ class CinematicShot(BaseModel):
 class ContinuityError(BaseModel):
     model_config = ConfigDict(extra='ignore')
     shot_ids: List[str] = []
+    shot_pair: str = ""          # e.g. "shot_001 → shot_002"
     error_type: str = "narrative"       # character|lighting|location|narrative|camera|transition|prompt
     description: str = ""
+    reasoning: str = ""          # WHY this is an error, what the AI checked
     severity: str = "warning"           # critical|warning|suggestion
     correction: str = ""
+
+    @field_validator('shot_pair', 'error_type', 'description', 'reasoning', 'severity', 'correction', mode='before')
+    @classmethod
+    def _str(cls, v): return v if v is not None else ""
 
 
 class ContinuityReport(BaseModel):
@@ -194,6 +230,8 @@ class ContinuityReport(BaseModel):
     errors: List[ContinuityError] = []
     approved: bool = True
     corrected_shots: List[str] = []
+    analysis_summary: str = ""   # LLM's overall assessment paragraph
+    checks_performed: List[str] = []  # categories checked: ["character", "lighting", ...]
 
 
 # ── Shot Memory (continuity injection) ───────────────────────────────────────

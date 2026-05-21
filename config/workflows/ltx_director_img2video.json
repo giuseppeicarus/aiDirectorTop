@@ -1,0 +1,256 @@
+{
+  "_info": "CinematicAI Studio — LTX Director 2.3 Image-to-Video (per-shot). Requires WhatDreamsCost-ComfyUI plugin. Inject points defined in manifest.json. Based on https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI",
+  "1001": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": { "title": "LTX 2.3 Checkpoint" },
+    "inputs": {
+      "ckpt_name": "ltx-video-2b-v0.9.6.safetensors"
+    }
+  },
+  "1002": {
+    "class_type": "DualCLIPLoader",
+    "_meta": { "title": "Dual CLIP Loader (T5 + optional)" },
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "",
+      "type": "ltxv",
+      "device": "default"
+    }
+  },
+  "1003": {
+    "class_type": "VAELoaderKJ",
+    "_meta": { "title": "Video VAE Loader" },
+    "inputs": {
+      "vae_name": "ltx-video-vae-decode-v0.9.6.safetensors"
+    }
+  },
+  "2001": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "First Frame Guide" },
+    "inputs": {
+      "image": "first_frame.png",
+      "upload": "image"
+    }
+  },
+  "2002": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "Last Frame Guide" },
+    "inputs": {
+      "image": "last_frame.png",
+      "upload": "image"
+    }
+  },
+  "1010": {
+    "class_type": "LTXDirector",
+    "_meta": { "title": "LTX Director 2.3" },
+    "inputs": {
+      "model": ["1001", 0],
+      "clip": ["1002", 0],
+      "global_prompt": "cinematic scene, high quality, film grain",
+      "local_prompts": "cinematic intro|smooth camera motion",
+      "segment_lengths": "48,48",
+      "timeline_data": "",
+      "duration_frames": 97,
+      "duration_seconds": 4.0,
+      "frame_rate": 24.0,
+      "custom_width": 1280,
+      "custom_height": 720,
+      "use_custom_audio": false,
+      "epsilon": 0.001,
+      "guide_strength": ""
+    }
+  },
+  "1012": {
+    "class_type": "ConditioningZeroOut",
+    "_meta": { "title": "Zero Negative Conditioning" },
+    "inputs": {
+      "conditioning": ["1010", 1]
+    }
+  },
+  "1011": {
+    "class_type": "LTXVConditioning",
+    "_meta": { "title": "LTXV Conditioning" },
+    "inputs": {
+      "positive": ["1010", 1],
+      "negative": ["1012", 0],
+      "frame_rate": ["1010", 5],
+      "image_height": 720,
+      "image_width": 1280,
+      "latent": ["1010", 2]
+    }
+  },
+  "1020": {
+    "class_type": "LTXDirectorGuide",
+    "_meta": { "title": "LTX Director Guide (Stage 1)" },
+    "inputs": {
+      "positive": ["1011", 0],
+      "negative": ["1011", 1],
+      "vae": ["1003", 0],
+      "latent": ["1010", 2],
+      "guide_data": ["1010", 4],
+      "scale_by": 1.0,
+      "upscale_method": "nearest-exact"
+    }
+  },
+  "1021": {
+    "class_type": "CFGGuider",
+    "_meta": { "title": "CFG Guider (Stage 1)" },
+    "inputs": {
+      "cfg": 1.0,
+      "model": ["1020", 0],
+      "positive": ["1020", 1],
+      "negative": ["1020", 2]
+    }
+  },
+  "1022": {
+    "class_type": "RandomNoise",
+    "_meta": { "title": "Random Noise" },
+    "inputs": {
+      "noise_seed": 42
+    }
+  },
+  "1023": {
+    "class_type": "KSamplerSelect",
+    "_meta": { "title": "KSampler Select (Stage 1)" },
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "1024": {
+    "class_type": "BasicScheduler",
+    "_meta": { "title": "Scheduler (Stage 1 — 8 steps)" },
+    "inputs": {
+      "scheduler": "linear",
+      "steps": 8,
+      "denoise": 1.0,
+      "model": ["1020", 0]
+    }
+  },
+  "1025": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": { "title": "Sampler (Stage 1)" },
+    "inputs": {
+      "noise": ["1022", 0],
+      "guider": ["1021", 0],
+      "sampler": ["1023", 0],
+      "sigmas": ["1024", 0],
+      "latent_image": ["1020", 3]
+    }
+  },
+  "1026": {
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": { "title": "Separate AV Latent (Stage 1)" },
+    "inputs": {
+      "av_latent": ["1025", 0]
+    }
+  },
+  "1030": {
+    "class_type": "LTXVCropGuides",
+    "_meta": { "title": "LTXV Crop Guides" },
+    "inputs": {
+      "positive": ["1011", 0],
+      "negative": ["1011", 1],
+      "latent": ["1026", 0]
+    }
+  },
+  "1031": {
+    "class_type": "LatentUpscaleModelLoader",
+    "_meta": { "title": "Upscale Model Loader" },
+    "inputs": {
+      "model_name": "ltxv_spatial_upscaler_0.9.7.safetensors"
+    }
+  },
+  "1032": {
+    "class_type": "LTXVLatentUpsampler",
+    "_meta": { "title": "LTXV Latent Upsampler (2x)" },
+    "inputs": {
+      "samples": ["1026", 0],
+      "upscale_model": ["1031", 0],
+      "vae": ["1003", 0]
+    }
+  },
+  "1033": {
+    "class_type": "LTXDirectorGuide",
+    "_meta": { "title": "LTX Director Guide (Stage 2)" },
+    "inputs": {
+      "positive": ["1030", 0],
+      "negative": ["1030", 1],
+      "vae": ["1003", 0],
+      "latent": ["1032", 0],
+      "guide_data": ["1010", 4],
+      "scale_by": 1.0,
+      "upscale_method": "nearest-exact"
+    }
+  },
+  "1034": {
+    "class_type": "CFGGuider",
+    "_meta": { "title": "CFG Guider (Stage 2)" },
+    "inputs": {
+      "cfg": 1.0,
+      "model": ["1033", 0],
+      "positive": ["1033", 1],
+      "negative": ["1033", 2]
+    }
+  },
+  "1035": {
+    "class_type": "KSamplerSelect",
+    "_meta": { "title": "KSampler Select (Stage 2)" },
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "1036": {
+    "class_type": "BasicScheduler",
+    "_meta": { "title": "Scheduler (Stage 2 — 4 steps refinement)" },
+    "inputs": {
+      "scheduler": "linear",
+      "steps": 4,
+      "denoise": 0.4,
+      "model": ["1033", 0]
+    }
+  },
+  "1037": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": { "title": "Sampler (Stage 2)" },
+    "inputs": {
+      "noise": ["1022", 0],
+      "guider": ["1034", 0],
+      "sampler": ["1035", 0],
+      "sigmas": ["1036", 0],
+      "latent_image": ["1033", 3]
+    }
+  },
+  "1038": {
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": { "title": "Separate AV Latent (Stage 2)" },
+    "inputs": {
+      "av_latent": ["1037", 0]
+    }
+  },
+  "1040": {
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": { "title": "Concat Video + Audio Latent" },
+    "inputs": {
+      "video_latent": ["1038", 0],
+      "audio_latent": ["1026", 1]
+    }
+  },
+  "1041": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" },
+    "inputs": {
+      "samples": ["1040", 0],
+      "vae": ["1003", 0]
+    }
+  },
+  "1043": {
+    "class_type": "SaveVideo",
+    "_meta": { "title": "Save Video" },
+    "inputs": {
+      "filename_prefix": "ltx_dir_clip",
+      "format": "auto",
+      "codec": "auto",
+      "video": ["1041", 0]
+    }
+  }
+}

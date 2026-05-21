@@ -8,7 +8,7 @@ import httpx
 
 from src.core.llm.factory import get_llm_adapter
 from src.core.llm.base import StoryboardRequest
-from src.core.config import get_config, reload_config, LLMConfig, save_roles_config, save_llm_config
+from src.core.config import get_config, reload_config, LLMConfig, save_roles_config, save_llm_config, save_language_config
 
 ANTHROPIC_MODELS = [
     "claude-opus-4-7",
@@ -51,6 +51,7 @@ PIPELINE_ROLES = [
     "cinematographer",
     "prompt_engineer",
     "continuity_checker",
+    "vision_analyst",
 ]
 
 
@@ -75,6 +76,11 @@ class RoleConfig(BaseModel):
 
 class SaveRolesRequest(BaseModel):
     roles: dict[str, RoleConfig]
+
+
+class LanguageConfigUpdate(BaseModel):
+    ui_language: str = "it"
+    llm_language: str = "Italian"
 
 
 @router.get("/health")
@@ -284,6 +290,45 @@ async def improve_style(req: ImproveStyleRequest):
         return {"ok": False, "error": str(e), "style": ""}
 
 
+@router.get("/ollama/models")
+async def list_ollama_models():
+    """Elenca i modelli Ollama installati localmente."""
+    cfg = get_config().llm
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.get(base.rstrip("/") + "/api/tags")
+            r.raise_for_status()
+            models = [m["name"] for m in r.json().get("models", [])]
+            return {"ok": True, "models": models, "base_url": base}
+    except Exception as e:
+        return {"ok": False, "models": [], "error": str(e), "base_url": base}
+
+
+class OllamaPullRequest(BaseModel):
+    model: str
+
+
+@router.post("/ollama/pull")
+async def pull_ollama_model(req: OllamaPullRequest):
+    """Avvia il download di un modello Ollama (bloccante fino al completamento)."""
+    cfg = get_config().llm
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            r = await client.post(
+                base.rstrip("/") + "/api/pull",
+                json={"name": req.model, "stream": False},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return {"ok": True, "status": data.get("status", "done"), "model": req.model}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Timeout — il download è molto lento o Ollama non è avviato"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.post("/generate-storyboard")
 async def generate_storyboard(req: StoryboardRequest):
     """Genera uno storyboard completo con il provider LLM configurato."""
@@ -293,3 +338,19 @@ async def generate_storyboard(req: StoryboardRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Language settings ─────────────────────────────────────────────────────────
+
+@router.get("/language")
+async def get_language_config():
+    """Restituisce la configurazione lingua corrente."""
+    cfg = get_config().language
+    return {"ui_language": cfg.ui_language, "llm_language": cfg.llm_language}
+
+
+@router.post("/language")
+async def update_language_config(data: LanguageConfigUpdate):
+    """Salva la configurazione lingua e aggiorna il config runtime."""
+    save_language_config({"ui_language": data.ui_language, "llm_language": data.llm_language})
+    return {"ok": True}

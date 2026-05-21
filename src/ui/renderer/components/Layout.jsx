@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Zap, Wrench, Image, GitBranch } from 'lucide-react'
+import { Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Zap, Wrench, Image, GitBranch, Wand2, Package, Clapperboard, Tv, Instagram } from 'lucide-react'
 import { useConfigStore, usePipelineStore } from '../stores'
 import { useEffect } from 'react'
 import clsx from 'clsx'
@@ -10,7 +10,13 @@ export default function Layout() {
   const navigate = useNavigate()
   const pipelineActive = !['idle', 'done', 'error'].includes(stage)
 
-  useEffect(() => { loadNodes() }, [])
+  useEffect(() => {
+    loadNodes()
+    // Richiedi permesso notifiche desktop all'avvio
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }, [])
 
   const onlineCount = nodes.filter(n => n.online).length
 
@@ -30,7 +36,7 @@ export default function Layout() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           <button
             onClick={() => navigate('/projects/new')}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-md
@@ -65,12 +71,58 @@ export default function Layout() {
             Servizi
           </NavLink>
 
+          <NavLink to="/models" className={({ isActive }) =>
+            clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              isActive ? 'bg-[#1a1a24] text-[#f0ede8]' : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
+          }>
+            <Package size={15} />
+            Modelli
+          </NavLink>
+
           <NavLink to="/workflows" className={({ isActive }) =>
             clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
               isActive ? 'bg-[#1a1a24] text-[#f0ede8]' : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
           }>
             <GitBranch size={15} />
             Workflow
+          </NavLink>
+
+          <NavLink to="/tools" className={({ isActive }) =>
+            clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              isActive ? 'bg-[#1a1a24] text-[#f0ede8]' : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
+          }>
+            <Wand2 size={15} />
+            Tools
+          </NavLink>
+
+          <NavLink to="/director" className={({ isActive }) =>
+            clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              isActive
+                ? 'bg-[#c9a84c]/15 text-[#c9a84c]'
+                : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
+          }>
+            <Clapperboard size={15} />
+            Director Cinema
+          </NavLink>
+
+          <NavLink to="/trailer" className={({ isActive }) =>
+            clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              isActive
+                ? 'bg-[#c9a84c]/15 text-[#c9a84c]'
+                : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
+          }>
+            <Tv size={15} />
+            Trailer Generator
+          </NavLink>
+
+          <NavLink to="/createreel" className={({ isActive }) =>
+            clsx('flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors',
+              isActive
+                ? 'bg-[#c9a84c]/15 text-[#c9a84c]'
+                : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]')
+          }>
+            <Instagram size={15} />
+            CreateReel
           </NavLink>
 
           <div className="my-2 border-t border-[#2a2a38]" />
@@ -125,7 +177,9 @@ export default function Layout() {
                   size={7}
                   className={node.online ? 'text-green-500 fill-green-500' : 'text-red-500 fill-red-500'}
                 />
-                <span className="text-[11px] text-[#9090a0] truncate">{node.name}</span>
+                <span className="text-[11px] text-[#9090a0] truncate">
+                  {node.primary ? '★ ' : ''}{node.name}
+                </span>
                 {node.online && node.queue_depth > 0 && (
                   <span className="text-[10px] text-[#c9a84c] ml-auto">{node.queue_depth}</span>
                 )}

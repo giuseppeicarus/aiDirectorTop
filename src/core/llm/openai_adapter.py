@@ -23,10 +23,12 @@ class OpenAIAdapter(BaseLLMAdapter):
             raise ImportError("Installa openai: pip install openai")
 
         cfg = config or get_config().llm
+        # Use a generous timeout for slow local/remote LM Studio endpoints
+        adapter_timeout = max(cfg.timeout_sec, 600)
         self._client = AsyncOpenAI(
             api_key=cfg.api_key or "sk-no-key",
             base_url=cfg.base_url,
-            timeout=cfg.timeout_sec,
+            timeout=adapter_timeout,
         )
         self._model = cfg.model
         self._temperature = cfg.temperature
@@ -46,6 +48,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> dict:
+        system = self._inject_language(system)
         kwargs = dict(
             model=self._model,
             temperature=temperature,
@@ -53,6 +56,45 @@ class OpenAIAdapter(BaseLLMAdapter):
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user",   "content": user},
+            ],
+        )
+        if self._use_json_format:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = await self._client.chat.completions.create(**kwargs)
+        return self._parse_json(response.choices[0].message.content)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type(Exception),
+    )
+    async def generate_json_with_images(
+        self,
+        system: str,
+        user: str,
+        *,
+        images: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> dict:
+        system = self._inject_language(system)
+        content: list = [{"type": "text", "text": user}]
+        for img in images:
+            mime = img.get("mime") or "image/png"
+            b64 = img.get("b64") or ""
+            if not b64:
+                continue
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+            })
+        kwargs = dict(
+            model=self._model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
             ],
         )
         if self._use_json_format:
@@ -96,6 +138,43 @@ class OpenAIAdapter(BaseLLMAdapter):
         except Exception:
             return False
 
-    def _parse_json(self, raw: str) -> dict:
-        clean = re.sub(r"```json?\n?", "", raw).replace("```", "").strip()
-        return json.loads(clean)
+    def _parse_json(self, raw: str):
+        raw = self._strip_reasoning(raw)
+        # Strip markdown fences
+        clean = re.sub(r"```json?\s*", "", raw).replace("```", "").strip()
+        # First try direct parse
+        try:
+            return json.loads(clean)
+        except json.JSONDecodeError:
+            pass
+        # Extract first JSON object or array from surrounding text
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            start = clean.find(start_char)
+            if start == -1:
+                continue
+            # Find matching closing bracket (balanced)
+            depth = 0
+            in_str = False
+            esc = False
+            for i, ch in enumerate(clean[start:], start):
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\' and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == start_char:
+                    depth += 1
+                elif ch == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(clean[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+        raise ValueError(f"No valid JSON found in LLM response: {raw[:200]!r}")

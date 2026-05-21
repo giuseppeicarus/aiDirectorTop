@@ -25,6 +25,8 @@ async def check_continuity(shot_list: List[CinematicShot]) -> ContinuityReport:
     log.info("continuity_checker_start", shots=len(shot_list))
 
     all_errors: List[ContinuityError] = []
+    analysis_summaries: List[str] = []
+    checks_set: set = set()
 
     # Processa in chunk sovrapposti (ogni chunk include l'ultimo shot del precedente)
     for i in range(0, len(shot_list), CHUNK_SIZE):
@@ -40,8 +42,20 @@ async def check_continuity(shot_list: List[CinematicShot]) -> ContinuityReport:
             max_tokens=3000,
         )
 
+        if not isinstance(raw, dict):
+            log.warning("continuity_checker_unexpected_type", type=type(raw).__name__)
+            raw = {}
+        if raw.get("analysis_summary"):
+            analysis_summaries.append(raw["analysis_summary"])
+        if raw.get("checks_performed"):
+            checks_set.update(raw["checks_performed"])
+
         chunk_errors = raw.get("errors", [])
-        all_errors.extend([ContinuityError(**e) for e in chunk_errors])
+        for e in chunk_errors:
+            try:
+                all_errors.append(ContinuityError(**e))
+            except Exception as parse_err:
+                log.warning("continuity_error_parse_failed", error=str(parse_err))
 
     critical = [e for e in all_errors if e.severity == "critical"]
     warnings  = [e for e in all_errors if e.severity == "warning"]
@@ -54,6 +68,8 @@ async def check_continuity(shot_list: List[CinematicShot]) -> ContinuityReport:
         errors=all_errors,
         approved=len(critical) == 0,
         corrected_shots=corrected_shots,
+        analysis_summary="\n\n".join(analysis_summaries),
+        checks_performed=sorted(checks_set),
     )
 
     log.info(

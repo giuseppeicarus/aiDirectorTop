@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.core.database import Base
@@ -35,10 +35,12 @@ class ProjectORM(Base):
     max_clip_sec:           Mapped[int]           = mapped_column(Integer, default=8)
     video_resolution:       Mapped[str]           = mapped_column(String(20), default="1920x1080")
     frame_resolution_mult:  Mapped[int]           = mapped_column(Integer, default=2)
-    audio_path:             Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    lyrics:                 Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    audio_analysis_json:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    mode:                   Mapped[str]           = mapped_column(String(20), default="full_auto")
+    audio_path:             Mapped[Optional[str]]   = mapped_column(Text, nullable=True)
+    lyrics:                 Mapped[Optional[str]]   = mapped_column(Text, nullable=True)
+    audio_analysis_json:    Mapped[Optional[str]]   = mapped_column(Text, nullable=True)
+    mode:                   Mapped[str]             = mapped_column(String(20), default="full_auto")
+    workflows_json:         Mapped[Optional[str]]   = mapped_column(Text, nullable=True)
+    audio_start_sec:        Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=0.0)
 
 
 # ── Pydantic Schemas ──────────────────────────────────────────────────────────
@@ -98,6 +100,8 @@ class ProjectCreate(BaseModel):
     frame_resolution_mult: int = 2
     lyrics: Optional[str] = None
     mode: str = "full_auto"
+    workflows_json: Optional[str] = None   # JSON string: {"txt2img":..., "img2video":..., "img_audio2video":...}
+    audio_start_sec: float = 0.0
 
 
 class ProjectResponse(BaseModel):
@@ -120,5 +124,7 @@ class ProjectResponse(BaseModel):
     lyrics: Optional[str] = None
     audio_analysis_json: Optional[str] = None
     mode: str = "full_auto"
+    workflows_json: Optional[str] = None
+    audio_start_sec: float = 0.0
 
     model_config = {"from_attributes": True}

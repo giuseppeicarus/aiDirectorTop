@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from src.core.comfyui.workflow_builder import WORKFLOWS_DIR, reload_manifest
 
@@ -34,6 +35,24 @@ def _save_manifest(m: dict):
 async def list_workflows():
     """Elenco di tutti i workflow con metadati."""
     return _load_manifest()
+
+
+@router.get("/{workflow_id}/download")
+async def download_workflow(workflow_id: str):
+    """Scarica il file JSON del workflow pronto per import su ComfyUI."""
+    m = _load_manifest()
+    meta = next((w for w in m["workflows"] if w["id"] == workflow_id), None)
+    if not meta:
+        raise HTTPException(404, f"Workflow '{workflow_id}' non trovato")
+    json_path = WORKFLOWS_DIR / meta["file"]
+    if not json_path.exists():
+        raise HTTPException(404, f"File workflow non trovato: {meta['file']}")
+    return FileResponse(
+        path=str(json_path),
+        media_type="application/json",
+        filename=meta["file"],
+        headers={"Content-Disposition": f'attachment; filename="{meta["file"]}"'},
+    )
 
 
 @router.get("/{workflow_id}")

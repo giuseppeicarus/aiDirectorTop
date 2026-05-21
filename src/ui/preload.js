@@ -2,7 +2,7 @@
  * Preload — espone i canali IPC al renderer in modo sicuro via contextBridge.
  */
 
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('studio', {
   // Projects
@@ -10,7 +10,8 @@ contextBridge.exposeInMainWorld('studio', {
     create:     (data)  => ipcRenderer.invoke('project:create', data),
     list:       ()      => ipcRenderer.invoke('project:list'),
     get:        (id)    => ipcRenderer.invoke('project:get', id),
-    delete:     (id)    => ipcRenderer.invoke('project:delete', id),
+    delete:     (id, deleteMedia = false) => ipcRenderer.invoke('project:delete', id, deleteMedia),
+    mediaCount: (id)                      => ipcRenderer.invoke('project:media-count', id),
     storyboard: (id)    => ipcRenderer.invoke('project:storyboard', id),
   },
 
@@ -26,22 +27,32 @@ contextBridge.exposeInMainWorld('studio', {
 
   // Pipeline
   pipeline: {
-    run:   (req)  => ipcRenderer.invoke('pipeline:run', req),
-    state: (id)   => ipcRenderer.invoke('pipeline:state', id),
-    reset: (id)   => ipcRenderer.invoke('pipeline:reset', id),
+    run:    (req) => ipcRenderer.invoke('pipeline:run', req),
+    state:  (id)  => ipcRenderer.invoke('pipeline:state', id),
+    reset:  (id)  => ipcRenderer.invoke('pipeline:reset', id),
+    stop:       (id)          => ipcRenderer.invoke('pipeline:stop', id),
+    pause:      (id)          => ipcRenderer.invoke('pipeline:pause', id),
+    resume:     (id)          => ipcRenderer.invoke('pipeline:resume', id),
+    resetFrom:  (id, stage)   => ipcRenderer.invoke('pipeline:resetFrom', id, stage),
+    thumbnails: (req) => ipcRenderer.invoke('pipeline:thumbnails', req),
     onProgress: (cb) => {
       ipcRenderer.on('pipeline:progress', (_, data) => cb(data))
       return () => ipcRenderer.removeAllListeners('pipeline:progress')
+    },
+    onThumbnailProgress: (cb) => {
+      ipcRenderer.on('pipeline:thumbnail-progress', (_, data) => cb(data))
+      return () => ipcRenderer.removeAllListeners('pipeline:thumbnail-progress')
     },
   },
 
   // Workflow management
   workflow: {
-    list:   ()           => ipcRenderer.invoke('workflow:list'),
-    get:    (id)         => ipcRenderer.invoke('workflow:get', id),
-    create: (data)       => ipcRenderer.invoke('workflow:create', data),
-    save:   (id, data)   => ipcRenderer.invoke('workflow:save', id, data),
-    delete: (id)         => ipcRenderer.invoke('workflow:delete', id),
+    list:       ()              => ipcRenderer.invoke('workflow:list'),
+    get:        (id)            => ipcRenderer.invoke('workflow:get', id),
+    create:     (data)          => ipcRenderer.invoke('workflow:create', data),
+    save:       (id, data)      => ipcRenderer.invoke('workflow:save', id, data),
+    delete:     (id)            => ipcRenderer.invoke('workflow:delete', id),
+    exportJson: (id, json)      => ipcRenderer.invoke('workflow:export-json', id, json),
   },
 
   // Utilities
@@ -49,10 +60,97 @@ contextBridge.exposeInMainWorld('studio', {
     url: () => ipcRenderer.invoke('backend:url'),
   },
 
+  // Tools (standalone generation)
+  tools: {
+    run:     (req)  => ipcRenderer.invoke('tools:run', req),
+    enhance: (req)  => ipcRenderer.invoke('tools:enhance', req),
+    upload:  (path) => ipcRenderer.invoke('tools:upload', path),
+    media:   ()     => ipcRenderer.invoke('tools:media'),
+    pickImage: ()   => ipcRenderer.invoke('dialog:openImageFile'),
+    pickAudio: ()   => ipcRenderer.invoke('dialog:openAudioFile'),
+    onProgress: (cb) => {
+      ipcRenderer.on('tools:progress', (_, data) => cb(data))
+      return () => ipcRenderer.removeAllListeners('tools:progress')
+    },
+  },
+
+  // Media library upload from local path
+  media: {
+    upload: (filePath, opts) => ipcRenderer.invoke('media:uploadFile', filePath, opts),
+    saveAs: (filepath, filename) => ipcRenderer.invoke('media:saveAs', filepath, filename),
+  },
+
+  // Director Cinema
+  director: {
+    pickImage:    ()          => ipcRenderer.invoke('dialog:openImageFile'),
+    pickAudio:    ()          => ipcRenderer.invoke('dialog:openAudioFile'),
+    uploadMedia:  (filePath, opts) => ipcRenderer.invoke('media:uploadFile', filePath, opts),
+    getWorkflows: ()          => ipcRenderer.invoke('director:workflows'),
+    enhance:      (req)       => ipcRenderer.invoke('director:enhance', req),
+    generate: (params, onProgress) => {
+      const listener = (_, data) => onProgress(data)
+      ipcRenderer.on('director:progress', listener)
+      return ipcRenderer.invoke('director:generate', params).finally(() => {
+        ipcRenderer.removeListener('director:progress', listener)
+      })
+    },
+  },
+
+  // CreateReel — brief + reference images + vision LLM
+  reel: {
+    pickImages:      ()              => ipcRenderer.invoke('reel:pickImages'),
+    copyReferenceFiles: (paths, catalogProjectId) =>
+      ipcRenderer.invoke('reel:copyReferenceFiles', paths, catalogProjectId),
+    saveReferenceBlob: (payload) =>
+      ipcRenderer.invoke('reel:saveReferenceBlob', payload),
+    readImageLocal:  (path)          => ipcRenderer.invoke('trailer:readImageLocal', path),
+    fetchImageUrl:   (url)           => ipcRenderer.invoke('trailer:fetchImageUrl', url),
+    projectStorage:  (projectId)     => ipcRenderer.invoke('reel:projectStorage', projectId),
+    generate: (params, onProgress) => {
+      const listener = (_, data) => onProgress(data)
+      ipcRenderer.on('reel:progress', listener)
+      return ipcRenderer.invoke('reel:generate', params).finally(() => {
+        ipcRenderer.removeListener('reel:progress', listener)
+      })
+    },
+  },
+
+  // Trailer Generator
+  trailer: {
+    pickAudio:       ()              => ipcRenderer.invoke('trailer:pickAudio'),
+    analyze:         (req)           => ipcRenderer.invoke('trailer:analyze', req),
+    readAudioBuffer: (path)          => ipcRenderer.invoke('trailer:readAudioBuffer', path),
+    readImageLocal:  (path)          => ipcRenderer.invoke('trailer:readImageLocal', path),
+    fetchImageUrl:   (url)           => ipcRenderer.invoke('trailer:fetchImageUrl', url),
+    projectStorage:  (projectId)     => ipcRenderer.invoke('trailer:projectStorage', projectId),
+    audioStreamUrl: (path)          => path
+      ? `http://127.0.0.1:8765/api/trailer/source?path=${encodeURIComponent(path)}`
+      : null,
+    generate: (params, onProgress) => {
+      const listener = (_, data) => onProgress(data)
+      ipcRenderer.on('trailer:progress', listener)
+      return ipcRenderer.invoke('trailer:generate', params).finally(() => {
+        ipcRenderer.removeListener('trailer:progress', listener)
+      })
+    },
+  },
+
   // Shell utilities
   shell: {
     openPath: (p) => ipcRenderer.invoke('shell:openPath', p),
+    /** Percorso assoluto da File (drag-drop / input); Electron 32+ non espone più file.path. */
+    pathFromFile: (file) => {
+      if (!file) return null
+      try {
+        const p = webUtils.getPathForFile(file)
+        if (p) return p
+      } catch { /* ignore */ }
+      return file.path || null
+    },
   },
+
+  // Native notifications (Electron Notification API, più affidabile su Windows)
+  notify: (title, body) => ipcRenderer.invoke('notify', { title, body }),
 
   // Frame Cut Optimizer
   frameCut: {

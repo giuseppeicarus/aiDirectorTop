@@ -47,8 +47,8 @@ export const useProjectStore = create((set, get) => ({
     }
   },
 
-  deleteProject: async (id) => {
-    await window.studio.project.delete(id)
+  deleteProject: async (id, deleteMedia = false) => {
+    await window.studio.project.delete(id, deleteMedia)
     set(s => ({ projects: s.projects.filter(p => p.id !== id) }))
   },
 
@@ -61,6 +61,7 @@ let _evtCounter = 0
 
 export const usePipelineStore = create((set, get) => ({
   stage: 'idle',
+  paused: false,
   totalProgress: 0,
   stageProgress: 0,
   message: '',
@@ -75,6 +76,7 @@ export const usePipelineStore = create((set, get) => ({
   startPipeline: async (req) => {
     set({
       stage: 'story_analysis',
+      paused: false,
       totalProgress: 0,
       logs: [],
       events: [],
@@ -85,15 +87,32 @@ export const usePipelineStore = create((set, get) => ({
       finalVideoPath: null,
     })
 
+    const sendNotify = (title, body) => {
+      if (window.studio?.notify) {
+        window.studio.notify(title, body).catch(() => {})
+      } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(title, { body })
+      }
+    }
+
     const cleanup = window.studio.pipeline.onProgress((data) => {
       if (data.done) {
-        set({ stage: 'done', totalProgress: 1, currentLLM: null })
+        set({ stage: 'done', totalProgress: 1, currentLLM: null, paused: false })
+        sendNotify('CinematicAI Studio', 'Pipeline completata con successo!')
+        cleanup()
+        return
+      }
+      if (data.stopped) {
+        set({ stage: 'idle', currentLLM: null, paused: false })
+        get().addLog('Pipeline interrotta dall\'utente')
+        sendNotify('CinematicAI Studio', 'Pipeline interrotta')
         cleanup()
         return
       }
       if (data.error) {
-        set({ stage: 'error', error: data.error, currentLLM: null })
+        set({ stage: 'error', error: data.error, currentLLM: null, paused: false })
         get().addLog(`ERRORE: ${data.error}`)
+        sendNotify('CinematicAI Studio', `Errore pipeline: ${data.error}`)
         cleanup()
         return
       }
@@ -135,6 +154,15 @@ export const usePipelineStore = create((set, get) => ({
         if (eventType === 'stage_complete') {
           update.currentLLM = null
         }
+        if (eventType === 'paused') {
+          update.paused = true
+        }
+        if (eventType === 'resumed') {
+          update.paused = false
+        }
+        if (eventType === 'stopped') {
+          update.paused = false
+        }
 
         if (data.artifact_path && data.shot_id) {
           if (data.stage === 'frame_gen') {
@@ -172,7 +200,27 @@ export const usePipelineStore = create((set, get) => ({
 
   resetPipeline: async (projectId) => {
     await window.studio.pipeline.reset(projectId)
-    set({ stage: 'idle', totalProgress: 0, logs: [], events: [], currentLLM: null, frames: {}, clips: {}, error: null })
+    set({ stage: 'idle', paused: false, totalProgress: 0, logs: [], events: [], currentLLM: null, frames: {}, clips: {}, error: null })
+  },
+
+  resetPipelineFrom: async (projectId, stage) => {
+    const result = await window.studio.pipeline.resetFrom(projectId, stage)
+    set({ stage: 'idle', paused: false, totalProgress: 0, logs: [], events: [], currentLLM: null, frames: {}, clips: {}, error: null })
+    return result
+  },
+
+  stopPipeline: async (projectId) => {
+    try { await window.studio.pipeline.stop(projectId) } catch { /* already stopped */ }
+  },
+
+  pausePipeline: async (projectId) => {
+    await window.studio.pipeline.pause(projectId)
+    set({ paused: true })
+  },
+
+  resumePipeline: async (projectId) => {
+    await window.studio.pipeline.resume(projectId)
+    set({ paused: false })
   },
 
   addLog: (msg) => set(s => ({

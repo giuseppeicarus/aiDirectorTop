@@ -32,6 +32,7 @@ async def init_db() -> None:
     """Crea tutte le tabelle se non esistono."""
     # Import modelli per registrarli in Base.metadata
     from src.core.models import project  # noqa: F401
+    from src.core.models import media    # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -44,6 +45,8 @@ _NEW_COLUMNS = [
     ("lyrics",                "TEXT"),
     ("audio_analysis_json",   "TEXT"),
     ("mode",                  "TEXT DEFAULT 'full_auto'"),
+    ("workflows_json",        "TEXT"),
+    ("audio_start_sec",       "REAL DEFAULT 0.0"),
 ]
 
 

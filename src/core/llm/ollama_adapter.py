@@ -31,6 +31,7 @@ class OllamaAdapter(BaseLLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> dict:
+        system = self._inject_language(system)
         prompt = f"{system}\n\n{user}"
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
@@ -83,6 +84,39 @@ class OllamaAdapter(BaseLLMAdapter):
         except Exception:
             return False
 
-    def _parse_json(self, raw: str) -> dict:
-        clean = re.sub(r"```json?\n?", "", raw).replace("```", "").strip()
-        return json.loads(clean)
+    def _parse_json(self, raw: str):
+        raw = self._strip_reasoning(raw)
+        clean = re.sub(r"```json?\s*", "", raw).replace("```", "").strip()
+        try:
+            return json.loads(clean)
+        except json.JSONDecodeError:
+            pass
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            start = clean.find(start_char)
+            if start == -1:
+                continue
+            depth = 0
+            in_str = False
+            esc = False
+            for i, ch in enumerate(clean[start:], start):
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\' and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == start_char:
+                    depth += 1
+                elif ch == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(clean[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+        raise ValueError(f"No valid JSON found in LLM response: {raw[:200]!r}")

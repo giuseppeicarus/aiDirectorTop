@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Film, Plus, Trash2, Play, Clock } from 'lucide-react'
 import { useProjectStore } from '../stores'
@@ -22,8 +22,31 @@ const STATUS_COLOR = {
 export default function ProjectListScreen() {
   const { projects, loading, loadProjects, deleteProject } = useProjectStore()
   const navigate = useNavigate()
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  // { id, title, mediaCount, mediaSize }
 
   useEffect(() => { loadProjects() }, [])
+
+  async function handleDeleteClick(e, project) {
+    e.stopPropagation()
+    try {
+      const info = await window.studio.project.mediaCount(project.id)
+      setDeleteConfirm({
+        id: project.id,
+        title: project.title,
+        mediaCount: info.count,
+        mediaSize: info.size_bytes,
+      })
+    } catch {
+      setDeleteConfirm({ id: project.id, title: project.title, mediaCount: 0, mediaSize: 0 })
+    }
+  }
+
+  async function confirmDelete(withMedia) {
+    if (!deleteConfirm) return
+    await deleteProject(deleteConfirm.id, withMedia)
+    setDeleteConfirm(null)
+  }
 
   if (loading) return (
     <div className="flex items-center justify-center h-full text-[#9090a0]">
@@ -78,7 +101,7 @@ export default function ProjectListScreen() {
                   </span>
                 </div>
                 <button
-                  onClick={(e) => { e.stopPropagation(); deleteProject(project.id) }}
+                  onClick={(e) => handleDeleteClick(e, project)}
                   className="p-1.5 text-[#9090a0] hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
                 >
                   <Trash2 size={14} />
@@ -114,6 +137,61 @@ export default function ProjectListScreen() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+
+      {deleteConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setDeleteConfirm(null)}
+        >
+          <div
+            className="bg-[#0a0a0f] border border-[#2a2a38] rounded-xl p-7 w-[420px] shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h2 className="font-['Playfair_Display'] text-lg text-[#f0ede8] mb-2">
+              Elimina progetto
+            </h2>
+            <p className="text-sm text-[#9090a0] mb-5">
+              Stai eliminando <span className="text-[#e8e4dd] font-medium">"{deleteConfirm.title}"</span>.
+              Questa azione non può essere annullata.
+            </p>
+
+            {deleteConfirm.mediaCount > 0 && (
+              <div className="bg-[#16161f] border border-[#2a2a38] rounded-lg p-4 mb-5 text-sm text-[#9090a0]">
+                Questo progetto ha{' '}
+                <span className="text-[#c9a84c] font-medium">{deleteConfirm.mediaCount} media generati</span>
+                {' '}({(deleteConfirm.mediaSize / 1024 / 1024).toFixed(1)} MB).
+                <br />Vuoi eliminarli assieme al progetto?
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2">
+              {deleteConfirm.mediaCount > 0 && (
+                <button
+                  onClick={() => confirmDelete(true)}
+                  className="w-full py-2 rounded-md text-sm font-medium bg-red-500/15 hover:bg-red-500/25
+                             text-red-400 border border-red-500/30 transition-colors"
+                >
+                  Elimina progetto + {deleteConfirm.mediaCount} media
+                </button>
+              )}
+              <button
+                onClick={() => confirmDelete(false)}
+                className="w-full py-2 rounded-md text-sm font-medium bg-[#1e1e2a] hover:bg-[#252533]
+                           text-[#e8e4dd] border border-[#252533] transition-colors"
+              >
+                {deleteConfirm.mediaCount > 0 ? 'Elimina solo il progetto' : 'Elimina progetto'}
+              </button>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="w-full py-2 rounded-md text-sm text-[#9090a0] hover:text-[#e8e4dd] transition-colors"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

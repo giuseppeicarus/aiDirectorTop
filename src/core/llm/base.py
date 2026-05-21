@@ -38,6 +38,20 @@ Respond ONLY with a valid JSON object starting with { and ending with }."""
         """Genera JSON generico con i prompt forniti. Base di tutta la pipeline cinematic."""
         ...
 
+    async def generate_json_with_images(
+        self,
+        system: str,
+        user: str,
+        *,
+        images: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> dict:
+        """JSON con input multimodale (images: [{mime, b64}]). Override nei provider vision-capable."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} non supporta analisi immagini — usa OpenAI o Anthropic."
+        )
+
     @abstractmethod
     async def generate_storyboard(self, req: StoryboardRequest) -> dict:
         """Genera uno storyboard completo e restituisce il dict JSON validato."""
@@ -52,6 +66,33 @@ Respond ONLY with a valid JSON object starting with { and ending with }."""
     async def health_check(self) -> bool:
         """Ritorna True se il provider è raggiungibile."""
         ...
+
+    @staticmethod
+    def _strip_reasoning(raw: str) -> str:
+        """Remove reasoning/thinking blocks emitted by Qwen3, DeepSeek-R1, etc."""
+        from src.core.llm.generation_prompt_sanitize import strip_llm_reasoning
+        return strip_llm_reasoning(raw)
+
+    @staticmethod
+    def _inject_language(system: str) -> str:
+        """Append language directive to system prompt based on global config."""
+        try:
+            from src.core.config import get_config
+            lang = get_config().language.llm_language
+            if not lang:
+                return system
+        except Exception:
+            return system
+        directive = (
+            f"\n\nLANGUAGE DIRECTIVE — MANDATORY: "
+            f"Write ALL narrative text in {lang}: scene descriptions, emotional notes, "
+            f"story analysis, visual direction, character actions, continuity reports, "
+            f"titles, themes, and any human-readable annotations. "
+            f"EXCEPTION: Image/video generation prompts (first_frame_prompt, last_frame_prompt, "
+            f"motion_prompt, negative_prompt) must remain in English for optimal AI model output. "
+            f"JSON keys must always remain in English."
+        )
+        return system + directive
 
     def build_user_prompt(self, req: StoryboardRequest) -> str:
         return f"""Create a {req.duration_sec}-second cinematic storyboard.

@@ -39,6 +39,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> dict:
+        system = self._inject_language(system)
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=max_tokens,
@@ -47,6 +48,43 @@ class AnthropicAdapter(BaseLLMAdapter):
             messages=[{"role": "user", "content": user}],
         )
         return self._parse_json(response.content[0].text)
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    async def generate_json_with_images(
+        self,
+        system: str,
+        user: str,
+        *,
+        images: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> dict:
+        system = self._inject_language(system)
+        blocks: list = [{"type": "text", "text": user}]
+        for img in images:
+            mime = img.get("mime") or "image/png"
+            b64 = img.get("b64") or ""
+            if not b64:
+                continue
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": b64,
+                },
+            })
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            messages=[{"role": "user", "content": blocks}],
+        )
+        text = "".join(
+            b.text for b in response.content if getattr(b, "type", None) == "text"
+        )
+        return self._parse_json(text)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
     async def generate_storyboard(self, req: StoryboardRequest) -> dict:
@@ -81,6 +119,39 @@ class AnthropicAdapter(BaseLLMAdapter):
         except Exception:
             return False
 
-    def _parse_json(self, raw: str) -> dict:
-        clean = re.sub(r"```json?\n?", "", raw).replace("```", "").strip()
-        return json.loads(clean)
+    def _parse_json(self, raw: str):
+        raw = self._strip_reasoning(raw)
+        clean = re.sub(r"```json?\s*", "", raw).replace("```", "").strip()
+        try:
+            return json.loads(clean)
+        except json.JSONDecodeError:
+            pass
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            start = clean.find(start_char)
+            if start == -1:
+                continue
+            depth = 0
+            in_str = False
+            esc = False
+            for i, ch in enumerate(clean[start:], start):
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\' and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == start_char:
+                    depth += 1
+                elif ch == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(clean[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+        raise ValueError(f"No valid JSON found in LLM response: {raw[:200]!r}")

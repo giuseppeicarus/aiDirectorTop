@@ -5,10 +5,11 @@ import {
   ChevronDown, ChevronUp, Cpu, BookOpen, Clapperboard, Camera,
   PenLine, ClipboardCheck, ArrowRight, Sparkles, AlertTriangle,
   Zap, ListVideo, Eye, EyeOff, Palette, Hash, Clock,
-  Users, ArrowUpRight,
+  Users, ArrowUpRight, Square, Pause,
 } from 'lucide-react'
 import { usePipelineStore, useProjectStore } from '../stores/index'
 import clsx from 'clsx'
+import { BACKEND_ORIGIN, pipelineFrameUrl } from '../utils/mediaUrl'
 
 // ── Stage metadata ────────────────────────────────────────────────────────────
 
@@ -43,7 +44,7 @@ function StageList({ currentStage, completedStages }) {
     <div className="space-y-0.5">
       {STAGE_META.map((meta, idx) => {
         const fromState = completedStages.includes(meta.key)
-        const done   = isDone || currentIdx > idx || fromState
+        const done   = fromState || (!isDone && currentIdx > idx)
         const active = meta.key === currentStage
         const { Icon } = meta
 
@@ -315,6 +316,40 @@ function StoryAnalysisResult({ data }) {
           <span className="text-[11px] text-[var(--text2)]">{data.color_mood}</span>
         </div>
       )}
+      {data.pacing_notes && (
+        <div className="mt-2">
+          <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider">Pacing narrativo</span>
+          <p className="text-[11px] text-[var(--text2)] leading-relaxed mt-1">{data.pacing_notes}</p>
+        </div>
+      )}
+      {data.lyric_beats?.length > 0 && (
+        <div className="mt-2">
+          <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider">Analisi lirica ({data.lyric_beats.length} beat)</span>
+          <div className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
+            {data.lyric_beats.map((b, i) => (
+              <div key={i} className="flex gap-2 text-[10px] px-2 py-1 rounded bg-[var(--bg3)]">
+                <span className="text-purple-400 font-mono shrink-0">{b.time_sec != null ? `${b.time_sec}s` : ''}</span>
+                <span className="text-[var(--text3)] shrink-0">{b.emotion}</span>
+                <span className="text-[var(--text2)] italic truncate">"{b.lyric_line}"</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {data.audio_timing?.length > 0 && (
+        <div className="mt-2">
+          <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider">Timing audio ({data.audio_timing.length} sezioni)</span>
+          <div className="mt-1 flex gap-1.5 flex-wrap">
+            {data.audio_timing.map((a, i) => (
+              <div key={i} className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--bg3)] font-mono">
+                <span className="text-[var(--gold)]">{a.section_start}s-{a.section_end}s</span>
+                <span className="text-[var(--text3)] ml-1">{a.energy}</span>
+                {a.suggested_shot_duration_sec && <span className="text-[var(--text2)] ml-1">~{a.suggested_shot_duration_sec}s/shot</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </SectionCard>
   )
 }
@@ -405,7 +440,7 @@ function ShotListResult({ shots }) {
   const visible = showAll ? shots : shots.slice(0, 12)
 
   return (
-    <SectionCard title={`Shot List — ${shots.length} inquadrature`} icon={Camera} color="#34d399" defaultOpen={false}>
+    <SectionCard title={`Shot List — ${shots.length} inquadrature`} icon={Camera} color="#34d399" defaultOpen={true}>
       <div className="mt-2 space-y-1">
         {visible.map((shot, i) => (
           <ShotRow key={i} shot={shot} idx={i} />
@@ -457,11 +492,25 @@ function ShotRow({ shot, idx }) {
             {shot.transition_in && <span>→ {shot.transition_in}</span>}
             {shot.emotion && <span className="text-purple-300">❤ {shot.emotion}</span>}
           </div>
+          {shot.first_frame_source === 'from_prev_last' && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/30 border border-blue-500/20 text-blue-300 font-mono">
+              ↩ usa last frame precedente
+            </span>
+          )}
           {shot.first_frame?.prompt && (
             <div className="mt-1">
               <span className="text-[var(--text3)]">Prompt: </span>
               <span className="text-[var(--text2)]">{shot.first_frame.prompt.slice(0, 200)}</span>
             </div>
+          )}
+          {shot.last_frame?.prompt && (
+            <div className="mt-0.5">
+              <span className="text-[var(--text3)]">Last frame: </span>
+              <span className="text-[var(--text2)]">{shot.last_frame.prompt.slice(0, 150)}</span>
+            </div>
+          )}
+          {shot.motion_prompt && (
+            <div className="mt-0.5 italic text-purple-300 text-[10px]">↪ {shot.motion_prompt.slice(0, 100)}</div>
           )}
         </div>
       )}
@@ -469,41 +518,125 @@ function ShotRow({ shot, idx }) {
   )
 }
 
+function PromptSummaryResult({ shots }) {
+  if (!shots?.length) return null
+  const withPrompts = shots.filter(s => s.first_frame?.prompt)
+  const withLastFrame = shots.filter(s => s.last_frame?.prompt)
+  if (!withPrompts.length) return null
+  return (
+    <SectionCard title={`Prompt Visivi — ${withPrompts.length} first·frame · ${withLastFrame.length} last·frame`} icon={PenLine} color="#f59e0b" defaultOpen={true}>
+      <div className="mt-2 space-y-1.5">
+        {withPrompts.slice(0, 4).map((shot, i) => (
+          <div key={i} className="px-2 py-1.5 rounded bg-[var(--bg3)] border border-[var(--border)]">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-[10px] font-mono text-amber-400">{shot.shot_id}</span>
+              {shot.camera?.shot_type && (
+                <span className="text-[10px] font-mono text-[var(--text3)]">{shot.camera.shot_type}</span>
+              )}
+            </div>
+            <p className="text-[10px] text-[var(--text2)] leading-snug">{(shot.first_frame?.prompt || '').slice(0, 130)}…</p>
+            {shot.motion_prompt && (
+              <p className="text-[10px] text-[var(--text3)] italic mt-0.5">↪ {shot.motion_prompt.slice(0, 80)}</p>
+            )}
+          </div>
+        ))}
+        {withPrompts.length > 4 && (
+          <p className="text-[10px] text-[var(--text3)] text-center font-mono">+ {withPrompts.length - 4} altri shot</p>
+        )}
+      </div>
+    </SectionCard>
+  )
+}
+
 function ContinuityResult({ data }) {
   if (!data) return null
+  const [showAll, setShowAll] = useState(false)
+  const errors = data.errors || []
+  const visible = showAll ? errors : errors.slice(0, 5)
+
   return (
-    <SectionCard title="Rapporto Continuità" icon={ClipboardCheck} color="#f87171" defaultOpen={false}>
-      <div className="mt-2">
+    <SectionCard title="Rapporto Continuità" icon={ClipboardCheck} color="#f87171" defaultOpen={true}>
+      <div className="mt-2 space-y-3">
+        {/* Status badge */}
         <div className={clsx(
-          'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium mb-3',
+          'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
           data.approved
             ? 'bg-green-900/30 text-green-300 border border-green-500/20'
             : 'bg-red-900/30 text-red-300 border border-red-500/20'
         )}>
           {data.approved ? <CheckCircle size={11} /> : <XCircle size={11} />}
-          {data.approved ? 'Approvata' : `${data.critical_count || 0} errori critici`}
+          {data.approved
+            ? 'Approvata — nessun errore critico'
+            : `${data.critical_count || 0} critici · ${data.warning_count || 0} warning`}
         </div>
-        {data.errors?.length > 0 && (
+
+        {/* Checks performed */}
+        {data.checks_performed?.length > 0 && (
+          <div>
+            <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider">Controlli eseguiti</span>
+            <div className="flex gap-1 mt-1 flex-wrap">
+              {data.checks_performed.map(c => (
+                <span key={c} className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg3)] border border-[var(--border)] text-[var(--text2)] font-mono">{c}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* LLM analysis summary */}
+        {data.analysis_summary && (
+          <div className="px-2.5 py-2 rounded border border-[var(--border)] bg-[var(--bg3)]">
+            <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider block mb-1">Ragionamento AI</span>
+            <p className="text-[11px] text-[var(--text2)] leading-relaxed">{data.analysis_summary}</p>
+          </div>
+        )}
+
+        {/* Errors */}
+        {errors.length > 0 && (
           <div className="space-y-1.5">
-            {data.errors.map((err, i) => (
+            <span className="text-[10px] text-[var(--text3)] uppercase tracking-wider">{errors.length} Problemi trovati</span>
+            {visible.map((err, i) => (
               <div key={i} className={clsx(
-                'px-2.5 py-2 rounded border text-[11px]',
+                'px-2.5 py-2 rounded border text-[11px] space-y-1',
                 err.severity === 'critical'
-                  ? 'border-red-500/20 bg-red-900/10'
-                  : 'border-amber-500/20 bg-amber-900/10'
+                  ? 'border-red-500/30 bg-red-900/10'
+                  : err.severity === 'warning'
+                  ? 'border-amber-500/30 bg-amber-900/10'
+                  : 'border-[var(--border)] bg-[var(--bg3)]'
               )}>
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className={clsx('font-mono text-[10px]', err.severity === 'critical' ? 'text-red-400' : 'text-amber-400')}>
+                <div className="flex items-center gap-2">
+                  <span className={clsx('font-mono text-[10px] uppercase', {
+                    'text-red-400': err.severity === 'critical',
+                    'text-amber-400': err.severity === 'warning',
+                    'text-[var(--text3)]': err.severity === 'suggestion',
+                  })}>
                     {err.severity}
                   </span>
-                  {err.shot_id && <span className="text-[var(--text3)] font-mono text-[10px]">{err.shot_id}</span>}
+                  <span className="text-[10px] px-1 py-0.5 rounded bg-[var(--bg0)] text-[var(--text3)] font-mono border border-[var(--border)]">
+                    {err.error_type}
+                  </span>
+                  {err.shot_pair && (
+                    <span className="text-[10px] text-[var(--text3)] font-mono ml-auto">{err.shot_pair}</span>
+                  )}
                 </div>
-                <p className="text-[var(--text2)]">{err.description || err.message || JSON.stringify(err)}</p>
+                {err.description && <p className="text-[var(--text2)]">{err.description}</p>}
+                {err.reasoning && (
+                  <p className="text-[10px] text-[var(--text3)] italic border-l-2 border-[var(--border)] pl-2">{err.reasoning}</p>
+                )}
                 {err.correction && (
-                  <p className="text-green-400 mt-0.5">↳ {err.correction}</p>
+                  <p className="text-[11px] text-green-400 flex items-start gap-1">
+                    <span className="shrink-0">↳</span> {err.correction}
+                  </p>
                 )}
               </div>
             ))}
+            {errors.length > 5 && (
+              <button
+                onClick={() => setShowAll(v => !v)}
+                className="w-full py-1 text-[10px] text-[var(--text3)] hover:text-[var(--text2)] font-mono transition-colors"
+              >
+                {showAll ? 'Mostra meno' : `Mostra tutti i ${errors.length} problemi →`}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -532,26 +665,190 @@ function ResultsTab({ pipelineData }) {
       <StoryAnalysisResult data={data.story_analysis} />
       <NarrativeArcResult data={data.story_arc} />
       <ShotListResult shots={data.shot_list} />
+      <PromptSummaryResult shots={data.shot_list} />
       <ContinuityResult data={data.continuity_report} />
     </div>
   )
 }
 
-// ── Storyboard review banner (shown between LLM stages and production) ────────
+// ── Storyboard review banner ──────────────────────────────────────────────────
 
-function StoryboardReviewBanner({ mode, onStartProduction, onOpenCopilot }) {
+function StoryboardReviewBanner({ mode, pipelineData, projectId, backendUrl, onStartProduction, onOpenCopilot, onRerunFrom }) {
+  const [genThumbs, setGenThumbs] = useState(false)
+  const [resolution, setResolution] = useState('512x288')
+  const [thumbsLoading, setThumbsLoading] = useState(false)
+  const [thumbsProgress, setThumbsProgress] = useState(0)
+  const [thumbnails, setThumbnails] = useState([])
+  const [thumbsError, setThumbsError] = useState(null)
+
+  const shots = pipelineData?.data?.shot_list || []
+  const scenes = (pipelineData?.data?.story_arc?.sequences || [])
+    .reduce((a, seq) => a + (seq.scenes?.length || 0), 0)
+  const promptCount = shots.filter(s => s.first_frame?.prompt).length
+  const shotListEmpty = shots.length === 0
+
+  const resolutionOptions = [
+    { value: '320x180',  label: 'Rapida (320×180)' },
+    { value: '512x288',  label: 'Standard (512×288)' },
+    { value: '768x432',  label: 'Alta (768×432)' },
+  ]
+
+  async function handleGenThumbs() {
+    if (promptCount === 0) {
+      setThumbsError('Nessun prompt trovato nella shot list. Riesegui dal Cinematographer.')
+      return
+    }
+    setThumbsLoading(true)
+    setThumbsProgress(0)
+    setThumbnails([])
+    setThumbsError(null)
+    const [w, h] = resolution.split('x').map(Number)
+    const total = promptCount
+    let done = 0
+
+    const cleanup = window.studio.pipeline.onThumbnailProgress((data) => {
+      if (data.done) {
+        setThumbnails(data.thumbnails || [])
+        setThumbsLoading(false)
+        cleanup()
+      } else if (data.error) {
+        setThumbsError(data.error)
+        setThumbsLoading(false)
+        cleanup()
+      } else if (data.artifact_path) {
+        done++
+        setThumbsProgress(total > 0 ? done / total : 1)
+      }
+    })
+
+    try {
+      await window.studio.pipeline.thumbnails({ project_id: projectId, width: w, height: h })
+    } catch (e) {
+      setThumbsError(e.message)
+      setThumbsLoading(false)
+      cleanup()
+    }
+  }
+
   return (
     <div className="rounded-xl border-2 border-[var(--gold)]/50 bg-[var(--gold)]/5 p-4 mb-3 shrink-0">
       <div className="flex items-center gap-2 mb-2">
         <CheckCircle size={15} className="text-[var(--gold)]" />
         <span className="text-sm font-semibold text-[var(--gold)]">Storyboard completato</span>
       </div>
-      <p className="text-[11px] text-[var(--text2)] leading-relaxed mb-3">
-        {mode === 'copilot'
-          ? 'Revisiona lo storyboard nella scheda Risultati. Quando sei pronto apri il Copilot per procedere shot per shot.'
-          : 'Revisiona lo storyboard nella scheda Risultati. Quando sei pronto avvia la produzione automatica di frame e video.'}
-      </p>
-      {mode === 'copilot' ? (
+
+      <div className="flex gap-2 mb-3 flex-wrap">
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg3)] border border-[var(--border)] text-[var(--text2)] font-mono">
+          {shots.length} shot
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg3)] border border-[var(--border)] text-[var(--text2)] font-mono">
+          {scenes} scene
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg3)] border border-[var(--border)] text-[var(--text2)] font-mono">
+          {promptCount} prompt
+        </span>
+      </div>
+
+      <div className="h-px bg-[var(--border)] mb-3" />
+
+      {/* Warning: shot list empty — offer partial re-run */}
+      {shotListEmpty && (
+        <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded border border-[var(--red)]/40 bg-[var(--red)]/5">
+          <AlertTriangle size={13} className="text-[var(--red)] shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] text-[var(--red)] font-semibold">Shot list vuota</p>
+            <p className="text-[10px] text-[var(--text3)] leading-snug mt-0.5">
+              Il Cinematographer non ha generato shot (risposta LLM non parsabile). Riesegui da questo stage.
+            </p>
+          </div>
+          {onRerunFrom && (
+            <button
+              onClick={() => onRerunFrom('shot_list')}
+              className="shrink-0 text-[10px] px-2 py-1 rounded border border-[var(--red)]/40 text-[var(--red)] hover:bg-[var(--red)]/10 font-mono whitespace-nowrap"
+            >
+              Riesegui Cinematographer
+            </button>
+          )}
+        </div>
+      )}
+
+      {!shotListEmpty && (
+        <label className="flex items-center gap-2 cursor-pointer mb-2">
+          <input
+            type="checkbox"
+            checked={genThumbs}
+            onChange={e => setGenThumbs(e.target.checked)}
+            className="w-3.5 h-3.5 accent-[var(--gold)]"
+          />
+          <span className="text-xs text-[var(--text2)]">Genera anteprime first frame (ComfyUI)</span>
+        </label>
+      )}
+
+      {!shotListEmpty && genThumbs && (
+        <div className="mb-3 space-y-2">
+          <div className="flex gap-1.5">
+            {resolutionOptions.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setResolution(opt.value)}
+                className={clsx(
+                  'text-[10px] px-2 py-1 rounded border font-mono transition-colors',
+                  resolution === opt.value
+                    ? 'border-[var(--gold)] bg-[var(--gold)]/10 text-[var(--gold)]'
+                    : 'border-[var(--border)] text-[var(--text3)] hover:text-[var(--text2)]'
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {!thumbsLoading && thumbnails.length === 0 && (
+            <button
+              onClick={handleGenThumbs}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono border border-[var(--border)] text-[var(--text2)] hover:text-[var(--gold)] hover:border-[var(--gold)]/40 transition-colors"
+            >
+              <Sparkles size={11} />
+              Genera Anteprime
+            </button>
+          )}
+
+          {thumbsLoading && (
+            <div className="space-y-1">
+              <div className="h-1.5 rounded-full bg-[var(--bg3)] overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.round(thumbsProgress * 100)}%`, background: 'linear-gradient(90deg, var(--gold), var(--gold2))' }}
+                />
+              </div>
+              <p className="text-[10px] text-[var(--text3)] font-mono">
+                Generando... {Math.round(thumbsProgress * shots.filter(s => s.first_frame?.prompt).length)}/{shots.filter(s => s.first_frame?.prompt).length}
+              </p>
+            </div>
+          )}
+
+          {thumbsError && (
+            <p className="text-[10px] text-[var(--red)] font-mono">{thumbsError}</p>
+          )}
+
+          {thumbnails.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {thumbnails.map((thumb, i) => (
+                <img
+                  key={i}
+                  src={pipelineFrameUrl(projectId, thumb.filename)}
+                  alt={thumb.shot_id}
+                  className="w-24 h-16 object-cover rounded border border-[var(--border)] shrink-0"
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="h-px bg-[var(--border)] mb-3" />
+
+      {!shotListEmpty && (mode === 'copilot' ? (
         <button
           onClick={onOpenCopilot}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors"
@@ -570,7 +867,7 @@ function StoryboardReviewBanner({ mode, onStartProduction, onOpenCopilot }) {
           <Zap size={13} />
           Avvia Produzione Automatica
         </button>
-      )}
+      ))}
     </div>
   )
 }
@@ -583,33 +880,31 @@ export default function PipelineScreen() {
 
   const { currentProject, loadProject } = useProjectStore()
   const {
-    stage, totalProgress, stageProgress, message,
+    stage, paused, totalProgress, stageProgress, message,
     events, currentLLM,
     frames, clips, finalVideoPath, error,
-    startPipeline, resetPipeline,
+    startPipeline, resetPipeline, resetPipelineFrom, stopPipeline, pausePipeline, resumePipeline,
   } = usePipelineStore()
 
   const [tab, setTab] = useState('feed')
   const [pipelineData, setPipelineData] = useState(null)
   const [loadingState, setLoadingState] = useState(true)
+  const backendUrl = BACKEND_ORIGIN
 
   const feedRef = useRef(null)
 
-  // Load correct project for this id
   useEffect(() => {
     if (!currentProject || currentProject.id !== id) {
       loadProject(id)
     }
   }, [id])
 
-  // Fetch saved pipeline state from backend
   useEffect(() => {
     setLoadingState(true)
     window.studio.pipeline.state(id)
       .then(data => {
         setPipelineData(data)
         setLoadingState(false)
-        // If pipeline already has results, default to results tab
         if (data?.completed_stages?.length > 0 && stage === 'idle') {
           setTab('results')
         }
@@ -617,26 +912,22 @@ export default function PipelineScreen() {
       .catch(() => setLoadingState(false))
   }, [id])
 
-  // When pipeline finishes, refresh state and switch to results
+  // Fix 1: also refresh pipelineData on stage === 'error'
   useEffect(() => {
-    if (stage === 'done') {
+    if (stage === 'done' || stage === 'error') {
       window.studio.pipeline.state(id)
-        .then(data => {
-          setPipelineData(data)
-          setTab('results')  // show results when done (storyboard or full)
-        })
+        .then(data => { setPipelineData(data) })
         .catch(() => {})
+      if (stage === 'done') setTab('results')
     }
   }, [stage, id])
 
-  // Auto-switch to feed when pipeline starts
   useEffect(() => {
     if (!['idle', 'done', 'error'].includes(stage)) {
       setTab('feed')
     }
   }, [stage])
 
-  // Auto-scroll event feed
   useEffect(() => {
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight
   }, [events])
@@ -649,6 +940,11 @@ export default function PipelineScreen() {
       try { audioAnalysis = JSON.parse(currentProject.audio_analysis_json) } catch {}
     }
 
+    let workflows = null
+    if (currentProject.workflows_json) {
+      try { workflows = JSON.parse(currentProject.workflows_json) } catch {}
+    }
+
     startPipeline({
       project_id:         id,
       title:              currentProject.title,
@@ -659,16 +955,18 @@ export default function PipelineScreen() {
       runtime_target_sec: currentProject.duration_sec || 60,
       lyrics:             currentProject.lyrics || null,
       audio_analysis:     audioAnalysis,
+      audio_start_sec:    currentProject.audio_start_sec || 0,
       mode:               currentProject.mode || 'full_auto',
+      workflows,
       phase,
     })
   }
 
-  function handleReset() {
-    resetPipeline(id).then(() => {
-      setPipelineData({ completed_stages: [], shot_states: {}, data: {} })
-      setTab('feed')
-    })
+  async function handleReset() {
+    if (isRunning) await stopPipeline(id).catch(() => {})
+    await resetPipeline(id)
+    setPipelineData({ completed_stages: [], shot_states: {}, data: {} })
+    setTab('feed')
   }
 
   const isRunning = !['idle', 'done', 'error'].includes(stage)
@@ -692,7 +990,6 @@ export default function PipelineScreen() {
           <span className="font-display text-sm text-[var(--text)]">Pipeline</span>
         </div>
 
-        {/* Project info */}
         {currentProject && (
           <div className="mb-3 px-2 py-2 rounded bg-[var(--bg3)] border border-[var(--border)]">
             <p className="text-[10px] text-[var(--text3)] truncate">{currentProject.genre}</p>
@@ -706,12 +1003,10 @@ export default function PipelineScreen() {
           </div>
         )}
 
-        {/* Stage list */}
         <div className="flex-1 mb-4 overflow-y-auto">
           <StageList currentStage={stage} completedStages={completedStages} />
         </div>
 
-        {/* Progress bar */}
         <div className="mb-4">
           <div className="flex justify-between text-xs text-[var(--text3)] mb-1">
             <span>Avanzamento</span>
@@ -731,9 +1026,9 @@ export default function PipelineScreen() {
           </div>
         </div>
 
-        {/* Controls */}
         <div className="space-y-2">
-          {stage === 'idle' && !storyboardDone && !isRunning && (
+          {/* Start button — only when idle and no storyboard yet */}
+          {stage === 'idle' && !storyboardDone && (
             <button
               onClick={() => handleStart('storyboard')}
               disabled={!projectReady}
@@ -744,35 +1039,58 @@ export default function PipelineScreen() {
               Avvia Storyboard
             </button>
           )}
-          {stage === 'idle' && productionDone && (
+
+          {/* Stop button — always visible while running */}
+          {isRunning && (
             <button
-              onClick={handleReset}
+              onClick={() => stopPipeline(id)}
+              className="w-full flex items-center justify-center gap-2 py-2 text-xs rounded font-mono border border-[var(--red)]/60 text-[var(--red)] hover:bg-[var(--red)]/10"
+            >
+              <Square size={12} /> Stop
+            </button>
+          )}
+
+          {/* Pause / Resume button */}
+          {isRunning && (
+            <button
+              onClick={() => paused ? resumePipeline(id) : pausePipeline(id)}
               className="w-full flex items-center justify-center gap-2 py-2 text-xs rounded font-mono border border-[var(--border)] text-[var(--text2)] hover:text-[var(--gold)]"
             >
-              <RotateCcw size={12} /> Ricomincia
+              {paused
+                ? <><Play size={12} /> Riprendi</>
+                : <><Pause size={12} /> Pausa</>}
             </button>
           )}
-          {stage === 'error' && (
+
+          {/* Paused indicator */}
+          {paused && isRunning && (
+            <div className="text-center text-[10px] text-[var(--amber)] py-0.5 font-mono animate-pulse">
+              In pausa — premi Riprendi
+            </div>
+          )}
+
+          {/* Reset — always visible when not running */}
+          {!isRunning && (
             <button
               onClick={handleReset}
-              className="w-full flex items-center justify-center gap-2 py-2 text-xs rounded font-mono border border-[var(--red)] text-[var(--red)]"
+              className={clsx(
+                'w-full flex items-center justify-center gap-2 py-2 text-xs rounded font-mono border',
+                stage === 'error'
+                  ? 'border-[var(--red)] text-[var(--red)]'
+                  : 'border-[var(--border)] text-[var(--text3)] hover:text-[var(--text2)]'
+              )}
             >
-              <RotateCcw size={12} /> Reset
+              <RotateCcw size={12} /> {stage === 'error' ? 'Reset' : 'Ricomincia'}
             </button>
           )}
+
           {stage === 'done' && !productionDone && (
             <div className="text-center text-[10px] text-[var(--green)] py-1 font-mono">
               Storyboard pronto — revisiona
             </div>
           )}
-          {isRunning && (
-            <div className="text-center text-[10px] text-[var(--text3)] py-1 font-mono animate-pulse">
-              Pipeline in esecuzione...
-            </div>
-          )}
         </div>
 
-        {/* Frame/clip stats */}
         {(frameCount > 0 || clipCount > 0) && (
           <div className="mt-3 pt-3 border-t border-[var(--border)] grid grid-cols-2 gap-2 text-center">
             <div>
@@ -786,7 +1104,6 @@ export default function PipelineScreen() {
           </div>
         )}
 
-        {/* Final video */}
         {finalVideoPath && (
           <div className="mt-2 px-2 py-1.5 rounded border border-[var(--green)]/30 bg-[var(--green)]/5">
             <div className="flex items-center gap-1.5 text-[var(--green)] mb-0.5">
@@ -800,7 +1117,6 @@ export default function PipelineScreen() {
 
       {/* ── Right: tabs + content ── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Tab bar + status */}
         <div className="flex items-center gap-3 mb-3 shrink-0">
           <div className="flex rounded-md border border-[var(--border)] overflow-hidden">
             <button
@@ -838,7 +1154,6 @@ export default function PipelineScreen() {
             </button>
           </div>
 
-          {/* Status message */}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg2)] flex-1 min-w-0">
             {stage === 'error'   ? <XCircle size={13} className="text-[var(--red)] shrink-0" />
              : stage === 'done'  ? <CheckCircle size={13} className="text-[var(--green)] shrink-0" />
@@ -854,16 +1169,24 @@ export default function PipelineScreen() {
           </div>
         </div>
 
-        {/* Storyboard review banner */}
         {showReview && (
           <StoryboardReviewBanner
             mode={projectMode}
+            pipelineData={pipelineData}
+            projectId={id}
+            backendUrl={backendUrl}
             onStartProduction={() => { handleStart('production'); setTab('feed') }}
             onOpenCopilot={() => navigate(`/projects/${id}/copilot`)}
+            onRerunFrom={async (stage) => {
+              await resetPipelineFrom(id, stage)
+              const data = await window.studio.pipeline.state(id)
+              setPipelineData(data)
+              setTab('feed')
+              handleStart('storyboard')
+            }}
           />
         )}
 
-        {/* Tab content */}
         {tab === 'feed' ? (
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
             <ActiveLLMBanner llm={currentLLM} />

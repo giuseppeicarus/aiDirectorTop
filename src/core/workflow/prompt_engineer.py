@@ -12,7 +12,7 @@ from src.core.config import get_config
 
 log = structlog.get_logger()
 
-CHUNK_SIZE = 5  # shot per chiamata LLM (risparmio token)
+CHUNK_SIZE = 3  # smaller chunks: prompt now includes full shot JSON (more tokens per call)
 
 
 async def generate_frame_prompts(
@@ -31,26 +31,62 @@ async def generate_frame_prompts(
     # Processa in chunk per non superare context window
     for i in range(0, len(shot_list), CHUNK_SIZE):
         chunk = shot_list[i:i + CHUNK_SIZE]
-        chunk_dicts = [s.model_dump(exclude={"first_frame", "last_frame", "motion_prompt"})
+        chunk_dicts = [s.model_dump(exclude={"first_frame", "last_frame", "motion_prompt", "ltx_global_prompt"})
                        for s in chunk]
 
         raw = await adapter.generate_json(
             system=PROMPT_ENGINEER_SYSTEM,
             user=build_prompt_engineer_prompt(chunk_dicts, inp.characters, inp.style_references),
             temperature=getattr(role_cfg, "temperature", 0.65),
-            max_tokens=4000,
+            max_tokens=6000,
         )
 
-        enriched_chunk = raw if isinstance(raw, list) else raw.get("shots", [])
+        # Unwrap common LLM response wrapper patterns
+        if isinstance(raw, list):
+            enriched_chunk = raw
+        else:
+            # Try common keys first
+            enriched_chunk = None
+            for key in ("shots", "result", "data", "enriched_shots", "items", "frames"):
+                if key in raw and isinstance(raw[key], list):
+                    enriched_chunk = raw[key]
+                    break
+            if enriched_chunk is None:
+                # Try any list value in the top-level dict
+                for v in raw.values():
+                    if isinstance(v, list) and v:
+                        enriched_chunk = v
+                        break
+            if enriched_chunk is None:
+                enriched_chunk = []
+
+        matched = 0
         for j, shot_data in enumerate(enriched_chunk):
+            if j >= len(chunk):
+                break
             original = chunk[j]
-            if "first_frame" in shot_data:
-                original.first_frame = FramePrompt(**shot_data["first_frame"])
-            if "last_frame" in shot_data:
-                original.last_frame = FramePrompt(**shot_data["last_frame"])
-            if "motion_prompt" in shot_data:
-                original.motion_prompt = shot_data["motion_prompt"]
+            ff = shot_data.get("first_frame")
+            lf = shot_data.get("last_frame")
+            if ff and isinstance(ff, dict):
+                try:
+                    original.first_frame = FramePrompt(**ff)
+                except Exception:
+                    pass
+            if lf and isinstance(lf, dict):
+                try:
+                    original.last_frame = FramePrompt(**lf)
+                except Exception:
+                    pass
+            if shot_data.get("motion_prompt"):
+                original.motion_prompt = str(shot_data["motion_prompt"])
+            if shot_data.get("ltx_global_prompt"):
+                original.ltx_global_prompt = str(shot_data["ltx_global_prompt"])
             enriched.append(original)
+            matched += 1
+
+        # Shots the LLM didn't return prompts for: keep them as-is
+        for j in range(matched, len(chunk)):
+            enriched.append(chunk[j])
 
         log.info("prompt_engineer_chunk", done=len(enriched), total=len(shot_list))
 

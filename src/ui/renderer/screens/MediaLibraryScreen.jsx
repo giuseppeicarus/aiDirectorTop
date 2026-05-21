@@ -1,15 +1,27 @@
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Image as ImageIcon, Film, Music, Upload, Search, Trash2,
   ExternalLink, FolderOpen, X, ChevronDown, Eye, Layers,
   Tag, Info, Check, Loader2, RefreshCw, Grid2X2, LayoutList,
-  Play, Volume2, ZoomIn, ArrowLeft, ArrowRight, Link2,
+  Play, Volume2, ZoomIn, ArrowLeft, ArrowRight, Link2, AlertTriangle,
+  Download,
 } from 'lucide-react'
 import clsx from 'clsx'
+import ImageLightbox from '../components/ImageLightbox'
+import MediaImageContextMenu from '../components/MediaImageContextMenu'
+import { mediaFileUrl, mediaThumbUrl } from '../utils/mediaUrl'
+import { downloadMediaItem } from '../utils/mediaDownload'
+import {
+  imageSourceFromMediaItem,
+  setPendingImg2Video,
+} from '../utils/toolsAnimate'
 
-const API = 'http://localhost:8765/api'
+import { API_BASE } from '../utils/apiClient'
+
+const API = API_BASE
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -72,44 +84,113 @@ function sortItems(items, sortKey) {
   }
 }
 
+// ── Anteprima in griglia (img / video / audio) ───────────────────────────────
+
+function MediaGridPreview({ item, onPreview, onImageContextMenu }) {
+  const fileUrl = mediaFileUrl(item.id)
+  const [imgSrc, setImgSrc] = useState(() => mediaThumbUrl(item.id) || fileUrl)
+
+  if (!fileUrl) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1 text-[var(--text3)]">
+        <AlertTriangle size={20} className="opacity-40" />
+        <span className="text-[9px] font-mono">File assente</span>
+      </div>
+    )
+  }
+
+  if (item.type === 'image') {
+    return (
+      <>
+        <img
+          src={imgSrc}
+          alt={item.filename}
+          className="w-full h-full object-cover cursor-zoom-in pointer-events-auto"
+          loading="lazy"
+          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+          onContextMenu={(e) => onImageContextMenu?.(e, item)}
+          onError={() => {
+            if (imgSrc !== fileUrl) setImgSrc(fileUrl)
+          }}
+        />
+        <button
+          type="button"
+          title="Galleria fullscreen"
+          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+          className="absolute bottom-1.5 right-1.5 z-20 p-1.5 rounded-md bg-black/55 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-black/75 transition-opacity pointer-events-auto"
+        >
+          <ZoomIn size={12} />
+        </button>
+      </>
+    )
+  }
+
+  if (item.type === 'video') {
+    return (
+      <>
+        <video
+          src={fileUrl}
+          muted
+          playsInline
+          preload="metadata"
+          className="w-full h-full object-cover cursor-pointer pointer-events-auto bg-black"
+          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+        />
+        <button
+          type="button"
+          title="Riproduci a schermo intero"
+          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+          className="absolute bottom-1.5 right-1.5 z-20 p-1.5 rounded-md bg-black/55 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-black/75 transition-opacity pointer-events-auto"
+        >
+          <Play size={12} />
+        </button>
+      </>
+    )
+  }
+
+  if (item.type === 'audio') {
+    return (
+      <div
+        className="w-full h-full flex flex-col items-center justify-center gap-2 px-2 py-2 pointer-events-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <Volume2 size={22} className="text-[var(--gold)] opacity-60 shrink-0" />
+        <audio
+          src={fileUrl}
+          controls
+          preload="metadata"
+          className="w-full max-w-full h-8"
+        />
+        {item.duration_sec > 0 && (
+          <span className="text-[9px] text-[var(--text3)] font-mono">{fmtDur(item.duration_sec)}</span>
+        )}
+      </div>
+    )
+  }
+
+  return null
+}
+
 // ── MediaCard ─────────────────────────────────────────────────────────────────
 
-function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign }) {
+function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign, onDownload, onImageContextMenu }) {
   const isImage = item.type === 'image'
-  const isVideo = item.type === 'video'
   const isAudio = item.type === 'audio'
-  const h = THUMB_H[thumbSize]
+  const h = isAudio ? 'min-h-[7.5rem]' : THUMB_H[thumbSize]
   const tags = (() => { try { return JSON.parse(item.tags || '[]') } catch { return [] } })()
 
   return (
     <div className="group relative rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--bg2)] hover:border-[var(--gold)]/40 transition-colors">
       {/* Thumbnail */}
-      <div className={clsx('relative overflow-hidden bg-[var(--bg3)] flex items-center justify-center', h)}>
-        {isImage && (
-          <img
-            src={`${API}/media/thumb/${item.id}`}
-            alt={item.filename}
-            className="w-full h-full object-cover"
-            loading="lazy"
-            onError={e => { e.currentTarget.style.display = 'none' }}
-          />
-        )}
-        {isVideo && (
-          <div className="flex flex-col items-center gap-1">
-            <Film size={28} className="text-[var(--gold)] opacity-50" />
-            {item.duration_sec && (
-              <span className="text-[10px] text-[var(--text3)] font-mono">{fmtDur(item.duration_sec)}</span>
-            )}
-          </div>
-        )}
-        {isAudio && (
-          <div className="flex flex-col items-center gap-1">
-            <Volume2 size={28} className="text-[var(--gold)] opacity-50" />
-            {item.duration_sec && (
-              <span className="text-[10px] text-[var(--text3)] font-mono">{fmtDur(item.duration_sec)}</span>
-            )}
-          </div>
-        )}
+      <div
+        className={clsx('relative overflow-hidden bg-[var(--bg3)] flex items-center justify-center', h)}
+        onContextMenu={isImage ? (e) => onImageContextMenu?.(e, item) : undefined}
+      >
+        <MediaGridPreview
+          item={item}
+          onPreview={onPreview}
+          onImageContextMenu={onImageContextMenu}
+        />
 
         {/* Source badge */}
         <span className={clsx(
@@ -121,9 +202,10 @@ function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign }) {
           {item.source === 'uploaded' ? 'upload' : 'gen'}
         </span>
 
-        {/* Hover overlay */}
-        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+        {/* Hover overlay — pointer-events-none così la lente resta cliccabile */}
+        <div className="absolute inset-0 z-10 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
           <ActionBtn icon={Eye}        title="Preview"           onClick={() => onPreview(item)} />
+          <ActionBtn icon={Download}  title="Scarica"           onClick={() => onDownload(item)} />
           <ActionBtn icon={Link2}      title="Usa nel progetto"  onClick={() => onAssign(item)} gold />
           <ActionBtn icon={Trash2}     title="Elimina"           onClick={() => onDelete(item.id)} danger />
         </div>
@@ -158,10 +240,11 @@ function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign }) {
 function ActionBtn({ icon: Icon, title, onClick, gold, danger }) {
   return (
     <button
+      type="button"
       title={title}
       onClick={e => { e.stopPropagation(); onClick() }}
       className={clsx(
-        'p-1.5 rounded-lg bg-black/40 transition-colors',
+        'p-1.5 rounded-lg bg-black/40 transition-colors pointer-events-auto',
         gold   ? 'text-[var(--gold)] hover:bg-[var(--gold)]/20' :
         danger ? 'text-[var(--text2)] hover:text-[var(--red)] hover:bg-red-500/20' :
                  'text-[var(--text2)] hover:text-[var(--text)] hover:bg-white/10'
@@ -203,7 +286,7 @@ function UploadToasts({ uploads }) {
 
 // ── Preview modal ─────────────────────────────────────────────────────────────
 
-function PreviewModal({ item, allItems, onClose, onNavigate }) {
+function PreviewModal({ item, allItems, onClose, onNavigate, onDownload }) {
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') onClose()
@@ -224,23 +307,25 @@ function PreviewModal({ item, allItems, onClose, onNavigate }) {
         <div className="flex-1 flex items-center justify-center rounded-xl overflow-hidden bg-black min-h-0">
           {item.type === 'image' && (
             <img
-              src={`${API}/media/file/${item.id}`}
+              src={mediaFileUrl(item.id)}
               alt={item.filename}
               className="max-w-full max-h-[80vh] object-contain"
             />
           )}
           {item.type === 'video' && (
             <video
-              src={`${API}/media/file/${item.id}`}
+              src={mediaFileUrl(item.id)}
               controls
               autoPlay
-              className="max-w-full max-h-[80vh]"
+              playsInline
+              className="max-w-full max-h-[80vh] bg-black"
             />
           )}
           {item.type === 'audio' && (
-            <div className="flex flex-col items-center gap-4 p-8">
+            <div className="flex flex-col items-center gap-6 p-8 w-full max-w-lg">
               <Volume2 size={48} className="text-[var(--gold)] opacity-50" />
-              <audio src={`${API}/media/file/${item.id}`} controls autoPlay className="w-full" />
+              <p className="text-xs text-[var(--text2)] font-mono text-center break-all">{item.filename}</p>
+              <audio src={mediaFileUrl(item.id)} controls autoPlay className="w-full" />
             </div>
           )}
         </div>
@@ -266,6 +351,14 @@ function PreviewModal({ item, allItems, onClose, onNavigate }) {
               </div>
             </div>
           )}
+          <button
+            type="button"
+            onClick={() => onDownload(item)}
+            className="mt-auto flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-[var(--bg3)] hover:bg-[var(--border)] text-xs text-[var(--text2)] hover:text-[var(--gold)] transition-colors"
+          >
+            <Download size={13} />
+            Scarica
+          </button>
         </div>
 
         {/* Nav arrows */}
@@ -504,6 +597,7 @@ function StatItem({ label, val, Icon }) {
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function MediaLibraryScreen() {
+  const navigate = useNavigate()
   const [items,      setItems]      = useState([])
   const [stats,      setStats]      = useState(null)
   const [loading,    setLoading]    = useState(false)
@@ -515,6 +609,7 @@ export default function MediaLibraryScreen() {
   const [dragging,   setDragging]   = useState(false)
   const [uploads,    setUploads]    = useState([])    // [{id, filename, status, error}]
   const [preview,    setPreview]    = useState(null)  // item
+  const [ctxMenu,    setCtxMenu]    = useState(null)  // { x, y, item }
   const [assignItem, setAssignItem] = useState(null)
   const [page,       setPage]       = useState(1)
   const PER_PAGE = 60
@@ -560,6 +655,25 @@ export default function MediaLibraryScreen() {
   const paginated = filtered.slice(0, page * PER_PAGE)
   const hasMore   = paginated.length < filtered.length
 
+  // ── Scan & rescue ───────────────────────────────────────────────────────────
+
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState(null)
+
+  async function handleScan() {
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const res = await fetch(`${API}/media/scan`, { method: 'POST' }).then(r => r.json())
+      setScanResult(res)
+      if (res.registered > 0) load()
+    } catch (e) {
+      setScanResult({ error: e.message })
+    } finally {
+      setScanning(false)
+    }
+  }
+
   // ── Delete ──────────────────────────────────────────────────────────────────
 
   async function handleDelete(id) {
@@ -567,6 +681,13 @@ export default function MediaLibraryScreen() {
     await fetch(`${API}/media/${id}`, { method: 'DELETE' })
     setItems(prev => prev.filter(i => i.id !== id))
     if (preview?.id === id) setPreview(null)
+  }
+
+  async function handleDownload(item) {
+    const res = await downloadMediaItem(item)
+    if (res?.error && !res?.canceled) {
+      console.error('[MediaLibrary] download failed', res.error)
+    }
   }
 
   // ── Upload ──────────────────────────────────────────────────────────────────
@@ -629,6 +750,22 @@ export default function MediaLibraryScreen() {
     if (next) setPreview(next)
   }
 
+  function handleImageContextMenu(e, item) {
+    if (item.type !== 'image' || !item.filepath) return
+    e.preventDefault()
+    e.stopPropagation()
+    setCtxMenu({ x: e.clientX, y: e.clientY, item })
+  }
+
+  function goAnimateFromMedia(item) {
+    const source = imageSourceFromMediaItem(item)
+    if (!source) return
+    setPendingImg2Video(source)
+    setPreview(null)
+    setCtxMenu(null)
+    navigate('/tools', { state: { img2videoSource: source } })
+  }
+
   // ── Type counts ──────────────────────────────────────────────────────────────
 
   const counts = useMemo(() => ({
@@ -666,6 +803,20 @@ export default function MediaLibraryScreen() {
           >
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           </button>
+          <button
+            onClick={handleScan}
+            disabled={scanning}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-[var(--border)] text-[var(--text2)] hover:text-[var(--gold)] hover:border-[var(--gold)]/40 transition-colors"
+            title="Scansiona cartelle progetto e registra media già generati ma non ancora indicizzati"
+          >
+            <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+            {scanning ? 'Scansione...' : 'Recupera media'}
+          </button>
+          {scanResult && !scanResult.error && (
+            <span className="text-xs text-[var(--text3)]">
+              +{scanResult.registered} registrati
+            </span>
+          )}
           <button
             onClick={() => fileRef.current?.click()}
             className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-[var(--gold)]/15 hover:bg-[var(--gold)]/25 text-[var(--gold)] transition-colors"
@@ -795,6 +946,8 @@ export default function MediaLibraryScreen() {
                 onDelete={handleDelete}
                 onPreview={setPreview}
                 onAssign={setAssignItem}
+                onDownload={handleDownload}
+                onImageContextMenu={handleImageContextMenu}
               />
             ))}
           </div>
@@ -821,12 +974,31 @@ export default function MediaLibraryScreen() {
       )}
 
       {/* Modals */}
-      {preview && (
+      {preview && preview.type === 'image' && (
+        <ImageLightbox
+          open={true}
+          onClose={() => setPreview(null)}
+          items={filtered
+            .filter(i => i.type === 'image')
+            .map(i => ({
+              id: i.id,
+              src: mediaFileUrl(i.id),
+              alt: i.filename,
+              type: 'image',
+            }))}
+          initialIndex={Math.max(
+            0,
+            filtered.filter(i => i.type === 'image').findIndex(i => i.id === preview.id),
+          )}
+        />
+      )}
+      {preview && preview.type !== 'image' && (
         <PreviewModal
           item={preview}
           allItems={filtered}
           onClose={() => setPreview(null)}
           onNavigate={navigatePreview}
+          onDownload={handleDownload}
         />
       )}
       {assignItem && (
@@ -839,6 +1011,15 @@ export default function MediaLibraryScreen() {
 
       {/* Upload toasts */}
       <UploadToasts uploads={uploads} />
+
+      {ctxMenu && (
+        <MediaImageContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          onClose={() => setCtxMenu(null)}
+          onAnimate={() => goAnimateFromMedia(ctxMenu.item)}
+        />
+      )}
     </div>
   )
 }

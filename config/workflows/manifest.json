@@ -2,52 +2,254 @@
   "workflows": [
     {
       "id": "z_image_txt2img",
-      "name": "Z-Image Text to Image",
+      "name": "Z-Image / AuraFlow",
       "file": "z-image_Text_To_Image.json",
       "type": "txt2img",
+      "category": "text_to_image",
       "description": "Text to image con modello Z-Image / AuraFlow. Ideale per frame cinematografici ad alta qualità.",
+      "models": [
+        "Z-Image / AuraFlow checkpoint"
+      ],
       "inject": {
-        "prompt":          { "node": "76:67", "field": "text" },
-        "negative_prompt": { "node": "76:71", "field": "text" },
-        "width":           { "node": "76:68", "field": "width" },
-        "height":          { "node": "76:68", "field": "height" },
-        "seed":            { "node": "76:69", "field": "seed" }
+        "prompt": {
+          "node": "76:67",
+          "field": "text"
+        },
+        "negative_prompt": {
+          "node": "76:71",
+          "field": "text"
+        },
+        "width": {
+          "node": "76:68",
+          "field": "width"
+        },
+        "height": {
+          "node": "76:68",
+          "field": "height"
+        },
+        "seed": {
+          "node": "76:69",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "76:69",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "76:69",
+          "field": "cfg"
+        }
       },
-      "output_nodes": ["9"]
+      "output_nodes": [
+        "9"
+      ],
+      "source": "base_workflow_comfyui/z-image_Text_To_Image.json"
     },
     {
       "id": "ltx_txt2video",
-      "name": "LTX 2.3 Text to Video",
+      "name": "LTX 2.3 Text → Video",
       "file": "ltx_2_3_Text_To_Video.json",
       "type": "txt2video",
+      "category": "text_to_video",
       "description": "Genera clip video direttamente da prompt testuale. Usa LTX-Video 2.3 con audio sintetizzato.",
+      "models": [
+        "ltx-video-2b-v0.9.6.safetensors",
+        "t5xxl_fp16.safetensors"
+      ],
       "inject": {
-        "prompt":          { "node": "267:266", "field": "value" },
-        "negative_prompt": { "node": "267:247", "field": "text" },
-        "width":           { "node": "267:257", "field": "value" },
-        "height":          { "node": "267:258", "field": "value" },
-        "duration_sec":    { "node": "267:225", "field": "value" },
-        "fps":             { "node": "267:260", "field": "value" }
+        "prompt": {
+          "node": "267:266",
+          "field": "value"
+        },
+        "negative_prompt": {
+          "node": "267:247",
+          "field": "text"
+        },
+        "width": {
+          "node": "267:257",
+          "field": "value"
+        },
+        "height": {
+          "node": "267:258",
+          "field": "value"
+        },
+        "duration_sec": {
+          "node": "267:225",
+          "field": "value"
+        },
+        "fps": {
+          "node": "267:260",
+          "field": "value"
+        }
       },
-      "output_nodes": ["75"]
+      "output_nodes": [
+        "75"
+      ]
+    },
+    {
+      "id": "ltx_director_img2video",
+      "name": "LTX Director 2.3 — First+Last Frame",
+      "file": "ltx_director_img2video.json",
+      "type": "director",
+      "category": "director",
+      "description": "Pipeline cinematografica avanzata con Prompt Relay temporale. Stage 1 (8 step) + Stage 2 upscale + refinement (4 step). First frame e last frame come guide ancorate alla timeline. Ideale per shot con movimento preciso.",
+      "models": [
+        "ltx-video-2b-v0.9.6.safetensors",
+        "ltx-video-vae-decode-v0.9.6.safetensors",
+        "t5xxl_fp16.safetensors",
+        "ltxv_spatial_upscaler_0.9.7.safetensors"
+      ],
+      "inject": {
+        "first_image": {
+          "node": "2001",
+          "field": "image"
+        },
+        "last_image": {
+          "node": "2002",
+          "field": "image"
+        },
+        "prompt": {
+          "node": "1010",
+          "field": "global_prompt"
+        },
+        "local_prompts": {
+          "node": "1010",
+          "field": "local_prompts"
+        },
+        "segment_lengths": {
+          "node": "1010",
+          "field": "segment_lengths"
+        },
+        "width": {
+          "node": "1010",
+          "field": "custom_width"
+        },
+        "height": {
+          "node": "1010",
+          "field": "custom_height"
+        },
+        "duration_frames": {
+          "node": "1010",
+          "field": "duration_frames"
+        },
+        "fps": {
+          "node": "1010",
+          "field": "frame_rate"
+        }
+      },
+      "output_nodes": [
+        "1043"
+      ]
     },
     {
       "id": "ltx_img_audio2video",
-      "name": "LTX 2.3 Image+Audio to Video (Last Frame)",
+      "name": "LTX 2.3 Image+Audio → Video",
       "file": "ltx_2_3_Image_Audio_To_Video_Last_Frame.json",
       "type": "img_audio2video",
+      "category": "audio_image_to_video",
       "description": "Genera clip video da immagine first frame + audio. Salva anche il last frame per la catena. Usa LTX-Video 2.3.",
+      "models": [
+        "ltx-video-2b-v0.9.6.safetensors",
+        "ltx-video-vae-decode-v0.9.6.safetensors",
+        "t5xxl_fp16.safetensors"
+      ],
       "inject": {
-        "first_image":     { "node": "269",     "field": "image" },
-        "audio":           { "node": "276",     "field": "audio" },
-        "prompt":          { "node": "340:319", "field": "value" },
-        "width":           { "node": "340:330", "field": "value" },
-        "height":          { "node": "340:324", "field": "value" },
-        "duration_sec":    { "node": "340:331", "field": "value" },
-        "fps":             { "node": "340:323", "field": "value" },
-        "audio_start_sec": { "node": "340:332", "field": "start_index" }
+        "first_image": {
+          "node": "269",
+          "field": "image"
+        },
+        "audio": {
+          "node": "276",
+          "field": "audio"
+        },
+        "prompt": {
+          "node": "340:319",
+          "field": "value"
+        },
+        "width": {
+          "node": "340:330",
+          "field": "value"
+        },
+        "height": {
+          "node": "340:324",
+          "field": "value"
+        },
+        "duration_sec": {
+          "node": "340:331",
+          "field": "value"
+        },
+        "fps": {
+          "node": "340:323",
+          "field": "value"
+        },
+        "audio_start_sec": {
+          "node": "340:332",
+          "field": "start_index"
+        }
       },
-      "output_nodes": ["341", "347"]
+      "output_nodes": [
+        "341",
+        "347"
+      ],
+      "source": "base_workflow_comfyui/ltx_2_3_Image_Audio_To_Video_Last_Frame.json"
+    },
+    {
+      "id": "ltx_img2video",
+      "name": "LTX 2.3 Image → Video",
+      "file": "ltx_2_3_Image_To_Video.json",
+      "type": "img2video",
+      "category": "image_to_video",
+      "description": "Genera video da immagine + prompt (senza audio esterno). LTX-Video 2.3.",
+      "models": [
+        "ltx-2.3-22b-dev-fp8.safetensors",
+        "gemma_3_12B_it_fp4_mixed.safetensors"
+      ],
+      "inject": {
+        "first_image": {
+          "node": "269",
+          "field": "image"
+        },
+        "prompt": {
+          "node": "267:266",
+          "field": "value"
+        },
+        "width": {
+          "node": "267:257",
+          "field": "value"
+        },
+        "height": {
+          "node": "267:258",
+          "field": "value"
+        },
+        "duration_sec": {
+          "node": "267:225",
+          "field": "value"
+        },
+        "fps": {
+          "node": "267:260",
+          "field": "value"
+        }
+      },
+      "output_nodes": [
+        "75"
+      ],
+      "source": "base_workflow_comfyui/ltx_2_3_Image_To_Video.json"
+    },
+    {
+      "id": "6f051df2",
+      "name": "Ltx 2.3 Image To Video (export)",
+      "file": "6f051df2.json",
+      "type": "img2video",
+      "description": "Copia export ComfyUI — stessi nodi di ltx_img2video",
+      "inject": {
+        "first_image": { "node": "269", "field": "image" },
+        "prompt": { "node": "267:266", "field": "value" },
+        "width": { "node": "267:257", "field": "value" },
+        "height": { "node": "267:258", "field": "value" },
+        "duration_sec": { "node": "267:225", "field": "value" },
+        "fps": { "node": "267:260", "field": "value" }
+      },
+      "output_nodes": ["75"]
     }
   ]
 }
