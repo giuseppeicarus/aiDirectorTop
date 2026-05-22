@@ -10,6 +10,7 @@ import {
   Loader2, X, FileJson, RotateCcw, Download, Cpu, ChevronRight,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { BACKEND_ORIGIN } from '../utils/apiClient'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -462,7 +463,6 @@ function InjectEditor({ inject, onChange }) {
 }
 
 
-const BACKEND_ORIGIN_WF = 'http://127.0.0.1:8765'
 const LS_OVERRIDES_KEY = (wfId) => `cinematic_model_overrides_${wfId}`
 
 // ── Models & LoRA Tab ─────────────────────────────────────────────────────────
@@ -494,8 +494,8 @@ function ModelsLoraTab({ workflowId }) {
       setError(null)
       try {
         const [mRes, nRes] = await Promise.all([
-          fetch(`${BACKEND_ORIGIN_WF}/api/comfyui/nodes/0/models`).then(r => r.json()),
-          fetch(`${BACKEND_ORIGIN_WF}/api/comfyui/workflow/${workflowId}/model-nodes`).then(r => r.json()),
+          fetch(`${BACKEND_ORIGIN}/api/comfyui/nodes/0/models`).then(r => r.json()),
+          fetch(`${BACKEND_ORIGIN}/api/comfyui/workflow/${workflowId}/model-nodes`).then(r => r.json()),
         ])
         setNodeModels(mRes)
         setWfNodes(nRes)

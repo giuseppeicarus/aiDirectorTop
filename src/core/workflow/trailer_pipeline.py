@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import colorsys
+import os
 import json
 import math
 import random
@@ -38,7 +39,7 @@ from src.core.comfyui.workflow_builder import (
     extract_output_files,
 )
 from src.core.models.cinematic import FramePrompt
-from src.core.utils.media_registry import register_media
+from src.core.utils.media_registry import register_media, prompt_for_trailer_clip, normalize_generation_prompt
 
 from src.core.workflow.trailer_jobs import TrailerJobRecord, upsert_job, now_iso
 
@@ -51,6 +52,16 @@ def _fire_register(coro) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 log = structlog.get_logger()
+
+
+def audio_use_demucs_enabled() -> bool:
+    """Demucs separation is slow (GPU/CPU); opt-in via CINEMATIC_AUDIO_USE_DEMUCS=1."""
+    return os.environ.get("CINEMATIC_AUDIO_USE_DEMUCS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
 
 # Pausa tra job storyboard ComfyUI (proxy GPU / coda)
 STORYBOARD_CLIP_COOLDOWN_SEC = 5.0
@@ -334,6 +345,18 @@ class TrailerPipeline:
         self._last_result: Optional[dict] = None
         self._use_ffmpeg_clips: bool = False
         self._storyboard_approved: bool = False
+        self._recover_cooldown: dict[str, float] = {}
+
+    def _recover_on_cooldown(self, clip_id: str) -> bool:
+        import time
+
+        until = self._recover_cooldown.get(clip_id, 0.0)
+        return time.monotonic() < until
+
+    def _set_recover_cooldown(self, clip_id: str, seconds: float = 180.0) -> None:
+        import time
+
+        self._recover_cooldown[clip_id] = time.monotonic() + seconds
 
     def _hd_frame_ok(self, path: Path) -> bool:
         """True se il PNG è un frame HD di produzione (non anteprima storyboard)."""
@@ -447,6 +470,9 @@ class TrailerPipeline:
         Recupera storyboard da disco o da ComfyUI (/view per prefisso) se il job
         è terminato ma il download SSE non ha aggiornato la clip.
         """
+        if self._recover_on_cooldown(clip.clip_id):
+            return None
+
         dest = self._storyboard_dir / f"{clip.clip_id}_sb.png"
         resolved = self._resolve_storyboard_file(clip, dest)
         if resolved:
@@ -469,6 +495,7 @@ class TrailerPipeline:
                 prefix,
                 dest,
                 min_image_bytes=STORYBOARD_IMAGE_MIN_BYTES,
+                local_folders=[self._storyboard_dir, self._frames_dir],
             )
             self._canonicalize_downloaded_frame(
                 clip,
@@ -483,6 +510,7 @@ class TrailerPipeline:
                 log.info("storyboard_recovered_comfy", clip_id=clip.clip_id, path=str(resolved))
                 return self._storyboard_frame_event(clip, resolved, ok=True)
         except Exception as exc:
+            self._set_recover_cooldown(clip.clip_id)
             log.warning(
                 "storyboard_recover_failed",
                 clip_id=clip.clip_id,
@@ -493,6 +521,9 @@ class TrailerPipeline:
 
     async def recover_hd_first_frame(self, clip: TrailerClip) -> Optional[dict]:
         """Recupera frame HD first da disco o ComfyUI se mancante."""
+        if self._recover_on_cooldown(f"{clip.clip_id}:first"):
+            return None
+
         dest = self._frames_dir / f"{clip.clip_id}_first.png"
         if self._hd_frame_ok(dest):
             clip.first_frame_path = str(dest)
@@ -517,6 +548,7 @@ class TrailerPipeline:
                         dest.stem,
                         dest,
                         min_image_bytes=COMFY_REAL_IMAGE_MIN_BYTES,
+                        local_folders=[self._frames_dir, self._storyboard_dir],
                     )
                     self._canonicalize_downloaded_frame(
                         clip,
@@ -528,6 +560,7 @@ class TrailerPipeline:
                     clip.first_frame_path = str(dest)
                     log.info("hd_frame_recovered_comfy", clip_id=clip.clip_id)
                 except Exception as exc:
+                    self._set_recover_cooldown(f"{clip.clip_id}:first")
                     log.warning(
                         "hd_frame_recover_failed",
                         clip_id=clip.clip_id,
@@ -550,11 +583,99 @@ class TrailerPipeline:
             "cached": True,
         }
 
+    def _clip_video_artifact_ok(self, clip: TrailerClip, dest: Optional[Path] = None) -> bool:
+        from src.core.utils.comfyui_outputs import is_real_comfy_video
+
+        if dest is None:
+            dest = self._clips_dir / f"{clip.clip_id}.mp4"
+        if clip.clip_path:
+            try:
+                if is_real_comfy_video(Path(clip.clip_path)):
+                    return True
+            except OSError:
+                pass
+        return is_real_comfy_video(dest)
+
+    def _clip_done_recovery_event(self, clip: TrailerClip, dest: Path, *, backend: str = "comfyui") -> dict:
+        pid = self._api_project_id()
+        api = self._media_api_prefix()
+        clip.clip_path = str(dest)
+        return {
+            "event": "clip_done",
+            "clip_id": clip.clip_id,
+            "path": str(dest),
+            "backend": backend,
+            "url": f"/api/{api}/clips/{pid}/{dest.name}",
+            "cached": True,
+        }
+
+    def all_clips_have_video(self) -> bool:
+        if not self._clips_list:
+            return False
+        return all(self._clip_video_artifact_ok(c) for c in self._clips_list)
+
+    async def recover_video_clip(self, clip: TrailerClip) -> Optional[dict]:
+        """Recupera MP4 da disco o history ComfyUI se la generazione è finita fuori dall'app."""
+        if self._recover_on_cooldown(f"{clip.clip_id}:video"):
+            return None
+
+        dest = self._clips_dir / f"{clip.clip_id}.mp4"
+        if self._clip_video_artifact_ok(clip, dest):
+            if not clip.clip_path or not Path(clip.clip_path).is_file():
+                clip.clip_path = str(dest)
+            return self._clip_done_recovery_event(clip, dest, backend="cached")
+
+        from src.core.utils.comfyui_outputs import (
+            COMFY_REAL_VIDEO_MIN_BYTES,
+            download_video_by_prefix_probe,
+            find_local_video_by_prefix,
+        )
+
+        local = find_local_video_by_prefix(
+            [self._clips_dir],
+            clip.clip_id,
+            min_bytes=COMFY_REAL_VIDEO_MIN_BYTES,
+        )
+        if local:
+            import shutil
+
+            if local.resolve() != dest.resolve():
+                shutil.copy2(local, dest)
+            clip.clip_path = str(dest)
+            log.info("video_recovered_disk", clip_id=clip.clip_id, path=str(dest))
+            return self._clip_done_recovery_event(clip, dest, backend="disk")
+
+        if self.req.clip_backend == "ffmpeg" and self._use_ffmpeg_clips:
+            return None
+
+        try:
+            client = await self._pool.get_client()
+            saved = await download_video_by_prefix_probe(
+                client,
+                clip.clip_id,
+                dest,
+                local_folders=[self._clips_dir],
+            )
+            if saved.exists() and saved.resolve() != dest.resolve():
+                saved.rename(dest)
+            clip.clip_path = str(dest)
+            log.info("video_recovered_comfy", clip_id=clip.clip_id, path=str(dest))
+            return self._clip_done_recovery_event(clip, dest)
+        except Exception as exc:
+            self._set_recover_cooldown(f"{clip.clip_id}:video")
+            log.warning(
+                "video_recover_failed",
+                clip_id=clip.clip_id,
+                error=str(exc),
+            )
+        return None
+
     async def reconcile_missing_clip_media(
         self,
         *,
         storyboard: bool = True,
         hd_frames: bool = False,
+        videos: bool = False,
     ) -> list[dict]:
         """Controlla clip senza file locali e tenta recupero da disco / ComfyUI."""
         events: list[dict] = []
@@ -578,6 +699,10 @@ class TrailerPipeline:
                     ev = await self.recover_hd_first_frame(clip)
                     if ev:
                         events.append(ev)
+            if videos and not self._clip_video_artifact_ok(clip):
+                ev = await self.recover_video_clip(clip)
+                if ev:
+                    events.append(ev)
         return events
 
     def _resolve_frame_file(self, clip: TrailerClip, dest: Path) -> Optional[Path]:
@@ -771,10 +896,21 @@ class TrailerPipeline:
 
     def _save_checkpoint(self, phase_completed: int) -> None:
         try:
+            from src.core.obsidian.pipeline_memory import phase_label as obs_phase_label
+
+            reel_desc = ""
+            if hasattr(self, "_reel_req"):
+                reel_desc = getattr(self._reel_req, "description", "") or ""
+            if not reel_desc:
+                reel_desc = (self.req.style or "")[:2000]
+
             payload = {
                 "job_id": self.job_id,
+                "phase": phase_completed,
                 "phase_completed": phase_completed,
+                "phase_label": obs_phase_label("trailer", phase_completed),
                 "request": self.req.model_dump(),
+                "reel_description": reel_desc,
                 "sections": [s.model_dump() for s in self._sections],
                 "downbeats": self._downbeats,
                 "audio_duration": self._audio_duration,
@@ -782,6 +918,16 @@ class TrailerPipeline:
                 "clips_list": [c.model_dump() for c in self._clips_list],
                 "trailer_audio_path": str(self._trailer_audio_path) if self._trailer_audio_path else None,
                 "storyboard_approved": getattr(self, "_storyboard_approved", False),
+                "visual_plans": getattr(self, "_visual_plans_cache", None) or {},
+                "director_narrative": getattr(self, "_director_narrative", None) or {},
+                "vision": getattr(self, "_vision", None) or {},
+                "lyric_beats": getattr(self, "_lyric_beats", None) or [],
+                "slot_lyrics": getattr(self, "_slot_lyrics", None) or {},
+                "lyrics": self.req.lyrics,
+                "audio_start_sec": getattr(self, "_audio_start_sec", 0.0),
+                "audio_analysis_summary": getattr(self, "_audio_analysis_summary", None) or {},
+                "ref_paths": [str(p) for p in getattr(self, "_ref_paths", []) or []],
+                "final_deliverable": getattr(self, "_last_result", None),
             }
             self._checkpoint_path().write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False),
@@ -793,7 +939,7 @@ class TrailerPipeline:
 
                 if get_config().obsidian.enabled and get_config().obsidian.auto_sync_on_checkpoint:
                     schedule_obsidian_sync_from_checkpoint(
-                        project_id=self.req.project_id,
+                        project_id=self._storage_project_id,
                         job_id=self.job_id,
                         pipeline_kind="trailer",
                         checkpoint=payload,
@@ -961,6 +1107,7 @@ class TrailerPipeline:
                 }
 
             if pipeline_completed:
+                self._save_checkpoint(99)
                 self._save_job(status="done", result=self._last_result)
                 cp = self._checkpoint_path()
                 if cp.exists():
@@ -984,7 +1131,8 @@ class TrailerPipeline:
 
         loop = asyncio.get_event_loop()
         sections, downbeats, duration = await loop.run_in_executor(
-            None, self._analyze_audio_sync, audio_path
+            None,
+            lambda: self._analyze_audio_sync(audio_path, use_demucs=audio_use_demucs_enabled()),
         )
         self._sections = sections
         self._downbeats = downbeats
@@ -998,9 +1146,12 @@ class TrailerPipeline:
             "bpm": sections[0].bpm_local if sections else 0,
         }
 
-    def _analyze_audio_sync(self, audio_path: Path):
+    def _analyze_audio_sync(self, audio_path: Path, *, use_demucs: bool | None = None):
         import librosa
         import numpy as np
+
+        if use_demucs is None:
+            use_demucs = audio_use_demucs_enabled()
 
         y, sr = librosa.load(str(audio_path), mono=True)
         duration = librosa.get_duration(y=y, sr=sr)
@@ -1039,25 +1190,27 @@ class TrailerPipeline:
             np.arange(len(spec_centroid)), sr=sr, hop_length=hop_length
         )
 
-        # Optional demucs vocal separation
+        # Optional demucs vocal separation (opt-in — very slow on long tracks)
         vocal_rms_by_sec: Dict[int, float] = {}
-        try:
-            import demucs.api as demucs_api  # type: ignore
-            separator = demucs_api.Separator()
-            _, separated = separator.separate_audio_file(audio_path)
-            vocals = separated.get("vocals")
-            if vocals is not None:
-                v_mono = vocals.mean(dim=0).numpy() if vocals.ndim > 1 else vocals.numpy()
-                v_rms = librosa.feature.rms(
-                    y=v_mono, frame_length=frame_length, hop_length=hop_length
-                )[0]
-                v_times = librosa.frames_to_time(
-                    np.arange(len(v_rms)), sr=sr, hop_length=hop_length
-                )
-                for t, r in zip(v_times, v_rms):
-                    vocal_rms_by_sec[int(t)] = float(r)
-        except Exception:
-            pass
+        if use_demucs:
+            try:
+                import demucs.api as demucs_api  # type: ignore
+
+                separator = demucs_api.Separator()
+                _, separated = separator.separate_audio_file(audio_path)
+                vocals = separated.get("vocals")
+                if vocals is not None:
+                    v_mono = vocals.mean(dim=0).numpy() if vocals.ndim > 1 else vocals.numpy()
+                    v_rms = librosa.feature.rms(
+                        y=v_mono, frame_length=frame_length, hop_length=hop_length
+                    )[0]
+                    v_times = librosa.frames_to_time(
+                        np.arange(len(v_rms)), sr=sr, hop_length=hop_length
+                    )
+                    for t, r in zip(v_times, v_rms):
+                        vocal_rms_by_sec[int(t)] = float(r)
+            except Exception as exc:
+                log.debug("demucs_vocal_separation_skipped", error=str(exc))
 
         type_cycle = [
             "intro", "verse", "chorus", "verse", "chorus", "bridge", "chorus", "outro"
@@ -1755,11 +1908,16 @@ class TrailerPipeline:
             actual_dur = await self._probe_duration(trailer_audio)
 
         self._trailer_audio_path = trailer_audio
+        _audio_prompt = normalize_generation_prompt(
+            f"Trailer audio mix — style: {self.req.style}",
+            self.req.lyrics,
+        )
         _fire_register(register_media(
             trailer_audio, "audio",
-            self.req.project_id, "Trailer",
+            self.req.project_id, getattr(self.req, "title", None) or "Trailer",
             source="trailer",
             tags=["trailer", "trailer_audio"],
+            generation_prompt=_audio_prompt,
         ))
         yield {
             "event": "audio_ready",
@@ -2421,18 +2579,23 @@ class TrailerPipeline:
                     _fire_register(register_media(
                         ff_path, "image",
                         self.req.project_id,
-                        title=f"{clip.clip_id} frame",
+                        getattr(self.req, "title", None) or "Trailer",
                         source=self._media_api_prefix(),
+                        shot_id=clip.clip_id,
+                        frame_type="first",
                         tags=[self._media_api_prefix(), "frame", clip.clip_id],
+                        generation_prompt=prompt_for_trailer_clip(clip, "image", "frame"),
                     ))
                 clip_p = Path(clip.clip_path) if clip.clip_path else None
                 if clip_p and clip_p.exists() and clip_p.stat().st_size >= 50_000:
                     _fire_register(register_media(
                         clip_p, "video",
                         self.req.project_id,
-                        title=clip.clip_id,
+                        getattr(self.req, "title", None) or "Trailer",
                         source=self._media_api_prefix(),
+                        shot_id=clip.clip_id,
                         tags=[self._media_api_prefix(), "clip", clip.clip_id],
+                        generation_prompt=prompt_for_trailer_clip(clip, "video", "clip"),
                     ))
                 for ev in events:
                     await queue.put(ev)
@@ -3122,11 +3285,22 @@ class TrailerPipeline:
 
         final_dur = await self._probe_duration(output_path)
 
+        _final_prompt = None
+        if getattr(self, "_clips_list", None):
+            for c in self._clips_list:
+                _final_prompt = prompt_for_trailer_clip(c, "video", "clip")
+                if _final_prompt:
+                    break
+        if not _final_prompt:
+            _final_prompt = normalize_generation_prompt(
+                f"Trailer finale — {self.req.style}",
+            )
         _fire_register(register_media(
             output_path, "video",
-            self.req.project_id, "Trailer",
+            self.req.project_id, getattr(self.req, "title", None) or "Trailer",
             source="trailer",
             tags=["trailer", self.req.aspect_ratio, f"{self.req.width}x{self.req.height}"],
+            generation_prompt=_final_prompt,
         ))
 
         size_bytes = output_path.stat().st_size if output_path.exists() else 0

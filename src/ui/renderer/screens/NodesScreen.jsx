@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Server, RefreshCw, Layers, Star } from 'lucide-react'
+import { API_BASE } from '../utils/apiClient'
 
-const API = 'http://localhost:8765/api'
+const API = API_BASE
 
 function StatusDot({ online, quarantined }) {
   if (quarantined) return <span className="w-2 h-2 rounded-full bg-[var(--amber)] inline-block" title="In quarantena" />

@@ -10,8 +10,10 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from src.core.config import get_config
+from src.core.api.user_tools_routes import router as user_tools_router
 
 router = APIRouter()
+router.include_router(user_tools_router)
 
 
 async def _check_llm() -> dict:

@@ -5,6 +5,8 @@ description: Analizza file audio per estrarre BPM, sezioni, mappa emotiva e dati
 
 # Audio Analysis Skill
 
+**Create Reel (anteprima + pipeline + timing lirica):** vedi `docs/REEL_AUDIO_ANALYSIS.md`.
+
 ## Librerie richieste
 ```
 librosa==0.10.2

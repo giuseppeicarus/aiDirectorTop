@@ -7,6 +7,7 @@ import {
   ClipboardCheck, ChevronRight, Save, RotateCcw, Globe, Star,
   HardDrive, FolderOpen, ExternalLink,
   AlertTriangle, Film, Package, Database, Library, ShieldCheck, Sparkles,
+  Download, Terminal,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { apiGet, waitForBackend, API_BASE } from '../utils/apiClient'
@@ -631,6 +632,7 @@ export default function SettingsScreen() {
       <LlmAgentsSection />
       <LlmModelRegistrySection />
       <ComfyUINodesSection />
+      <ComfyUIModelScriptsSection />
       <DataManagementSection />
 
       <Section title="Informazioni" defaultOpen={false}>
@@ -1693,7 +1695,7 @@ function ComfyUINodesSection() {
       const d = await apiGet('/comfyui/nodes/config')
       setNodes(d.nodes || [])
     } catch (e) {
-      setError(`Caricamento fallito: ${e.message}. Verifica che il backend sia avviato (porta 8765).`)
+      setError(`Caricamento fallito: ${e.message}. Verifica che il backend sia avviato (porta 8123).`)
     } finally { setLoading(false) }
   }, [])
 
@@ -1906,6 +1908,146 @@ function ComfyUINodesSection() {
           onCancel={closeForm}
         />
       )}
+    </Section>
+  )
+}
+
+// ── Script download modelli ComfyUI ───────────────────────────────────────────
+
+function ComfyUIModelScriptsSection() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [downloadingId, setDownloadingId] = useState(null)
+  const [status, setStatus] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      await waitForBackend()
+      const d = await apiGet('/services/comfyui-model-scripts')
+      setData(d)
+    } catch (e) {
+      setData(null)
+      setStatus({ ok: false, msg: e.message || 'Backend non disponibile' })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleDownload(scriptId) {
+    setDownloadingId(scriptId)
+    setStatus(null)
+    try {
+      const native = window.studio?.settings?.downloadComfyModelScript
+      if (native) {
+        const res = await native(scriptId)
+        if (res?.canceled) return
+        if (res?.saved) {
+          setStatus({ ok: true, msg: `Salvato: ${res.path}` })
+        } else if (res?.error) {
+          setStatus({ ok: false, msg: res.error })
+        }
+        return
+      }
+      const url = `${API}/services/comfyui-model-scripts/${encodeURIComponent(scriptId)}`
+      const a = document.createElement('a')
+      a.href = url
+      a.download = data?.scripts?.find(s => s.id === scriptId)?.filename || 'script'
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setStatus({ ok: true, msg: 'Download avviato dal browser' })
+    } catch (e) {
+      setStatus({ ok: false, msg: e.message })
+    } finally {
+      setDownloadingId(null)
+      setTimeout(() => setStatus(null), 5000)
+    }
+  }
+
+  const scripts = data?.scripts?.filter(s => s.available) ?? []
+
+  return (
+    <Section title="SCRIPT MODEL COMFYUI" defaultOpen>
+      <div className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg2)]">
+        <Terminal size={18} className="text-[var(--gold)] shrink-0 mt-0.5" />
+        <div className="text-xs text-[var(--text2)] leading-relaxed space-y-1.5">
+          <p>
+            {data?.description || (
+              'Script per scaricare in batch i modelli usati da CinematicAI (LTX, Qwen, Z-Image, Flux, upscaler).'
+            )}
+          </p>
+          <p className="text-[var(--text3)]">
+            1. Scarica lo script per il tuo sistema · 2. Copialo nella{' '}
+            <strong className="text-[var(--text2)]">cartella root di ComfyUI</strong> · 3. Eseguilo:
+            crea <code className="text-[var(--gold)]">{data?.models_base_dir || './models'}</code> con le
+            sottocartelle corrette (checkpoints, loras, vae, …).
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-[var(--text3)] text-xs py-4">
+          <Loader2 size={14} className="animate-spin" />
+          Caricamento script…
+        </div>
+      ) : scripts.length === 0 ? (
+        <p className="text-xs text-[var(--red)] font-mono">
+          Nessuno script trovato in scripts/user_tools — verifica installazione.
+        </p>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {scripts.map(s => (
+            <div
+              key={s.id}
+              className="flex flex-col gap-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg2)]"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-mono text-[var(--text)]">{s.label}</span>
+                <span className="text-[9px] text-[var(--text3)]">
+                  {(s.size_bytes / 1024).toFixed(1)} KB
+                </span>
+              </div>
+              <code className="text-[10px] text-[var(--gold)] truncate" title={s.filename}>
+                {s.filename}
+              </code>
+              <p className="text-[9px] text-[var(--text3)] leading-snug">{s.hint}</p>
+              <button
+                type="button"
+                disabled={downloadingId === s.id}
+                onClick={() => handleDownload(s.id)}
+                className="flex items-center justify-center gap-1.5 py-2 text-xs rounded border border-[var(--gold)]/35 bg-[var(--gold)]/10 text-[var(--gold)] hover:bg-[var(--gold)]/20 disabled:opacity-40 transition-colors"
+              >
+                {downloadingId === s.id
+                  ? <Loader2 size={12} className="animate-spin" />
+                  : <Download size={12} />}
+                Scarica
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {status && (
+        <p className={clsx(
+          'mt-3 text-xs font-mono',
+          status.ok ? 'text-[var(--green)]' : 'text-[var(--red)]',
+        )}>
+          {status.msg}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={load}
+        className="mt-3 flex items-center gap-1.5 text-[10px] font-mono text-[var(--text3)] hover:text-[var(--gold)]"
+      >
+        <RefreshCw size={10} />
+        Aggiorna elenco
+      </button>
     </Section>
   )
 }

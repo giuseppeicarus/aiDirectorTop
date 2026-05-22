@@ -33,6 +33,16 @@ body {
   -webkit-user-select: none;
 }
 
+.window-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.window-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg1); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }

@@ -7,8 +7,9 @@ import {
   Wifi, WifiOff, ServerCrash,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { API_BASE } from '../utils/apiClient'
 
-const API = 'http://localhost:8765/api'
+const API = API_BASE
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ async def generate_shot_list(
     arc: StoryArc,
     inp: ProjectInput,
     audio: AudioAnalysis | None = None,
+    vault_context: str = "",
 ) -> List[CinematicShot]:
     """LLM 3: genera la shot list cinematografica completa."""
     config = get_config()
@@ -33,7 +34,9 @@ async def generate_shot_list(
         for scene in sequence.scenes:
             raw = await adapter.generate_json(
                 system=CINEMATOGRAPHER_SYSTEM,
-                user=build_cinematographer_prompt(arc, inp, audio, prev_memory, sequence, scene),
+                user=(vault_context or "") + build_cinematographer_prompt(
+                    arc, inp, audio, prev_memory, sequence, scene,
+                ),
                 temperature=getattr(role_cfg, "temperature", 0.55),
                 max_tokens=6000,
             )

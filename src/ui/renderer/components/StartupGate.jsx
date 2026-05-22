@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import { useAppBootstrap } from '../hooks/useAppBootstrap'
 import SplashScreen from './SplashScreen'
+import WindowChrome from './WindowChrome'
 
 /**
  * Wrapper isolato per splash + bootstrap.
@@ -19,7 +20,8 @@ export default function StartupGate({ children }) {
   } = useAppBootstrap()
 
   return (
-    <div className="app-shell h-screen w-screen overflow-hidden bg-[var(--bg0)]">
+    <div className="app-shell h-screen w-screen overflow-hidden bg-[var(--bg0)] flex flex-col">
+      <WindowChrome />
       {showSplash && (
         <SplashScreen
           steps={steps}
@@ -31,7 +33,7 @@ export default function StartupGate({ children }) {
         />
       )}
 
-      <div className={clsx('app-main h-full w-full', showApp && 'app-main--visible')}>
+      <div className={clsx('app-main flex-1 min-h-0 w-full', showApp && 'app-main--visible')}>
         {showApp ? children : null}
       </div>
     </div>

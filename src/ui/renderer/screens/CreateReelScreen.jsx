@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { useJobQueryDeepLink } from '../hooks/useJobQueryDeepLink'
 import {
   ImagePlus, Loader2, Sparkles, Check, RefreshCw, X, Film,
@@ -33,7 +33,10 @@ import {
   resolveBackendUrl,
   resolveReelMediaProjectId,
 } from '../utils/mediaUrl'
+import { clipNeedsMediaRecovery, mergeClipRecoveryEvent } from '../utils/clipMediaRecovery'
+import { useMediaReconcile } from '../hooks/useMediaReconcile'
 import { resolveImagePaths } from '../utils/electronFilePaths'
+import { buildReelEnhanceContext } from '../utils/obsidianEnhanceContext'
 
 const MAX_REFS = 12
 
@@ -189,6 +192,26 @@ function jobHasStoryboard(job) {
 }
 
 /** Schermata corretta aprendo un job dalla lista (Dettagli / card). */
+function resolveReelResumePhase(job) {
+  if (job.storyboard_approved || job.pipeline_ui_phase === 'production') return 'production'
+  const cp = job.checkpoint_phase ?? 0
+  if (cp >= 55) {
+    if (job.status === 'awaiting_storyboard') return 'storyboard'
+    return 'production'
+  }
+  return 'full'
+}
+
+function jobCanResumePipeline(job) {
+  return Boolean(
+    job.can_continue
+    || job.can_resume
+    || job.has_checkpoint
+    || (job.checkpoint_phase ?? 0) > 0
+    || jobHasStoryboard(job),
+  )
+}
+
 function resolveReelJobView(job) {
   const hasMedia = jobHasStoryboard(job)
   if (job.status === 'awaiting_storyboard') return 'storyboard'
@@ -199,10 +222,11 @@ function resolveReelJobView(job) {
     return 'generating'
   }
   if (job.status === 'interrupted') {
-    if (job.can_continue || (job.checkpoint_phase ?? 0) > 0) return 'generating'
+    if (jobCanResumePipeline(job)) return 'generating'
     if (hasMedia) return jobHasFinalVideo(job) ? 'done' : 'storyboard'
     return 'detail'
   }
+  if (job.status === 'failed' && jobCanResumePipeline(job)) return 'generating'
   if (job.status === 'failed') {
     if (hasMedia) return jobHasFinalVideo(job) ? 'done' : 'storyboard'
     return 'detail'
@@ -234,56 +258,6 @@ function normalizeHydratedClips(clips, mediaProjectId, defaultStatus = 'waiting'
       clip_url: c.clip_url ? resolveBackendUrl(c.clip_url) : c.clip_url,
     }
   })
-}
-
-function clipNeedsMediaRecovery(c) {
-  if (!c?.clip_id) return false
-  if (!['generating', 'waiting'].includes(c.status)) return false
-  return !c.frame_url
-}
-
-function mergeReelClipRecoveryEvent(prevClip, ev, mediaProjectId) {
-  if (!ev?.clip_id) return prevClip
-  if (ev.event === 'storyboard_frame') {
-    const sbOk = ev.storyboard_ok !== false && !ev.storyboard_placeholder
-    const framePayload = sbOk ? {
-      storyboard_url: ev.url,
-      storyboard_path: ev.path,
-      storyboard_filename: ev.storyboard_filename,
-      preview_url: ev.preview_url,
-      storyboard_clip_url: ev.storyboard_clip_url,
-    } : {}
-    const sbUrl = sbOk
-      ? clipReelStoryboardPreviewUrl({ clip_id: ev.clip_id, ...framePayload }, mediaProjectId)
-      : null
-    return {
-      ...prevClip,
-      clip_id: ev.clip_id,
-      status: sbOk ? 'storyboard' : 'storyboard_failed',
-      storyboard_ok: sbOk,
-      storyboard_placeholder: !sbOk,
-      ...framePayload,
-      storyboard_filename: sbOk ? (ev.storyboard_filename || `${ev.clip_id}_sb.png`) : undefined,
-      frame_url: sbUrl,
-      comfyuiPct: 0,
-    }
-  }
-  if (ev.event === 'frame_done') {
-    const frameUrl = resolveBackendUrl(ev.frame_url)
-      || reelFrameClipUrl(mediaProjectId, ev.clip_id)
-    if (frameUrl) {
-      return {
-        ...prevClip,
-        frame_url: frameUrl,
-        first_frame_path: ev.path || prevClip.first_frame_path,
-        hd_frame_ready: Boolean(ev.hd_frame_ready),
-        clip_phase: ev.hd_frame_ready ? 'frame_gen' : prevClip.clip_phase,
-        status: 'generating',
-        comfyuiPct: 0,
-      }
-    }
-  }
-  return prevClip
 }
 
 function mapStoryboardFramesToClips(frames, mediaProjectId, clipStatus = 'storyboard') {
@@ -1207,7 +1181,7 @@ function ClipDetailCard({ clip, projectId, jobId, aspectRatio, onSave, onRegen, 
   )
 }
 
-function JobsListView({ projectId, refreshKey, onNew, onViewDetail }) {
+function JobsListView({ projectId, refreshKey, onNew, onViewDetail, onResumeJob }) {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState(null)
@@ -1275,6 +1249,7 @@ function JobsListView({ projectId, refreshKey, onNew, onViewDetail }) {
             {jobs.map(job => {
               const meta = JOB_STATUS_META[job.status] ?? JOB_STATUS_META.failed
               const videoSrc = reelVideoUrl(job)
+              const showResume = ['interrupted', 'failed'].includes(job.status) && jobCanResumePipeline(job)
               return (
                 <div
                   key={job.job_id}
@@ -1310,10 +1285,23 @@ function JobsListView({ projectId, refreshKey, onNew, onViewDetail }) {
                     ))}
                   </div>
                   <div className="flex gap-1.5">
+                    {showResume && onResumeJob && (
+                      <button
+                        type="button"
+                        onClick={e => { e.stopPropagation(); onResumeJob(job) }}
+                        className="flex-1 py-1.5 rounded text-[9px] font-mono border border-[#c9a84c]/40 bg-[#c9a84c]/10 text-[#c9a84c] hover:bg-[#c9a84c]/20"
+                      >
+                        <RotateCcw size={9} className="inline mr-0.5" />
+                        Riprendi
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={e => { e.stopPropagation(); onViewDetail(job) }}
-                      className="flex-1 py-1.5 rounded text-[9px] font-mono border border-[#252533] text-[#9090a8] hover:text-[#e8e4dd]"
+                      className={clsx(
+                        'py-1.5 rounded text-[9px] font-mono border border-[#252533] text-[#9090a8] hover:text-[#e8e4dd]',
+                        showResume ? 'px-2' : 'flex-1',
+                      )}
                     >
                       Dettagli
                     </button>
@@ -1336,7 +1324,7 @@ function JobsListView({ projectId, refreshKey, onNew, onViewDetail }) {
   )
 }
 
-function JobDetailView({ job, projectId, onBack, onOpenReview, onRestartFromScratch, onDelete }) {
+function JobDetailView({ job, projectId, onBack, onOpenReview, onResumePipeline, onRestartFromScratch, onDelete }) {
   const [deleting, setDeleting] = useState(false)
   const [fullJob, setFullJob] = useState(job)
   const [loadingJob, setLoadingJob] = useState(false)
@@ -1344,6 +1332,7 @@ function JobDetailView({ job, projectId, onBack, onOpenReview, onRestartFromScra
   const storageId = fullJob.storage_project_id || fullJob.project_id
   const canReview = jobHasStoryboard(fullJob) || fullJob.status === 'awaiting_storyboard' || jobHasFinalVideo(fullJob)
   const isLive = fullJob.status === 'running' || fullJob.status === 'awaiting_storyboard'
+  const canResume = ['interrupted', 'failed'].includes(fullJob.status) && jobCanResumePipeline(fullJob)
 
   useEffect(() => {
     let cancelled = false
@@ -1390,6 +1379,12 @@ function JobDetailView({ job, projectId, onBack, onOpenReview, onRestartFromScra
           Lista
         </button>
         <div className="flex gap-2">
+          {canResume && onResumePipeline && (
+            <GoldBtn onClick={() => onResumePipeline(fullJob)} disabled={loadingJob}>
+              <RotateCcw size={13} />
+              Riprendi pipeline
+            </GoldBtn>
+          )}
           {canReview && (
             <GoldBtn onClick={() => onOpenReview(fullJob)} disabled={loadingJob}>
               <LayoutGrid size={13} />
@@ -2180,25 +2175,12 @@ function InfoPanel({ visionData, directorData, directorNarrative, dopPlans, logs
   )
 }
 
-function buildReelEnhanceContext(description, config, directorNarrative, projectId = '') {
-  const dn = directorNarrative || {}
-  return {
-    project_id: projectId || '',
-    brief: (description || '').trim(),
-    style: config?.style,
-    director_narrative: dn.narrative_arc || dn.logline || '',
-    visual_theme: dn.visual_theme || '',
-    logline: dn.logline || '',
-    mood: dn.mood || '',
-  }
-}
-
 function GeneratingView({
   view, clips, setClips, globalPct, error, logs,
   phaseStatus, directorNarrative, visionData, directorData, dopPlans,
   infoTab, setInfoTab, result, storageProjectId, projectDir,
   activeJobId, mediaProjectId, config, onStop, onPause, onResumePause, onContinue,
-  jobPaused, staleRunning, canContinue, onGoList, onNew,
+  jobPaused, staleRunning, canContinue, pipelineInterrupted, onGoList, onNew,
   catalogProjectId, systemActivity, agentsStatus, reelEnhanceContext,
 }) {
   const [regenningId, setRegenningId] = useState(null)
@@ -2275,13 +2257,19 @@ function GeneratingView({
         <div className="flex items-center gap-3 mb-3">
           <Clapperboard className="text-[#c9a84c]" size={20} />
           <h1 className="font-['Playfair_Display'] text-lg">
-            {view === 'done' ? 'Reel completato' : 'Generazione in corso…'}
+            {view === 'done'
+              ? 'Reel completato'
+              : pipelineInterrupted
+                ? 'Pipeline interrotta'
+                : 'Generazione in corso…'}
           </h1>
-          {view === 'generating' && <Loader2 size={16} className="animate-spin text-[#c9a84c]" />}
+          {view === 'generating' && !pipelineInterrupted && (
+            <Loader2 size={16} className="animate-spin text-[#c9a84c]" />
+          )}
           <span className="text-[10px] font-mono text-[#c9a84c] ml-auto">{globalPct}%</span>
           {view === 'generating' && (
             <div className="flex items-center gap-2">
-              {staleRunning && canContinue && onContinue && (
+              {canContinue && onContinue && (
                 <GoldBtn onClick={onContinue}>
                   <RotateCcw size={12} /> Riprendi pipeline
                 </GoldBtn>
@@ -2334,6 +2322,12 @@ function GeneratingView({
       {error && (
         <div className="mx-6 mt-3 p-3 rounded border border-[#ef4444]/40 text-[#ef4444] text-xs font-mono shrink-0">
           {error}
+        </div>
+      )}
+
+      {pipelineInterrupted && canContinue && !error && (
+        <div className="mx-6 mt-3 p-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b] text-xs font-mono shrink-0">
+          Pipeline interrotta — checkpoint salvato. Usa «Riprendi pipeline» per continuare (produzione o fasi LLM già completate).
         </div>
       )}
 
@@ -2396,6 +2390,8 @@ function GeneratingView({
 
 export default function CreateReelScreen() {
   const { id: routeProjectId } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
   const catalogProjectId = routeProjectId ?? 'reel_standalone'
 
   const [view, setView] = useState('list')
@@ -2429,6 +2425,8 @@ export default function CreateReelScreen() {
     canContinue: false,
     taskRunning: false,
   })
+  const [resumePhase, setResumePhase] = useState('full')
+  const [pipelineInterrupted, setPipelineInterrupted] = useState(false)
   const [projectDir, setProjectDir] = useState(null)
   const [refUploadError, setRefUploadError] = useState(null)
   const [showMediaPicker, setShowMediaPicker] = useState(false)
@@ -2452,40 +2450,14 @@ export default function CreateReelScreen() {
     .sort()
     .join(',')
 
-  useEffect(() => {
-    if (!activeJobId || !catalogProjectId || !stuckClipsKey) return undefined
-
-    let cancelled = false
-    async function runReconcile() {
-      try {
-        const res = await fetch(
-          `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}/reconcile?storyboard=true&hd_frames=true`,
-          { method: 'POST' },
-        )
-        const data = await res.json().catch(() => ({}))
-        if (cancelled || !data.ok || !data.recovered?.length) return
-        setClips(prev => prev.map(c => {
-          let next = c
-          for (const ev of data.recovered) {
-            if (ev.clip_id === c.clip_id) {
-              next = mergeReelClipRecoveryEvent(next, ev, mediaProjectId)
-            }
-          }
-          return next
-        }))
-        addLog(`Recuperate ${data.count} anteprime (ComfyUI/disco)`)
-      } catch {
-        /* retry on next interval */
-      }
-    }
-
-    runReconcile()
-    const iv = setInterval(runReconcile, 8000)
-    return () => {
-      cancelled = true
-      clearInterval(iv)
-    }
-  }, [activeJobId, catalogProjectId, mediaProjectId, stuckClipsKey, addLog])
+  const reconcileAutoContinueRef = useRef(null)
+  const runPipelineRef = useRef(null)
+  const resumePhaseRef = useRef(resumePhase)
+  const pipelineInterruptedRef = useRef(pipelineInterrupted)
+  const jobControlRef = useRef(jobControl)
+  useEffect(() => { resumePhaseRef.current = resumePhase }, [resumePhase])
+  useEffect(() => { pipelineInterruptedRef.current = pipelineInterrupted }, [pipelineInterrupted])
+  useEffect(() => { jobControlRef.current = jobControl }, [jobControl])
 
   const loadPreview = useCallback(async (path) => {
     const r = await window.studio?.reel?.readImageLocal?.(path)
@@ -3019,6 +2991,53 @@ export default function CreateReelScreen() {
     await window.studio?.reel?.generate?.(buildParams(phase, resumeId || activeJobId), handleProgress)
   }
 
+  useEffect(() => { runPipelineRef.current = runPipeline })
+
+  useMediaReconcile({
+    enabled: Boolean(activeJobId && catalogProjectId),
+    kind: 'reel',
+    catalogProjectId,
+    jobId: activeJobId,
+    stuckKey: stuckClipsKey,
+    alwaysPoll: pipelineInterrupted || jobControl.canContinue,
+    onResult: (data) => {
+      if (data.recovered?.length) {
+        setClips(prev => prev.map(c => {
+          let next = c
+          for (const ev of data.recovered) {
+            if (ev.clip_id === c.clip_id) {
+              next = mergeClipRecoveryEvent(next, ev, mediaProjectId, 'reel')
+            }
+          }
+          return next
+        }))
+        const videoN = data.recovered.filter(e => e.event === 'clip_done').length
+        const frameN = data.count - videoN
+        if (videoN) addLog(`Recuperate ${videoN} clip video (ComfyUI/disco)`)
+        if (frameN) addLog(`Recuperate ${frameN} anteprime/frame (ComfyUI/disco)`)
+      }
+      const prodReady = resumePhaseRef.current === 'production'
+        || data.storyboard_approved
+        || (data.checkpoint_phase ?? 0) >= 55
+      const canAuto = prodReady
+        && data.all_clips_ready
+        && !jobControlRef.current.taskRunning
+        && (pipelineInterruptedRef.current || jobControlRef.current.canContinue)
+      if (canAuto && reconcileAutoContinueRef.current !== activeJobId) {
+        reconcileAutoContinueRef.current = activeJobId
+        setPipelineInterrupted(false)
+        setJobControl(s => ({
+          ...s,
+          staleRunning: false,
+          canContinue: false,
+          taskRunning: true,
+        }))
+        addLog('Tutte le clip pronte — ripresa automatica verso assemblaggio')
+        runPipelineRef.current?.('production', activeJobId)
+      }
+    },
+  })
+
   const handleGenerate = () => {
     if (!description.trim() || description.length < 20) {
       setError('Inserisci una descrizione di almeno 20 caratteri')
@@ -3099,8 +3118,13 @@ export default function CreateReelScreen() {
   const handleContinuePipeline = () => {
     if (!activeJobId) return
     setError(null)
+    setPipelineInterrupted(false)
     setJobControl(s => ({ ...s, staleRunning: false, canContinue: false, taskRunning: true }))
-    runPipeline('full', activeJobId)
+    runPipeline(resumePhase, activeJobId)
+  }
+
+  async function handleResumeJob(job) {
+    await openJobReview(job, { autoContinue: true })
   }
 
   function handleGoList() {
@@ -3130,7 +3154,16 @@ export default function CreateReelScreen() {
     setView('setup')
   }
 
-  async function openJobReview(job) {
+  useEffect(() => {
+    if (!location.state?.newProject) return
+    handleNew()
+    navigate(
+      { pathname: location.pathname, search: location.search },
+      { replace: true, state: {} },
+    )
+  }, [location.state?.newProject])
+
+  async function openJobReview(job, { autoContinue = false } = {}) {
     let hydrated = job
     try {
       const res = await fetch(
@@ -3187,10 +3220,14 @@ export default function CreateReelScreen() {
           : (hydrated.progress_pct ?? 0),
     )
     setPhaseStatus(buildPhaseStatusFromJob(hydrated))
+    const phase = resolveReelResumePhase(hydrated)
+    setResumePhase(phase)
+    const interrupted = ['interrupted', 'failed'].includes(hydrated.status) && !hydrated.task_running
+    setPipelineInterrupted(interrupted)
     setJobControl({
-      staleRunning: Boolean(hydrated.stale_running),
+      staleRunning: Boolean(hydrated.stale_running) || interrupted,
       paused: Boolean(hydrated.paused),
-      canContinue: Boolean(hydrated.can_continue),
+      canContinue: Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated),
       taskRunning: Boolean(hydrated.task_running),
     })
     if (hydrated.status === 'running' && hydrated.pipeline_ui_phase === 'production') {
@@ -3225,10 +3262,24 @@ export default function CreateReelScreen() {
     try {
       sessionStorage.removeItem(reelSessionStorageKey(catalogProjectId))
     } catch { /* ignore */ }
+
+    reconcileAutoContinueRef.current = null
+
+    if (autoContinue && jobCanResumePipeline(hydrated)) {
+      queueMicrotask(() => {
+        setPipelineInterrupted(false)
+        setJobControl(s => ({ ...s, staleRunning: false, canContinue: false, taskRunning: true }))
+        runPipeline(phase, hydrated.job_id)
+      })
+    }
   }
 
   function handleViewDetail(job) {
-    if (['running', 'awaiting_storyboard'].includes(job.status) || job.has_checkpoint) {
+    if (
+      ['running', 'awaiting_storyboard'].includes(job.status)
+      || job.has_checkpoint
+      || (['interrupted', 'failed'].includes(job.status) && jobCanResumePipeline(job))
+    ) {
       openJobReview(job)
       return
     }
@@ -3275,7 +3326,7 @@ export default function CreateReelScreen() {
         )
         if (!res.ok || cancelled) return
         const hydrated = await res.json()
-        if (!['running', 'awaiting_storyboard'].includes(hydrated.status)) return
+        if (!['running', 'awaiting_storyboard', 'interrupted'].includes(hydrated.status)) return
         const mediaPid = resolveReelMediaProjectId(
           hydrated.storage_project_id,
           hydrated.job_id,
@@ -3295,10 +3346,13 @@ export default function CreateReelScreen() {
           setDirectorNarrative(hydrated.result.director_narrative)
         }
         setPhaseStatus(buildPhaseStatusFromJob(hydrated))
+        setResumePhase(resolveReelResumePhase(hydrated))
+        const pollInterrupted = ['interrupted', 'failed'].includes(hydrated.status) && !hydrated.task_running
+        setPipelineInterrupted(pollInterrupted)
         setJobControl({
-          staleRunning: Boolean(hydrated.stale_running),
+          staleRunning: Boolean(hydrated.stale_running) || pollInterrupted,
           paused: Boolean(hydrated.paused),
-          canContinue: Boolean(hydrated.can_continue),
+          canContinue: Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated),
           taskRunning: Boolean(hydrated.task_running),
         })
         if (hydrated.pipeline_ui_phase === 'production') {
@@ -3353,6 +3407,7 @@ export default function CreateReelScreen() {
           refreshKey={listRefreshKey}
           onNew={handleNew}
           onViewDetail={handleViewDetail}
+          onResumeJob={handleResumeJob}
         />
       </div>
     )
@@ -3366,6 +3421,7 @@ export default function CreateReelScreen() {
           projectId={catalogProjectId}
           onBack={() => setView('list')}
           onOpenReview={openJobReview}
+          onResumePipeline={handleResumeJob}
           onRestartFromScratch={handleRestartFromScratch}
           onDelete={handleGoList}
         />
@@ -3467,6 +3523,7 @@ export default function CreateReelScreen() {
         jobPaused={jobControl.paused}
         staleRunning={jobControl.staleRunning}
         canContinue={jobControl.canContinue || jobControl.staleRunning}
+        pipelineInterrupted={pipelineInterrupted}
         onGoList={handleGoList}
         onNew={handleNew}
         catalogProjectId={catalogProjectId}

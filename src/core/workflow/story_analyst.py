@@ -15,13 +15,17 @@ import structlog
 log = structlog.get_logger()
 
 
-async def analyze_story(inp: ProjectInput, on_event: Optional[Callable] = None) -> StoryAnalysis:
+async def analyze_story(
+    inp: ProjectInput,
+    on_event: Optional[Callable] = None,
+    vault_context: str = "",
+) -> StoryAnalysis:
     """LLM 1: analizza il brief e restituisce StoryAnalysis."""
     config = get_config()
     role_cfg = config.get_llm_for_role("story_analyst")
 
     adapter = get_llm_adapter(role_cfg)
-    user_prompt = build_story_analyst_prompt(inp)
+    user_prompt = (vault_context or "") + build_story_analyst_prompt(inp)
 
     if on_event:
         on_event({

@@ -56,6 +56,7 @@ async def _finalize_tool_artifact(
     media_type: str,
     tool: str,
     tags: list[str],
+    generation_prompt: str = "",
 ) -> dict:
     """Scarica da ComfyUI, valida, registra in Media Library, ritorna payload SSE done."""
     expect = "video" if media_type == "video" else "image"
@@ -65,6 +66,7 @@ async def _finalize_tool_artifact(
         dest, media_type, "__tools__", "AI Tools",
         source="tools",
         tags=tags,
+        generation_prompt=generation_prompt,
     )
     preview = (
         f"/api/media/file/{media_id}" if media_id
@@ -173,6 +175,7 @@ async def run_tool(req: ToolRunRequest):
                     dest, files[0], run.client,
                     media_type="image", tool=req.tool,
                     tags=["tools", "txt2img", f"{w}x{h}"],
+                    generation_prompt=req.prompt,
                 )
                 yield ev({"done": True, "job_id": job_id, **artifact})
 
@@ -207,6 +210,7 @@ async def run_tool(req: ToolRunRequest):
                     dest, files[0], run.client,
                     media_type="video", tool=req.tool,
                     tags=["tools", "txt2video", f"{w}x{h}"],
+                    generation_prompt=req.prompt,
                 )
                 yield ev({"done": True, "job_id": job_id, **artifact})
 
@@ -266,6 +270,7 @@ async def run_tool(req: ToolRunRequest):
                     dest, files[0], run.client,
                     media_type="video", tool=req.tool,
                     tags=["tools", req.tool, f"{w}x{h}"],
+                    generation_prompt=req.prompt,
                 )
                 yield ev({"done": True, "job_id": job_id, **artifact})
 

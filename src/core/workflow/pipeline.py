@@ -25,7 +25,12 @@ from src.core.comfyui.workflow_builder    import (
     build_ltx_director_shot_workflow, build_ltx_director_full_video_workflow,
 )
 from src.core import pipeline_registry
-from src.core.utils.media_registry import register_media
+from src.core.utils.media_registry import (
+    register_media,
+    prompt_for_assembly_final,
+    prompt_for_cinematic_shot,
+    prompt_for_shots_summary,
+)
 
 log = structlog.get_logger()
 
@@ -169,6 +174,16 @@ class CinematicPipeline:
         return json.loads(self._state_path.read_text(encoding='utf-8')) if self._state_path.exists() \
                else {"completed_stages": [], "shot_states": {}, "data": {}}
 
+    def _vault_memory(self, llm_stage: str, shot_id: Optional[str] = None) -> str:
+        try:
+            from src.core.obsidian.context_for_llm import get_regia_memory_for_stage
+
+            return get_regia_memory_for_stage(
+                self.project_id, llm_stage, shot_id=shot_id, max_chars=8000,
+            )
+        except Exception:
+            return ""
+
     def _save_state(self, s):
         # Atomic write: write to temp file then rename to avoid empty state on crash
         tmp = self._state_path.with_suffix('.tmp')
@@ -207,6 +222,7 @@ class CinematicPipeline:
         """
         state = self._load_state()
         done = state["completed_stages"]
+        state["project_input"] = inp.model_dump()
         cfg = get_config()
         self._workflows = workflows or {}
 
@@ -240,7 +256,11 @@ class CinematicPipeline:
                              event_type=data.get("type", "progress"), extra=data)
 
                     sa = await _with_heartbeat(
-                        analyze_story(inp, on_event=on_event_sa),
+                        analyze_story(
+                            inp,
+                            on_event=on_event_sa,
+                            vault_context=self._vault_memory("story_analyst"),
+                        ),
                         "story_analysis", 0.3, on_progress,
                     )
                     state["data"]["story_analysis"] = sa.model_dump()
@@ -275,7 +295,10 @@ class CinematicPipeline:
                          })
 
                     arc = await _with_heartbeat(
-                        generate_narrative_arc(sa, inp),
+                        generate_narrative_arc(
+                            sa, inp,
+                            vault_context=self._vault_memory("narrative_director"),
+                        ),
                         "narrative_arc", 0.3, on_progress,
                     )
                     state["data"]["story_arc"] = arc.model_dump()
@@ -314,7 +337,10 @@ class CinematicPipeline:
                          })
 
                     shots = await _with_heartbeat(
-                        generate_shot_list(arc, inp, inp.audio_analysis),
+                        generate_shot_list(
+                            arc, inp, inp.audio_analysis,
+                            vault_context=self._vault_memory("cinematographer"),
+                        ),
                         "shot_list", 0.3, on_progress,
                     )
                     # Post-process: assign lyrics_segment based on computed lyric timing
@@ -361,7 +387,10 @@ class CinematicPipeline:
                             f"Prompt shot {idx}/{total}...", event_type="progress"))
 
                     shots = await _with_heartbeat(
-                        generate_frame_prompts(shots, inp),
+                        generate_frame_prompts(
+                            shots, inp,
+                            vault_context=self._vault_memory("prompt_engineer"),
+                        ),
                         "prompt_generation", 0.3, on_progress,
                     )
                     state["data"]["shot_list"] = [s.model_dump() for s in shots]
@@ -394,7 +423,10 @@ class CinematicPipeline:
                          })
 
                     report = await _with_heartbeat(
-                        check_continuity(shots),
+                        check_continuity(
+                            shots,
+                            vault_context=self._vault_memory("continuity_checker"),
+                        ),
                         "continuity_check", 0.3, on_progress,
                     )
                     state["data"]["continuity_report"] = report.model_dump()
@@ -435,13 +467,26 @@ class CinematicPipeline:
             # Assembly
             emit("assembly", 0.0, "Assemblaggio finale con FFmpeg...")
             final = await self._assembly(shots)
-            done.append("assembly"); self._save_state(state)
+            done.append("assembly")
+            state["final_deliverable"] = {
+                "video_path": str(final),
+                "pipeline": "cinematic",
+            }
+            self._save_state(state)
             emit("assembly", 1.0, "Video finale pronto!", artifact_path=str(final))
 
+            _arc = state.get("data", {}).get("story_arc") or {}
+            _assembly_prompt = prompt_for_assembly_final(
+                self._project_title,
+                project_input=state.get("project_input"),
+                shots=shots,
+                logline=_arc.get("logline"),
+            )
             _fire_register(register_media(
                 final, "video", self.project_id, self._project_title,
                 frame_type="final",
                 tags=["pipeline", "final", self._project_title],
+                generation_prompt=_assembly_prompt,
             ))
 
             pipeline_registry.complete_run(self.project_id, status="completed", stages_done=len(done))
@@ -536,6 +581,7 @@ class CinematicPipeline:
                             dest, "image", self.project_id, self._project_title,
                             shot_id=shot.shot_id, frame_type=ftype,
                             tags=["pipeline", self._project_title],
+                            generation_prompt=prompt_for_cinematic_shot(shot, "image", ftype),
                         ))
                     done_count += 1
                     on_progress(PipelineProgress("frame_gen", done_count/total, f"Frame {ftype} {shot.shot_id}", shot_id=shot.shot_id, artifact_path=str(dest) if dest else None))
@@ -721,6 +767,7 @@ class CinematicPipeline:
                             dest, "video", self.project_id, self._project_title,
                             shot_id=shot.shot_id, frame_type=None,
                             tags=["pipeline", self._project_title],
+                            generation_prompt=prompt_for_cinematic_shot(shot, "video"),
                         ))
                     done_count += 1
                     on_progress(PipelineProgress("video_gen", done_count/total, f"Clip {shot.shot_id}", shot_id=shot.shot_id, artifact_path=shot.clip_path))
@@ -822,6 +869,7 @@ class CinematicPipeline:
                             dest, "video", self.project_id, self._project_title,
                             shot_id=shot.shot_id, frame_type=None,
                             tags=["ltx_director", self._project_title],
+                            generation_prompt=prompt_for_cinematic_shot(shot, "video"),
                         ))
                     done_count += 1
                     on_progress(PipelineProgress(
@@ -978,10 +1026,16 @@ class CinematicPipeline:
         )
 
         # 7 — Register in media library
+        _ltx_prompt = prompt_for_shots_summary(patched_shots) or prompt_for_assembly_final(
+            self._project_title,
+            logline=getattr(story_arc, "logline", None) if story_arc else None,
+            shots=patched_shots,
+        )
         _fire_register(register_media(
             dest, "video", self.project_id, self._project_title,
             frame_type="final",
             tags=["ltx_director", "full_video", self._project_title],
+            generation_prompt=_ltx_prompt,
         ))
 
         return dest
@@ -1009,6 +1063,192 @@ class CinematicPipeline:
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg: {result.stderr.decode(errors='replace')[-500:]}")
         return out
+
+    # ── Media recovery (disco + history ComfyUI) ─────────────────────────────
+
+    def _frame_path_ok(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        from src.core.utils.comfyui_outputs import is_real_comfy_image
+
+        try:
+            return is_real_comfy_image(Path(path))
+        except OSError:
+            return False
+
+    def _clip_path_ok(self, path: Optional[str]) -> bool:
+        if not path:
+            return False
+        from src.core.utils.comfyui_outputs import is_real_comfy_video
+
+        try:
+            return is_real_comfy_video(Path(path))
+        except OSError:
+            return False
+
+    def all_shots_have_video(self) -> bool:
+        state = self._load_state()
+        shots = state.get("data", {}).get("shot_list", [])
+        if not shots:
+            return False
+        for s in shots:
+            sid = s.get("shot_id")
+            dest = self._clips / f"{sid}.mp4"
+            cp = s.get("clip_path")
+            if self._clip_path_ok(cp):
+                continue
+            if dest.is_file() and self._clip_path_ok(str(dest)):
+                continue
+            return False
+        return True
+
+    async def reconcile_missing_shot_media(
+        self,
+        *,
+        frames: bool = True,
+        videos: bool = True,
+    ) -> list[dict]:
+        """Recupera frame e clip mancanti da disco o history ComfyUI della run."""
+        state = self._load_state()
+        shots_raw = state.get("data", {}).get("shot_list", [])
+        if not shots_raw:
+            return []
+
+        shots = [CinematicShot(**s) for s in shots_raw]
+        events: list[dict] = []
+        client = await self._pool.get_client()
+
+        from src.core.utils.comfyui_outputs import (
+            COMFY_REAL_IMAGE_MIN_BYTES,
+            COMFY_REAL_VIDEO_MIN_BYTES,
+            download_image_by_prefix_probe,
+            download_video_by_prefix_probe,
+            is_real_comfy_image,
+        )
+
+        for shot in shots:
+            ss = state["shot_states"].setdefault(shot.shot_id, {})
+
+            if frames:
+                for ftype in ("first", "last"):
+                    key = f"frame_{ftype}"
+                    if ss.get(key) == "done" and self._frame_path_ok(
+                        (shot.first_frame.image_path if ftype == "first" and shot.first_frame else None)
+                        or (shot.last_frame.image_path if ftype == "last" and shot.last_frame else None),
+                    ):
+                        continue
+
+                    prefix = f"{shot.shot_id}_{ftype}"
+                    dest = self._frames / f"{prefix}.png"
+                    frame = shot.first_frame if ftype == "first" else shot.last_frame
+                    if dest.is_file() and is_real_comfy_image(dest, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                        if frame is None:
+                            from src.core.models.cinematic import FramePrompt
+                            frame = FramePrompt()
+                            if ftype == "first":
+                                shot.first_frame = frame
+                            else:
+                                shot.last_frame = frame
+                        frame.image_path = str(dest)
+                        ss[key] = "done"
+                        events.append({
+                            "event": "frame_done",
+                            "shot_id": shot.shot_id,
+                            "frame": ftype,
+                            "path": str(dest),
+                            "artifact_path": str(dest),
+                            "url": f"/api/pipeline/{self.project_id}/frames/{dest.name}",
+                            "cached": True,
+                        })
+                        continue
+
+                    try:
+                        saved = await download_image_by_prefix_probe(
+                            client,
+                            prefix,
+                            dest,
+                            min_image_bytes=COMFY_REAL_IMAGE_MIN_BYTES,
+                            local_folders=[self._frames],
+                        )
+                        if frame is None:
+                            from src.core.models.cinematic import FramePrompt
+                            frame = FramePrompt()
+                            if ftype == "first":
+                                shot.first_frame = frame
+                            else:
+                                shot.last_frame = frame
+                        frame.image_path = str(saved if saved.exists() else dest)
+                        ss[key] = "done"
+                        events.append({
+                            "event": "frame_done",
+                            "shot_id": shot.shot_id,
+                            "frame": ftype,
+                            "path": str(dest),
+                            "artifact_path": str(dest),
+                            "url": f"/api/pipeline/{self.project_id}/frames/{dest.name}",
+                        })
+                        log.info("cinematic_frame_recovered", shot_id=shot.shot_id, ftype=ftype)
+                    except Exception as exc:
+                        log.warning(
+                            "cinematic_frame_recover_failed",
+                            shot_id=shot.shot_id,
+                            ftype=ftype,
+                            error=str(exc),
+                        )
+
+            if videos:
+                if ss.get("video") == "done" and self._clip_path_ok(shot.clip_path):
+                    continue
+
+                dest = self._clips / f"{shot.shot_id}.mp4"
+                if dest.is_file() and self._clip_path_ok(str(dest)):
+                    shot.clip_path = str(dest)
+                    ss["video"] = "done"
+                    events.append({
+                        "event": "clip_done",
+                        "shot_id": shot.shot_id,
+                        "path": str(dest),
+                        "url": f"/api/pipeline/{self.project_id}/clips/{dest.name}",
+                        "cached": True,
+                    })
+                    continue
+
+                prefixes = [shot.shot_id, f"ltx_director/{shot.shot_id}"]
+                recovered = False
+                for prefix in prefixes:
+                    try:
+                        await download_video_by_prefix_probe(
+                            client,
+                            prefix,
+                            dest,
+                            min_video_bytes=COMFY_REAL_VIDEO_MIN_BYTES,
+                            local_folders=[self._clips, self._final],
+                        )
+                        if self._clip_path_ok(str(dest)):
+                            shot.clip_path = str(dest)
+                            ss["video"] = "done"
+                            events.append({
+                                "event": "clip_done",
+                                "shot_id": shot.shot_id,
+                                "path": str(dest),
+                                "url": f"/api/pipeline/{self.project_id}/clips/{dest.name}",
+                            })
+                            log.info("cinematic_video_recovered", shot_id=shot.shot_id, prefix=prefix)
+                            recovered = True
+                            break
+                    except Exception as exc:
+                        log.debug(
+                            "cinematic_video_prefix_miss",
+                            shot_id=shot.shot_id,
+                            prefix=prefix,
+                            error=str(exc),
+                        )
+                if not recovered:
+                    log.warning("cinematic_video_recover_failed", shot_id=shot.shot_id)
+
+        state["data"]["shot_list"] = [s.model_dump() for s in shots]
+        self._save_state(state)
+        return events
 
     # ── Copilot mode — per-shot helpers ─────────────────────────────────────
 
@@ -1056,6 +1296,7 @@ class CinematicPipeline:
                 dest, "image", self.project_id, self._project_title,
                 shot_id=shot_id, frame_type="first",
                 tags=["copilot", self._project_title],
+                generation_prompt=prompt_for_cinematic_shot(shot, "image", "first"),
             ))
             on_progress(PipelineProgress(
                 "frame_gen", 1.0, f"Frame generato: {shot_id}",
@@ -1121,6 +1362,7 @@ class CinematicPipeline:
                 dest, "video", self.project_id, self._project_title,
                 shot_id=shot_id, frame_type=None,
                 tags=["copilot", self._project_title],
+                generation_prompt=prompt_for_cinematic_shot(shot, "video"),
             ))
             on_progress(PipelineProgress(
                 "video_gen", 1.0, f"Clip pronta: {shot_id}",
@@ -1142,10 +1384,19 @@ class CinematicPipeline:
         shots = [CinematicShot(**s) for s in state.get("data", {}).get("shot_list", [])]
         on_progress(PipelineProgress("assembly", 0.0, "Assemblaggio finale..."))
         final = await self._assembly(shots)
+        state["final_deliverable"] = {"video_path": str(final), "pipeline": "cinematic"}
+        self._save_state(state)
+        _assembly_prompt = prompt_for_assembly_final(
+            self._project_title,
+            project_input=state.get("project_input"),
+            shots=shots,
+            logline=(state.get("data", {}).get("story_arc") or {}).get("logline"),
+        )
         _fire_register(register_media(
             final, "video", self.project_id, self._project_title,
             frame_type="final",
             tags=["copilot", "final", self._project_title],
+            generation_prompt=_assembly_prompt,
         ))
         on_progress(PipelineProgress("assembly", 1.0, "Video finale pronto!", artifact_path=str(final)))
         return str(final)

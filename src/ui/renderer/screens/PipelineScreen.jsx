@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Play, RotateCcw, CheckCircle, XCircle, Loader2, Film,
@@ -10,6 +10,7 @@ import {
 import { usePipelineStore, useProjectStore } from '../stores/index'
 import clsx from 'clsx'
 import { BACKEND_ORIGIN, pipelineFrameUrl } from '../utils/mediaUrl'
+import { useMediaReconcile } from '../hooks/useMediaReconcile'
 
 // ── Stage metadata ────────────────────────────────────────────────────────────
 
@@ -886,6 +887,8 @@ export default function PipelineScreen() {
     startPipeline, resetPipeline, resetPipelineFrom, stopPipeline, pausePipeline, resumePipeline,
   } = usePipelineStore()
 
+  const cinematicAutoContinueRef = useRef(null)
+
   const [tab, setTab] = useState('feed')
   const [pipelineData, setPipelineData] = useState(null)
   const [loadingState, setLoadingState] = useState(true)
@@ -976,6 +979,67 @@ export default function PipelineScreen() {
   const completedStages = pipelineData?.completed_stages || []
   const storyboardDone  = completedStages.includes('continuity_check')
   const productionDone  = completedStages.includes('assembly')
+
+  const cinematicStuckKey = useMemo(() => {
+    const shots = pipelineData?.data?.shot_list || []
+    return shots
+      .filter(s => {
+        const sid = s.shot_id
+        const ss = pipelineData?.shot_states?.[sid] || {}
+        const hasVideo = clips[sid] || (s.clip_path && String(s.clip_path).length > 0)
+        const hasFirst = frames[sid]?.first || s.first_frame?.image_path
+        const hasLast = frames[sid]?.last || s.last_frame?.image_path
+        const wantsFrames = ss.frame_first !== 'done' || ss.frame_last !== 'done' || !hasFirst || !hasLast
+        const wantsVideo = ss.video !== 'done' || !hasVideo
+        return wantsFrames || wantsVideo
+      })
+      .map(s => s.shot_id)
+      .sort()
+      .join(',')
+  }, [pipelineData, frames, clips])
+
+  useMediaReconcile({
+    enabled: Boolean(id),
+    kind: 'cinematic',
+    projectId: id,
+    stuckKey: cinematicStuckKey,
+    alwaysPoll: Boolean(
+      pipelineData?.data?.shot_list?.length
+      && completedStages.includes('continuity_check')
+      && !completedStages.includes('assembly'),
+    ),
+    onResult: (data) => {
+      if (!data.recovered?.length) return
+      for (const ev of data.recovered) {
+        if (ev.event === 'frame_done' && ev.shot_id) {
+          const isFirst = ev.frame === 'first'
+          usePipelineStore.setState(s => ({
+            frames: {
+              ...s.frames,
+              [ev.shot_id]: {
+                ...s.frames[ev.shot_id],
+                [isFirst ? 'first' : 'last']: ev.path || ev.artifact_path,
+              },
+            },
+          }))
+        }
+        if (ev.event === 'clip_done' && ev.shot_id) {
+          usePipelineStore.setState(s => ({
+            clips: { ...s.clips, [ev.shot_id]: ev.path || ev.artifact_path },
+          }))
+        }
+      }
+      window.studio.pipeline.state(id)
+        .then(d => { if (d) setPipelineData(d) })
+        .catch(() => {})
+      const sbDone = (data.completed_stages || []).includes('continuity_check') || storyboardDone
+      if (sbDone && data.all_shots_ready && stage === 'idle' && cinematicAutoContinueRef.current !== id) {
+        cinematicAutoContinueRef.current = id
+        handleStart('production')
+      }
+    },
+  })
+
   const showReview      = storyboardDone && !productionDone && stage === 'idle'
 
   const projectReady = currentProject && currentProject.id === id

@@ -77,6 +77,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "scripts/user_tools/",
+        "to": "scripts/user_tools/",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {

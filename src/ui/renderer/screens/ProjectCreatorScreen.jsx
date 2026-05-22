@@ -7,8 +7,9 @@ import {
 } from 'lucide-react'
 import { useProjectStore } from '../stores'
 import clsx from 'clsx'
+import { API_BASE } from '../utils/apiClient'
 
-const API = 'http://localhost:8765/api'
+const API = API_BASE
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

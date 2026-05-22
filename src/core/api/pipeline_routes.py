@@ -229,6 +229,18 @@ async def resume_pipeline(project_id: str):
     return {"resumed": True, "project_id": project_id}
 
 
+@router.post("/{project_id}/reconcile")
+async def reconcile_pipeline_media(
+    project_id: str,
+    frames: bool = True,
+    videos: bool = True,
+):
+    """Recupera frame e clip cinematiche da disco o history ComfyUI."""
+    from src.core.workflow.media_reconcile_service import reconcile_cinematic_project
+
+    return await reconcile_cinematic_project(project_id, frames=frames, videos=videos)
+
+
 # ── Copilot mode endpoints ───────────────────────────────────────────────────
 
 @router.post("/{project_id}/copilot/frame/{shot_id}")

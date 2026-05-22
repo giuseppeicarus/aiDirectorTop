@@ -63,6 +63,26 @@ async def _sync_cinematic_async(project_id: str, state_path: Path) -> None:
         log.warning("obsidian_cinematic_sync_failed", error=str(exc))
 
 
+def _schedule_coro(coro) -> None:
+    """Esegue coroutine in background (async loop o thread di fallback)."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+        return
+    except RuntimeError:
+        pass
+
+    import threading
+
+    def _runner() -> None:
+        try:
+            asyncio.run(coro)
+        except Exception as exc:
+            log.warning("obsidian_sync_thread_failed", error=str(exc))
+
+    threading.Thread(target=_runner, daemon=True).start()
+
+
 def schedule_obsidian_sync_from_checkpoint(
     *,
     project_id: str,
@@ -74,11 +94,7 @@ def schedule_obsidian_sync_from_checkpoint(
     """Schedula sync non bloccante dopo salvataggio checkpoint."""
     if not _obsidian_enabled():
         return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    loop.create_task(
+    _schedule_coro(
         _sync_checkpoint_async(
             project_id=project_id,
             job_id=job_id,
@@ -92,8 +108,4 @@ def schedule_obsidian_sync_from_checkpoint(
 def schedule_obsidian_sync_cinematic(project_id: str, state_path: Path) -> None:
     if not _obsidian_enabled():
         return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    loop.create_task(_sync_cinematic_async(project_id, state_path))
+    _schedule_coro(_sync_cinematic_async(project_id, state_path))

@@ -419,6 +419,28 @@ async def list_jobs(project_id: str):
     return {"jobs": [j.model_dump() for j in jobs]}
 
 
+@router.post("/jobs/{project_id}/{job_id}/reconcile")
+async def reconcile_trailer_job_clips(
+    project_id: str,
+    job_id: str,
+    storyboard: bool = True,
+    hd_frames: bool = False,
+    videos: bool = True,
+):
+    """Recupera storyboard, frame HD e video da disco / history ComfyUI."""
+    from src.core.workflow.media_reconcile_service import reconcile_reel_or_trailer_job
+
+    result = await reconcile_reel_or_trailer_job(
+        project_id, job_id, "trailer",
+        storyboard=storyboard,
+        hd_frames=hd_frames,
+        videos=videos,
+    )
+    if not result.get("ok") and result.get("error") == "Checkpoint non trovato":
+        raise HTTPException(status_code=404, detail="Checkpoint non trovato")
+    return result
+
+
 @router.delete("/jobs/{project_id}/{job_id}")
 async def delete_job(project_id: str, job_id: str, cleanup: bool = False):
     """Delete a job record. Pass ?cleanup=true to also remove generated files."""

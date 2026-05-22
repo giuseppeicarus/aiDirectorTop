@@ -16,7 +16,10 @@ log = structlog.get_logger()
 CHUNK_SIZE = 10  # shot per chiamata (analizza coppie consecutive)
 
 
-async def check_continuity(shot_list: List[CinematicShot]) -> ContinuityReport:
+async def check_continuity(
+    shot_list: List[CinematicShot],
+    vault_context: str = "",
+) -> ContinuityReport:
     """LLM 5: analizza la shot list e restituisce un report di continuità."""
     config = get_config()
     role_cfg = config.get_llm_for_role("continuity_checker")
@@ -37,7 +40,7 @@ async def check_continuity(shot_list: List[CinematicShot]) -> ContinuityReport:
 
         raw = await adapter.generate_json(
             system=CONTINUITY_CHECKER_SYSTEM,
-            user=build_continuity_checker_prompt(chunk_dicts),
+            user=(vault_context or "") + build_continuity_checker_prompt(chunk_dicts),
             temperature=getattr(role_cfg, "temperature", 0.20),
             max_tokens=3000,
         )

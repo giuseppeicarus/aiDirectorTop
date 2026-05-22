@@ -1,20 +1,30 @@
-import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import {
-  Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Zap, Wrench,
+  Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Zap, Wrench, LayoutDashboard,
   Image, GitBranch, Wand2, Package, Clapperboard, Tv, Instagram, BookOpen,
-  ChevronDown, ChevronRight, Play, Music,
+  ChevronDown, ChevronRight, Play, Music, Layers, Video,
+  Image as ImageIcon,
 } from 'lucide-react'
 import { useConfigStore, usePipelineStore, useProjectStore } from '../stores'
 import { useEffect, useMemo, useState } from 'react'
 import clsx from 'clsx'
 import GlobalActivityBanner from './GlobalActivityBanner'
+import NewProjectTypeModal, { NEW_PROJECT_OPTIONS } from './NewProjectTypeModal'
 import { useGlobalActivityBridge } from '../hooks/useGlobalActivityBridge'
+import { fetchRecentNavItems, recentKindLabel, recentKindColor } from '../utils/sidebarRecent'
 
 const TOOL_NAV = [
   { id: 'txt2img', label: 'Text → Image', Icon: Image },
   { id: 'txt2video', label: 'Text → Video', Icon: Film },
   { id: 'img2video', label: 'Image → Video', Icon: Play },
   { id: 'img_audio2video', label: 'Image + Audio → Video', Icon: Music },
+]
+
+const MEDIA_NAV = [
+  { type: 'all', label: 'All', Icon: Layers, to: '/media' },
+  { type: 'image', label: 'Image', Icon: ImageIcon, to: '/media?type=image' },
+  { type: 'video', label: 'Video', Icon: Video, to: '/media?type=video' },
+  { type: 'audio', label: 'Audio', Icon: Music, to: '/media?type=audio' },
 ]
 
 const CONFIG_NAV = [
@@ -24,6 +34,7 @@ const CONFIG_NAV = [
   { to: '/workflows', label: 'Workflow', Icon: GitBranch },
   { to: '/queue', label: 'Code & Monitor', Icon: ListChecks, pipelineDot: true },
   { to: '/obsidian', label: 'Obsidian Vault', Icon: BookOpen, accent: true },
+  { to: '/settings', label: 'Impostazioni', Icon: Settings },
 ]
 
 function navClass(isActive, accent) {
@@ -57,10 +68,13 @@ export default function Layout() {
   const { stage } = usePipelineStore()
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
   const pipelineActive = !['idle', 'done', 'error'].includes(stage)
 
-  const [configOpen, setConfigOpen] = useState(true)
-  const [toolsOpen, setToolsOpen] = useState(true)
+  const [configOpen, setConfigOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [recentItems, setRecentItems] = useState([])
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
 
   useGlobalActivityBridge()
 
@@ -72,14 +86,14 @@ export default function Layout() {
     }
   }, [])
 
-  const recentProjects = useMemo(() => {
-    const sorted = [...projects].sort((a, b) => {
-      const ta = new Date(a.updated_at || a.created_at || 0).getTime()
-      const tb = new Date(b.updated_at || b.created_at || 0).getTime()
-      return tb - ta
-    })
-    return sorted.slice(0, 3)
-  }, [projects])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const items = await fetchRecentNavItems(3)
+      if (!cancelled) setRecentItems(items)
+    })()
+    return () => { cancelled = true }
+  }, [projects, location.pathname, location.search])
 
   const activeToolId = useMemo(() => {
     if (!location.pathname.startsWith('/tools')) return null
@@ -90,20 +104,37 @@ export default function Layout() {
   const configActive = CONFIG_NAV.some(
     (item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`),
   )
-  const toolsActive = location.pathname.startsWith('/tools')
+  const toolsActive =
+    location.pathname.startsWith('/tools')
+    || location.pathname === '/frame-cut-optimizer'
+    || location.pathname.startsWith('/frame-cut-optimizer/')
+
+  const mediaActive = location.pathname.startsWith('/media')
 
   useEffect(() => {
-    if (configActive) setConfigOpen(true)
-  }, [configActive])
-
-  useEffect(() => {
-    if (toolsActive) setToolsOpen(true)
+    setToolsOpen(toolsActive)
   }, [toolsActive])
+
+  useEffect(() => {
+    setConfigOpen(configActive)
+  }, [configActive])
 
   const onlineCount = nodes.filter(n => n.online).length
 
+  function handleNewProjectType(optionId) {
+    const opt = NEW_PROJECT_OPTIONS.find(o => o.id === optionId)
+    if (!opt) return
+    setNewProjectOpen(false)
+    navigate(opt.to, opt.state ? { state: opt.state } : undefined)
+  }
+
   return (
-    <div className="flex h-screen bg-[#0a0a0f] text-[#f0ede8] overflow-hidden">
+    <div className="flex h-full bg-[#0a0a0f] text-[#f0ede8] overflow-hidden">
+      <NewProjectTypeModal
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onSelect={handleNewProjectType}
+      />
       <aside className="w-56 bg-[#12121a] border-r border-[#2a2a38] flex flex-col shrink-0">
         <div className="px-5 py-5 border-b border-[#2a2a38]">
           <div className="flex items-center gap-2">
@@ -116,12 +147,17 @@ export default function Layout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          <NavLink to="/dashboard" className={({ isActive }) => navClass(isActive, true)}>
+            <LayoutDashboard size={15} />
+            Dashboard
+          </NavLink>
+
           <button
             type="button"
-            onClick={() => navigate('/projects/new')}
+            onClick={() => setNewProjectOpen(true)}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-md
                        bg-[#c9a84c]/10 hover:bg-[#c9a84c]/20 text-[#c9a84c]
-                       text-sm transition-colors mb-2"
+                       text-sm transition-colors mb-2 mt-1"
           >
             <Plus size={15} />
             <span>Nuovo Progetto</span>
@@ -136,58 +172,131 @@ export default function Layout() {
               <FolderOpen size={15} />
               Tutti i progetti
             </NavLink>
-            {recentProjects.map((p) => (
-              <NavLink
-                key={p.id}
-                to={`/projects/${p.id}`}
-                className={({ isActive }) =>
-                  clsx(
-                    'flex items-center gap-2 pl-7 pr-3 py-1.5 rounded-md text-[12px] transition-colors truncate',
-                    isActive
-                      ? 'bg-[#1a1a24] text-[#c9a84c]'
-                      : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]',
-                  )
-                }
-                title={p.title}
-              >
-                <span className="truncate">{p.title || p.id}</span>
-              </NavLink>
-            ))}
-            {recentProjects.length === 0 && (
-              <p className="pl-7 pr-2 py-1 text-[10px] text-[#555568]">Nessun progetto</p>
+            {recentItems.map((item) => {
+              const pathOnly = item.path?.split('?')[0] || ''
+              const jobId = item.path?.includes('job=')
+                ? new URLSearchParams(item.path.split('?')[1] || '').get('job')
+                : null
+              const pathMatch = location.pathname === pathOnly
+                || (item.kind === 'project' && location.pathname.startsWith(`${pathOnly}/`))
+              const jobMatch = jobId && searchParams.get('job') === jobId
+              return (
+                <NavLink
+                  key={`${item.kind}-${item.catalog_id}-${item.id}`}
+                  to={item.path}
+                  className={({ isActive }) =>
+                    clsx(
+                      'flex items-center gap-1.5 pl-7 pr-2 py-1.5 rounded-md text-[12px] transition-colors min-w-0',
+                      (isActive || pathMatch || jobMatch)
+                        ? 'bg-[#1a1a24] text-[#c9a84c]'
+                        : 'text-[#9090a0] hover:text-[#f0ede8] hover:bg-[#1a1a24]',
+                    )
+                  }
+                  title={item.title}
+                >
+                  <span className={clsx('text-[8px] font-mono uppercase shrink-0', recentKindColor(item.kind))}>
+                    {recentKindLabel(item.kind)}
+                  </span>
+                  <span className="truncate flex-1">{item.title}</span>
+                </NavLink>
+              )
+            })}
+            {recentItems.length === 0 && (
+              <p className="pl-7 pr-2 py-1 text-[10px] text-[#555568]">Nessun lavoro recente</p>
             )}
           </div>
 
           <div className="my-2 border-t border-[#2a2a38]" />
 
-          <NavLink to="/director" className={({ isActive }) => navClass(isActive, true)}>
-            <Clapperboard size={15} />
-            Director Cinema
-          </NavLink>
-
-          <NavLink to="/trailer" className={({ isActive }) => navClass(isActive, true)}>
-            <Tv size={15} />
-            Trailer Generator
-          </NavLink>
-
-          <NavLink to="/createreel" className={({ isActive }) => navClass(isActive, true)}>
-            <Instagram size={15} />
-            CreateReel
-          </NavLink>
+          {/* ── App ── */}
+          <div className="mb-2">
+            <div className="px-2 py-1.5 text-[10px] font-mono uppercase tracking-wider text-[#555568]">
+              App
+            </div>
+            <NavLink
+              to="/director"
+              className={({ isActive }) => navClass(isActive || location.pathname.startsWith('/director'), true)}
+            >
+              <Clapperboard size={15} />
+              Director Cinema
+            </NavLink>
+            <NavLink
+              to="/trailer"
+              className={({ isActive }) => navClass(
+                isActive || (location.pathname.startsWith('/trailer') && !location.pathname.startsWith('/projects/')),
+                true,
+              )}
+            >
+              <Tv size={15} />
+              Trailer Generator
+            </NavLink>
+            <NavLink
+              to="/createreel"
+              className={({ isActive }) => navClass(
+                isActive || location.pathname.startsWith('/createreel') || location.pathname.endsWith('/reel'),
+                true,
+              )}
+            >
+              <Instagram size={15} />
+              CreateReel
+            </NavLink>
+          </div>
 
           <div className="my-2 border-t border-[#2a2a38]" />
 
-          <NavLink to="/media" className={({ isActive }) => navClass(isActive)}>
-            <Image size={15} />
-            Media Library
-          </NavLink>
+          {/* ── Tools ── */}
+          <SidebarGroup
+            title="Tools"
+            open={toolsOpen}
+            onToggle={() => setToolsOpen(v => !v)}
+          >
+            {TOOL_NAV.map(({ id, label, Icon }) => {
+              const onToolsPage = location.pathname.startsWith('/tools')
+              const active = onToolsPage && (activeToolId === id || (!activeToolId && id === 'txt2img'))
+              return (
+                <NavLink
+                  key={id}
+                  to={{ pathname: '/tools', search: `?tool=${id}` }}
+                  className={navClass(active)}
+                >
+                  <Icon size={15} />
+                  {label}
+                </NavLink>
+              )
+            })}
+            <NavLink to="/frame-cut-optimizer" className={({ isActive }) => navClass(isActive)}>
+              <Scissors size={15} />
+              Frame Cut
+            </NavLink>
+          </SidebarGroup>
 
-          <NavLink to="/frame-cut-optimizer" className={({ isActive }) => navClass(isActive)}>
-            <Scissors size={15} />
-            Frame Cut
-          </NavLink>
+          {/* ── Media Library ── */}
+          <div className="mb-2 pt-1">
+            <div className="px-2 py-1.5 text-[10px] font-mono uppercase tracking-wider text-[#555568]">
+              Media Library
+            </div>
+            {MEDIA_NAV.map(({ type, label, Icon, to }) => {
+              const active = mediaActive && (
+                type === 'all'
+                  ? !searchParams.get('type') || searchParams.get('type') === 'all'
+                  : searchParams.get('type') === type
+              )
+              return (
+                <NavLink
+                  key={type}
+                  to={to}
+                  className={({ isActive }) => navClass(isActive || active)}
+                >
+                  <Icon size={15} />
+                  {label}
+                </NavLink>
+              )
+            })}
+          </div>
 
-          {/* ── Configurazione ── */}
+          <div className="my-2 border-t border-[#2a2a38]" />
+
+          {/* ── Configurazione (ultima sezione) ── */}
           <SidebarGroup
             title="Configurazione"
             open={configOpen}
@@ -203,34 +312,6 @@ export default function Layout() {
               </NavLink>
             ))}
           </SidebarGroup>
-
-          {/* ── Tools ── */}
-          <SidebarGroup
-            title="Tools"
-            open={toolsOpen}
-            onToggle={() => setToolsOpen(v => !v)}
-          >
-            {TOOL_NAV.map(({ id, label, Icon }) => {
-              const active = toolsActive && (activeToolId === id || (!activeToolId && id === 'txt2img'))
-              return (
-                <NavLink
-                  key={id}
-                  to={{ pathname: '/tools', search: `?tool=${id}` }}
-                  className={navClass(active)}
-                >
-                  <Icon size={15} />
-                  {label}
-                </NavLink>
-              )
-            })}
-          </SidebarGroup>
-
-          <div className="my-2 border-t border-[#2a2a38]" />
-
-          <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
-            <Settings size={15} />
-            Impostazioni
-          </NavLink>
         </nav>
 
         <div className="px-4 py-3 border-t border-[#2a2a38]">

@@ -18,7 +18,7 @@ from src.core.comfyui.pool import ComfyUINodePool
 from src.core.comfyui.progress import stream_pool_comfy_run
 from src.core.comfyui.workflow_builder import WORKFLOWS_DIR, get_workflow, list_workflows, extract_output_files
 from src.core.config import get_config
-from src.core.utils.media_registry import register_media
+from src.core.utils.media_registry import register_media, prompt_for_director_timeline
 
 router = APIRouter()
 
@@ -253,6 +253,7 @@ async def director_generate(req: DirectorGenerateRequest):
                 dest, "video", "__director__", req.project_name,
                 source="director",
                 tags=["director", req.project_name, f"{req.width}x{req.height}"],
+                generation_prompt=prompt_for_director_timeline(req.global_prompt, req.clips),
             ))
 
             yield ev({
@@ -272,6 +273,22 @@ async def director_generate(req: DirectorGenerateRequest):
         stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class DirectorReconcileRequest(BaseModel):
+    job_id: str
+    filename_prefix: Optional[str] = None
+
+
+@router.post("/reconcile")
+async def director_reconcile(req: DirectorReconcileRequest):
+    """Recupera output video Director da disco o history ComfyUI."""
+    from src.core.workflow.media_reconcile_service import reconcile_director_output
+
+    return await reconcile_director_output(
+        req.job_id,
+        filename_prefix=req.filename_prefix,
     )
 
 

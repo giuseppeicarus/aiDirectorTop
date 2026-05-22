@@ -3,7 +3,7 @@
  * Gestisce la finestra, il backend Python e i canali IPC.
  */
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Notification } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, dialog, Notification, Menu } = require('electron')
 const path = require('path')
 const http = require('http')
 const { spawn } = require('child_process')
@@ -101,14 +101,14 @@ async function _waitForViteDevServer(maxMs = 30000) {
 // ── Window ────────────────────────────────────────────────────────────────────
 
 async function createWindow() {
-  const isWin = process.platform === 'win32'
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 600,
     show: false,
-    ...(isWin ? {} : { titleBarStyle: 'hiddenInset' }),
+    frame: false,
+    autoHideMenuBar: true,
     backgroundColor: '#0a0a0f',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -121,6 +121,13 @@ async function createWindow() {
     mainWindow.show()
     mainWindow.focus()
   })
+
+  const emitMaximized = () => {
+    if (!mainWindow?.webContents) return
+    mainWindow.webContents.send('window:maximized', mainWindow.isMaximized())
+  }
+  mainWindow.on('maximize', emitMaximized)
+  mainWindow.on('unmaximize', emitMaximized)
 
   mainWindow.webContents.on('did-fail-load', (_ev, code, desc, url) => {
     log.error('Renderer failed to load', { code, desc, url })
@@ -147,6 +154,22 @@ async function createWindow() {
 // ── IPC Handlers ──────────────────────────────────────────────────────────────
 
 function registerIpcHandlers() {
+  const focusedWin = () => BrowserWindow.getFocusedWindow() || mainWindow
+
+  ipcMain.handle('window:minimize', () => {
+    focusedWin()?.minimize()
+  })
+  ipcMain.handle('window:toggleMaximize', () => {
+    const w = focusedWin()
+    if (!w) return false
+    if (w.isMaximized()) w.unmaximize()
+    else w.maximize()
+    return w.isMaximized()
+  })
+  ipcMain.handle('window:isMaximized', () => focusedWin()?.isMaximized() ?? false)
+  ipcMain.handle('window:close', () => {
+    focusedWin()?.close()
+  })
 
   // Proxy generico verso il backend FastAPI
   async function apiCall(method, path, body) {
@@ -295,6 +318,45 @@ function registerIpcHandlers() {
 
   ipcMain.handle('backend:url',     ()               => BACKEND_URL)
   ipcMain.handle('shell:openPath',  (_, p)           => shell.openPath(p))
+
+  const COMFY_MODEL_SCRIPTS = {
+    linux:       { filename: 'download_model_comfyui_linux.sh',    filters: [{ name: 'Shell script', extensions: ['sh'] }] },
+    macos:       { filename: 'download_model_comfyui_macos.sh',    filters: [{ name: 'Shell script', extensions: ['sh'] }] },
+    windows_ps1: { filename: 'download_model_comfyui_windows.ps1', filters: [{ name: 'PowerShell', extensions: ['ps1'] }] },
+    windows_bat: { filename: 'download_model_comfyui_windows.bat', filters: [{ name: 'Batch', extensions: ['bat'] }] },
+  }
+
+  function resolveUserToolsDir() {
+    const fs = require('fs')
+    const devRoot = path.join(__dirname, '..', '..')
+    if (!app.isPackaged) {
+      return path.join(devRoot, 'scripts', 'user_tools')
+    }
+    const bundled = path.join(process.resourcesPath, 'scripts', 'user_tools')
+    if (fs.existsSync(bundled)) return bundled
+    return path.join(devRoot, 'scripts', 'user_tools')
+  }
+
+  ipcMain.handle('settings:downloadComfyModelScript', async (_, scriptId) => {
+    const fs = require('fs')
+    const meta = COMFY_MODEL_SCRIPTS[scriptId]
+    if (!meta) return { saved: false, error: `Script sconosciuto: ${scriptId}` }
+    const src = path.join(resolveUserToolsDir(), meta.filename)
+    if (!fs.existsSync(src)) {
+      return { saved: false, error: `File non trovato: ${src}` }
+    }
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Salva script download modelli ComfyUI',
+      defaultPath: meta.filename,
+      filters: meta.filters,
+    })
+    if (canceled || !filePath) return { saved: false, canceled: true }
+    fs.copyFileSync(src, filePath)
+    if (filePath.endsWith('.sh')) {
+      try { fs.chmodSync(filePath, 0o755) } catch { /* Windows */ }
+    }
+    return { saved: true, path: filePath }
+  })
 
   // ── Tools ───────────────────────────────────────────────────────────────────
   ipcMain.handle('tools:run', (event, req) => {
@@ -858,6 +920,7 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null)
   registerIpcHandlers()
 
   // npm run dev avvia uvicorn via dev:backend — non spawnare un secondo processo sulla 8765

@@ -1567,6 +1567,7 @@ class ReelPipeline(TrailerPipeline):
                 }
 
             if pipeline_completed:
+                self._save_checkpoint(99)
                 self._save_job(status="done", result=self._last_result)
                 cp = self._checkpoint_path()
                 if cp.exists():
@@ -1581,20 +1582,32 @@ class ReelPipeline(TrailerPipeline):
 
     def _save_checkpoint(self, phase_num: int) -> None:
         try:
+            from src.core.obsidian.pipeline_memory import phase_label as obs_phase_label
+
             payload = {
                 "phase": phase_num,
+                "phase_label": obs_phase_label("reel", phase_num),
+                "job_id": self.job_id,
                 "reel_description": self._reel_req.description,
+                "request": self._reel_req.model_dump(),
                 "vision": self._vision,
                 "director_narrative": self._director_narrative,
                 "ref_paths": [str(p) for p in self._ref_paths],
+                "reference_image_paths": [str(p) for p in self._ref_paths],
                 "sections": [s.model_dump() for s in self._sections],
                 "downbeats": self._downbeats,
                 "audio_duration": self._audio_duration,
+                "audio_analysis_summary": getattr(self, "_audio_analysis_summary", None) or {},
+                "lyric_beats": getattr(self, "_lyric_beats", None) or [],
+                "slot_lyrics": getattr(self, "_slot_lyrics", None) or {},
+                "lyrics": self._reel_req.lyrics,
+                "audio_start_sec": self._audio_start_sec,
                 "edl": self._edl.model_dump() if self._edl else None,
                 "clips_list": [c.model_dump() for c in self._clips_list],
                 "trailer_audio_path": str(self._trailer_audio_path) if self._trailer_audio_path else None,
                 "storyboard_approved": getattr(self, "_storyboard_approved", False),
                 "visual_plans": getattr(self, "_visual_plans_cache", None) or {},
+                "final_deliverable": getattr(self, "_last_result", None),
             }
             self._checkpoint_path().write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False),
@@ -1606,12 +1619,7 @@ class ReelPipeline(TrailerPipeline):
                 from src.core.obsidian.sync import schedule_obsidian_sync_from_checkpoint
 
                 if get_config().obsidian.enabled and get_config().obsidian.auto_sync_on_checkpoint:
-                    extra = {
-                        "config": {
-                            "txt2img_workflow": self.req.txt2img_workflow,
-                            "img2video_workflow": self.req.img2video_workflow,
-                        }
-                    }
+                    extra = {"config": self._reel_req.model_dump()}
                     schedule_obsidian_sync_from_checkpoint(
                         project_id=self._storage_project_id,
                         job_id=self.job_id,

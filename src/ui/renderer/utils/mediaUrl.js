@@ -2,9 +2,9 @@
  * URL backend per anteprime immagini/video (ComfyUI, trailer, tools, pipeline).
  * Usare sempre 127.0.0.1 — allineato a apiClient e CSP.
  */
-import { API_BASE } from './apiClient'
+import { BACKEND_ORIGIN } from './apiClient'
 
-export const BACKEND_ORIGIN = API_BASE.replace(/\/api\/?$/, '')
+export { BACKEND_ORIGIN }
 
 /** ID cartella per anteprime/API media (allineato al backend). */
 export function resolveTrailerMediaProjectId(storageProjectId, jobId, catalogProjectId) {

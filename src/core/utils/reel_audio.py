@@ -89,7 +89,8 @@ async def analyze_reel_audio_window(
     )
     loop = asyncio.get_event_loop()
     sections, downbeats, _file_dur = await loop.run_in_executor(
-        None, pipeline._analyze_audio_sync, window,
+        None,
+        lambda: pipeline._analyze_audio_sync(window, use_demucs=False),
     )
     target = float(duration_sec)
     lyric_beats = compute_lyric_beats_for_sections(lyrics or "", sections, target)

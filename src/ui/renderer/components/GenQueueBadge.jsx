@@ -12,8 +12,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Clock, Layers } from 'lucide-react'
 import clsx from 'clsx'
-
-const API = 'http://localhost:8765/api'
+import { API_BASE, waitForBackend } from '../utils/apiClient'
 const POLL_MS = 10_000
 
 function fmtSec(s) {
@@ -33,8 +32,12 @@ async function fetchStats() {
   const now = Date.now()
   if (_cache && now - _cacheTime < POLL_MS) return _cache
   if (_pending) return _pending
-  _pending = fetch(`${API}/queue/gen-stats`)
-    .then(r => r.json())
+  _pending = (async () => {
+    await waitForBackend(12000)
+    const r = await fetch(`${API_BASE}/queue/gen-stats`, { cache: 'no-store' })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.json()
+  })()
     .then(data => {
       _cache = data
       _cacheTime = Date.now()

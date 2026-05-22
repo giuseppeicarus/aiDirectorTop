@@ -105,7 +105,12 @@ class ComfyUIConfig(BaseModel):
     max_parallel_frame_jobs: int = 4
     max_parallel_video_jobs: int = 2
     queue_timeout_sec: int = 30
+    # Legacy: non usato come deadline fissa; vedi execution_max / idle
     execution_timeout_sec: int = 300
+    # Attesa ComfyUI: fallisce solo dopo idle senza progresso/coda/WS
+    execution_idle_timeout_sec: int = 300
+    # Tetto assoluto (sicurezza) — video LTX possono richiedere ore
+    execution_max_timeout_sec: int = 10800
     websocket_recv_timeout_sec: int = 10
     models: ComfyUIModelsConfig = Field(default_factory=ComfyUIModelsConfig)
 

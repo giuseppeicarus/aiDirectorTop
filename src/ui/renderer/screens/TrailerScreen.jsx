@@ -4,8 +4,8 @@
  * Three views: setup → generating → done
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { useJobQueryDeepLink } from '../hooks/useJobQueryDeepLink'
 import {
   Music2, Upload, Play, Pause, Loader2, CheckCircle, AlertCircle,
@@ -24,6 +24,10 @@ import {
   resolveTrailerMediaProjectId,
   trailerFrameClipUrl,
 } from '../utils/mediaUrl'
+import { buildTrailerEnhanceContext } from '../utils/obsidianEnhanceContext'
+import { ReelPromptEditorModal } from '../components/ReelClipCards'
+import { clipNeedsMediaRecovery, mergeClipRecoveryEvent } from '../utils/clipMediaRecovery'
+import { useMediaReconcile } from '../hooks/useMediaReconcile'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1263,7 +1267,7 @@ function StoryboardThumb({ clip, projectId, jobId, className = 'w-full h-full ob
 
 // ── Clip Grid ────────────────────────────────────────────────────────────────
 
-function ClipGrid({ clips, aspectRatio, projectId, jobId }) {
+function ClipGrid({ clips, aspectRatio, projectId, jobId, onEditPrompts }) {
   const isPortrait = aspectRatio === '9:16'
   const [expandedId, setExpandedId] = useState(null)
 
@@ -1350,6 +1354,16 @@ function ClipGrid({ clips, aspectRatio, projectId, jobId }) {
                 </p>
               </div>
             ) : null)}
+            {onEditPrompts && (
+              <button
+                type="button"
+                onClick={() => onEditPrompts(clip)}
+                className="mt-2 flex items-center gap-1.5 text-[9px] font-mono text-[#c9a84c] hover:text-[#e6c46a]"
+              >
+                <Wand2 size={11} />
+                Modifica e migliora prompt
+              </button>
+            )}
           </div>
         )
       })()}
@@ -1413,7 +1427,6 @@ function EDLTimelineBar({ edl }) {
 }
 
 
-const BACKEND_ORIGIN_TR = 'http://127.0.0.1:8765'
 const LS_TR_OVERRIDES_KEY = (wfId) => `cinematic_model_overrides_${wfId}`
 
 function loadWfOverrides(wfId) {
@@ -1452,14 +1465,14 @@ function TrailerModelOverridesSection({ config, onChange }) {
     if (nodeModels) return
     setLoadingModels(true)
     try {
-      const res = await fetch(`${BACKEND_ORIGIN_TR}/api/comfyui/nodes/0/models`)
+      const res = await fetch(`${BACKEND_ORIGIN}/api/comfyui/nodes/0/models`)
       const data = await res.json()
       setNodeModels(data)
       const wfIds = [config.txt2img_workflow, config.img2video_workflow].filter(Boolean)
       const results = {}
       await Promise.all(wfIds.map(async (id) => {
         try {
-          const r = await fetch(`${BACKEND_ORIGIN_TR}/api/comfyui/workflow/${id}/model-nodes`)
+          const r = await fetch(`${BACKEND_ORIGIN}/api/comfyui/workflow/${id}/model-nodes`)
           results[id] = await r.json()
         } catch {}
       }))
@@ -2100,11 +2113,41 @@ function StoryboardReviewView({
 // ── Generating View ──────────────────────────────────────────────────────────
 
 function GeneratingView({
-  phases, clips, globalPct, edl, config, audioFile, trailerAudioPath, audioAnalysis,
+  phases, clips, setClips, globalPct, edl, config, audioFile, trailerAudioPath, audioAnalysis,
   stepResults, mediaProjectId, storageProjectId, jobId, projectDir, onCancel,
+  trailerEnhanceContext,
 }) {
   const resultsRef = useRef(null)
   const doneCount = clips.filter(c => c.status === 'done').length
+  const [promptClip, setPromptClip] = useState(null)
+  const [promptDraft, setPromptDraft] = useState({})
+
+  function openPromptEditor(clip) {
+    setPromptDraft({
+      scene_prompt: clip.scene_prompt || '',
+      first_frame_prompt: clip.first_frame_prompt || '',
+      last_frame_prompt: clip.last_frame_prompt || '',
+      motion_prompt: clip.motion_prompt || '',
+      ltx_video_prompt: clip.ltx_video_prompt || '',
+    })
+    setPromptClip(clip)
+  }
+
+  const promptEditorContext = useMemo(() => {
+    if (!trailerEnhanceContext || !promptClip) return trailerEnhanceContext
+    return buildTrailerEnhanceContext({
+      config: { style: trailerEnhanceContext.style },
+      mediaProjectId: trailerEnhanceContext.project_id,
+      clipId: promptClip.clip_id,
+      directorNarrative: {
+        narrative_arc: trailerEnhanceContext.director_narrative,
+        logline: trailerEnhanceContext.logline,
+        visual_theme: trailerEnhanceContext.visual_theme,
+        mood: trailerEnhanceContext.mood,
+      },
+      brief: trailerEnhanceContext.brief,
+    })
+  }, [trailerEnhanceContext, promptClip])
 
   useEffect(() => {
     if (resultsRef.current) {
@@ -2242,6 +2285,7 @@ function GeneratingView({
                   aspectRatio={config?.aspect_ratio ?? '9:16'}
                   projectId={mediaProjectId}
                   jobId={jobId}
+                  onEditPrompts={trailerEnhanceContext?.project_id ? openPromptEditor : undefined}
                 />
               ) : (
                 <div className="flex items-center justify-center py-10 text-[#252533]">
@@ -2255,6 +2299,27 @@ function GeneratingView({
         </div>
 
       </div>
+
+      <ReelPromptEditorModal
+        open={Boolean(promptClip)}
+        clipId={promptClip?.clip_id}
+        draft={promptDraft}
+        setDraft={setPromptDraft}
+        hasLastFrame={Boolean((promptDraft.last_frame_prompt || '').trim())}
+        saving={false}
+        saved={false}
+        isDirty
+        onClose={() => setPromptClip(null)}
+        onSave={() => {
+          if (promptClip && setClips) {
+            setClips(prev => prev.map(c => (
+              c.clip_id === promptClip.clip_id ? { ...c, ...promptDraft } : c
+            )))
+          }
+          setPromptClip(null)
+        }}
+        projectContext={promptEditorContext}
+      />
     </div>
   )
 }
@@ -2410,6 +2475,8 @@ function DoneView({ result, error, edl, clips, audioFile, trailerAudioPath, audi
 
 export default function TrailerScreen() {
   const { id: routeProjectId } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
   /** Catalogo job (trailer_jobs.json): trailer_standalone o UUID progetto collegato */
   const catalogProjectId = routeProjectId ?? 'trailer_standalone'
   /** Cartella artefatti su disco — assegnata dal backend (es. trailer_54115b9727) */
@@ -2448,6 +2515,24 @@ export default function TrailerScreen() {
 
   const cancelRef = useRef(false)
   const storyboardPauseRef = useRef(false)
+  const runTrailerRef = useRef(null)
+  const reconcileAutoContinueRef = useRef(null)
+
+  const stuckClipsKey = clips
+    .filter(clipNeedsMediaRecovery)
+    .map(c => c.clip_id)
+    .sort()
+    .join(',')
+
+  const trailerEnhanceContext = useMemo(
+    () => buildTrailerEnhanceContext({
+      config: activeConfig,
+      mediaProjectId,
+      dopPlans: stepResults.find(r => r.phase === 'cinematographer')?.data?.plans,
+      brief: activeConfig?.style || '',
+    }),
+    [activeConfig, mediaProjectId, stepResults],
+  )
 
   const handleProgress = useCallback((data) => {
     if (cancelRef.current) return
@@ -2855,6 +2940,53 @@ export default function TrailerScreen() {
     })
   }
 
+  runTrailerRef.current = runTrailerPipeline
+
+  useMediaReconcile({
+    enabled: Boolean(activeJobId && catalogProjectId),
+    kind: 'trailer',
+    catalogProjectId,
+    jobId: activeJobId,
+    stuckKey: stuckClipsKey,
+    alwaysPoll: view === 'generating' || view === 'storyboard',
+    onResult: (data) => {
+      if (data.recovered?.length) {
+        setClips(prev => prev.map(c => {
+          let next = c
+          for (const ev of data.recovered) {
+            if (ev.clip_id === c.clip_id) {
+              next = mergeClipRecoveryEvent(next, ev, mediaProjectId, 'trailer')
+            }
+          }
+          return next
+        }))
+        const videoN = data.recovered.filter(e => e.event === 'clip_done').length
+        const frameN = data.count - videoN
+        if (videoN || frameN) {
+          setLogs(prev => [...prev.slice(-50),
+            `Recuperati ${videoN ? `${videoN} video` : ''}${videoN && frameN ? ', ' : ''}${frameN ? `${frameN} frame/storyboard` : ''} (ComfyUI/disco)`,
+          ])
+        }
+      }
+      const prodReady = data.storyboard_approved || (data.checkpoint_phase ?? 0) >= 55
+      if (
+        prodReady
+        && data.all_clips_ready
+        && activeAudioFile
+        && activeConfig
+        && reconcileAutoContinueRef.current !== activeJobId
+      ) {
+        reconcileAutoContinueRef.current = activeJobId
+        setLogs(prev => [...prev.slice(-50), 'Tutte le clip pronte — ripresa automatica verso assemblaggio'])
+        runTrailerRef.current?.({
+          audioFile: activeAudioFile,
+          lyrics: null,
+          config: { ...activeConfig, resume_job_id: activeJobId, phase: 'production' },
+        })
+      }
+    },
+  })
+
   async function handleGenerate({ audioFile, lyrics, config }) {
     cancelRef.current = false
     storyboardPauseRef.current = false
@@ -2920,6 +3052,15 @@ export default function TrailerScreen() {
     setSetupInitial({ audioFile: null, config: null })
     setView('setup')
   }
+
+  useEffect(() => {
+    if (!location.state?.newProject) return
+    handleNew()
+    navigate(
+      { pathname: location.pathname, search: location.search },
+      { replace: true, state: {} },
+    )
+  }, [location.state?.newProject])
 
   function handleViewDetail(job) {
     setSelectedJob(job)
@@ -3035,6 +3176,7 @@ export default function TrailerScreen() {
         <GeneratingView
           phases={phases}
           clips={clips}
+          setClips={setClips}
           globalPct={globalPct}
           edl={edl}
           config={activeConfig}
@@ -3047,6 +3189,7 @@ export default function TrailerScreen() {
           jobId={activeJobId}
           projectDir={projectDir}
           onCancel={handleCancel}
+          trailerEnhanceContext={trailerEnhanceContext}
         />
       )}
 

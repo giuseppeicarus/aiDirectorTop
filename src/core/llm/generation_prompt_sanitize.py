@@ -341,78 +341,16 @@ def build_ltx_video_prompt_fallback(
     duration_sec: float = 5.0,
     brief: str = "",
 ) -> str:
-    """
-    Build a LTX 2.3-compliant img2video prompt from DP visual plan.
-    Used as fallback when the LLM doesn't return ltx_video_prompt.
-    """
-    shot = dop.get("shot_type") or "medium"
-    move = dop.get("camera_movement") or "slowly pushes forward"
-    first_state = dop.get("first_frame_state") or dop.get("scene_description") or ""
-    motion = dop.get("motion_intent") or f"{move}, subject turns toward horizon"
-    lens = dop.get("lens_mm") or 50
-    lighting_info = dop.get("lighting") or {}
-    if isinstance(lighting_info, dict):
-        time_of_day = lighting_info.get("time_of_day", "")
-        light_mood = lighting_info.get("mood", "")
-        light_str = f"{time_of_day} {light_mood}".strip() if (time_of_day or light_mood) else "cinematic lighting"
-    else:
-        light_str = str(lighting_info) or "cinematic lighting"
+    """LTX 2.3 img2video — vedi ltx23_prompt_builder.py."""
+    from src.core.llm.ltx23_prompt_builder import build_ltx_video_prompt_fallback as _build
 
-    # Map camera movement to natural language
-    _move_verb = {
-        "dolly_in": "The camera slowly dollies forward",
-        "dolly_out": "The camera slowly pulls back",
-        "pan": "The camera pans across the scene",
-        "orbit": "The camera arcs around the subject",
-        "handheld": "A handheld camera follows the subject",
-        "tracking": "The camera tracks alongside the subject",
-        "floating": "The camera drifts gently forward",
-        "drone_push": "The camera pushes forward from above",
-        "static": "The camera holds still on the scene",
-        "tilt": "The camera tilts upward slowly",
-    }
-    move_low = (dop.get("camera_movement") or "").lower()
-    camera_sentence = _move_verb.get(move_low.replace(" ", "_"), "")
-    if not camera_sentence:
-        for key, sentence in _move_verb.items():
-            if key.replace("_", " ") in move_low or key in move_low.replace(" ", "_"):
-                camera_sentence = sentence
-                break
-    if not camera_sentence:
-        camera_sentence = f"The camera {move}"
-
-    def _cut_at_sentence(text: str, max_chars: int) -> str:
-        if len(text) <= max_chars:
-            return text.rstrip(".,")
-        cut = text[:max_chars].rfind(".")
-        if cut > max_chars // 2:
-            return text[:cut].rstrip(".,")
-        cut = text[:max_chars].rfind(",")
-        return text[:cut].rstrip(".,") if cut > max_chars // 2 else text[:max_chars].rstrip(".,")
-
-    parts = []
-    # 1. Camera + shot framing
-    parts.append(f"{camera_sentence} in a {shot} framing, {lens}mm lens.")
-    # 2. Subject action from first frame state
-    if first_state:
-        parts.append(_cut_at_sentence(first_state, 200) + ".")
-    # 3. Motion details
-    if motion and motion != move:
-        parts.append(_cut_at_sentence(motion, 150) + ".")
-    # 4. Lighting
-    parts.append(f"The light is {light_str}.")
-    # 5. Style atmosphere
-    if style:
-        parts.append(f"{style.split(',')[0].strip()} aesthetic.")
-    # 6. Audio fallback
-    try:
-        from src.core.llm.reel_slot_variety import ltx_audio_line
-        parts.append(ltx_audio_line(brief))
-    except ImportError:
-        parts.append("Ambient sound fills the scene.")
-
-    result = " ".join(parts)
-    return result[:600]
+    return _build(
+        dop,
+        style=style,
+        slot_emotion=slot_emotion,
+        duration_sec=duration_sec,
+        brief=brief,
+    )
 
 
 def sanitize_trailer_clip_prompts(
@@ -442,7 +380,15 @@ def sanitize_trailer_clip_prompts(
 
     neg_default = CINEMATIC_NEGATIVE_PROMPT
 
-    ltx_fb = build_ltx_video_prompt_fallback(dop, style=style, slot_emotion=slot_emotion)
+    from src.core.llm.ltx23_prompt_builder import refine_ltx23_video_prompt
+
+    ltx_final = refine_ltx23_video_prompt(
+        pdata.get("ltx_video_prompt") or "",
+        dop,
+        style=style,
+        slot_emotion=slot_emotion,
+        duration_sec=float(dop.get("duration_sec") or 5.0),
+    )
     return {
         "scene_prompt": sanitize_generation_prompt(
             pdata.get("scene_prompt"), fallback=scene_fb,
@@ -475,11 +421,8 @@ def sanitize_trailer_clip_prompts(
             max_len=400,
         ) or neg_default,
         "ltx_video_prompt": sanitize_generation_prompt(
-            pdata.get("ltx_video_prompt"),
-            fallback=ltx_fb,
-            min_len=60,
-            max_len=900,
-        ) or ltx_fb,
+            ltx_final, fallback=ltx_final, min_len=60, max_len=950,
+        ) or ltx_final,
     }
 
 

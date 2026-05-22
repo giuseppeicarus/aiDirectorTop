@@ -3,7 +3,8 @@
  */
 export const BACKEND_PORT = 8123
 export const BACKEND_ROOT = `http://127.0.0.1:${BACKEND_PORT}`
-const API_BASE = `${BACKEND_ROOT}/api`
+export const BACKEND_ORIGIN = BACKEND_ROOT
+export const API_BASE = `${BACKEND_ROOT}/api`
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -86,5 +87,3 @@ export async function apiPost(path, body, options = {}) {
   }
   throw lastErr
 }
-
-export { API_BASE }

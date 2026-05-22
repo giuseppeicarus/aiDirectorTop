@@ -28,6 +28,11 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
 
 
+class SyncDirectorRequest(BaseModel):
+    project_id: str
+    project: dict[str, Any]
+
+
 @router.get("/status")
 async def obsidian_status():
     from src.core.obsidian.docker_service import container_status
@@ -108,6 +113,22 @@ async def sync_project(req: SyncProjectRequest):
         pipeline_kind=req.pipeline_kind,
         checkpoint=checkpoint,
         extra=extra,
+    )
+    return {"ok": True, **result}
+
+
+@router.post("/sync/director")
+async def sync_director(req: SyncDirectorRequest):
+    """Sync progetto Director Cinema (UI locale) → vault Obsidian."""
+    from src.core.obsidian.vault_manager import get_vault_manager
+
+    cfg = get_config()
+    if not cfg.obsidian.enabled:
+        return {"ok": False, "reason": "obsidian_disabled"}
+    mgr = get_vault_manager()
+    result = mgr.sync_director_cinema(
+        project_id=req.project_id,
+        project=req.project,
     )
     return {"ok": True, **result}
 

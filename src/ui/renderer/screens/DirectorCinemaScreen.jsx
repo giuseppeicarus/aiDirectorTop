@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Plus, X, Trash2, Music, Image, Wand2, Play,
   Film, Loader2, CheckCircle, AlertCircle,
@@ -12,12 +13,18 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { normalizeUnifiedPrompt } from '../utils/promptEnhance'
+import { API_BASE, BACKEND_ORIGIN } from '../utils/apiClient'
+import {
+  buildDirectorCinemaEnhanceContext,
+  syncDirectorProjectToVault,
+} from '../utils/obsidianEnhanceContext'
+import { useDirectorMediaReconcile } from '../hooks/useMediaReconcile'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const PX_PER_SEC = 60
 const LS_KEY = 'director-cinema-projects'
-const API = 'http://localhost:8765/api'
+const API = API_BASE
 
 const ASPECT_RATIOS = {
   '16:9':  { label: '16:9',  resolutions: [
@@ -616,13 +623,11 @@ function ClipEditorSidebar({ clip, clipIndex, mode, project, onUpdate, onDelete,
     if (!clip.prompt.trim() || enhancing) return
     setEnhancing(true)
     try {
+      await syncDirectorProjectToVault(project, BACKEND_ORIGIN)
       const res = await director.enhance({
         prompt: clip.prompt,
         context: 'director_clip',
-        project_context: {
-          brief: project?.globalPrompt,
-          style: project?.name,
-        },
+        project_context: buildDirectorCinemaEnhanceContext(project, clip),
       })
       onUpdate({ prompt: normalizeUnifiedPrompt(res?.enhanced, clip.prompt, res?.negative_prompt) })
     } catch {
@@ -802,10 +807,11 @@ function GenerationDock({
     if (!project.globalPrompt.trim() || enhancingGlobal) return
     setEnhancingGlobal(true)
     try {
+      await syncDirectorProjectToVault(project, BACKEND_ORIGIN)
       const res = await director.enhance({
         prompt: project.globalPrompt,
         context: 'director_global',
-        project_context: { brief: project.globalPrompt, style: project.name },
+        project_context: buildDirectorCinemaEnhanceContext(project),
       })
       onUpdateProject({ globalPrompt: normalizeUnifiedPrompt(res?.enhanced, project.globalPrompt, res?.negative_prompt) })
     } catch {
@@ -954,6 +960,7 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [workflows, setWorkflows]           = useState([])
   const [generating, setGenerating]         = useState(false)
+  const [directorJobId, setDirectorJobId]   = useState(null)
   const [genProgress, setGenProgress]       = useState(0)
   const [genMsg, setGenMsg]                 = useState('')
   const [genResult, setGenResult]           = useState(null)
@@ -1018,6 +1025,26 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
     onUpdateProject({ audio: null })
   }
 
+  useDirectorMediaReconcile({
+    enabled: Boolean(directorJobId && (generating || genError)),
+    jobId: directorJobId,
+    onResult: (data) => {
+      const hit = data.recovered?.find(e => e.event === 'director_done')
+      if (hit) {
+        setGenResult({
+          done: true,
+          job_id: hit.job_id,
+          path: hit.path,
+          filename: hit.path ? hit.path.split(/[/\\]/).pop() : undefined,
+          url: hit.url,
+        })
+        setGenerating(false)
+        setGenError(null)
+        setGenMsg('Video recuperato da disco/ComfyUI')
+      }
+    },
+  })
+
   // Generation
   async function handleGenerate() {
     setGenerating(true)
@@ -1025,6 +1052,7 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
     setGenMsg('')
     setGenResult(null)
     setGenError(null)
+    setDirectorJobId(null)
 
     const params = {
       workflow_id:   project.workflowId,
@@ -1045,6 +1073,8 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
 
     try {
       await director.generate(params, (data) => {
+        if (data.job_id) setDirectorJobId(data.job_id)
+        if (data.event === 'start' && data.job_id) setDirectorJobId(data.job_id)
         if (data.error) {
           setGenError(data.error)
           setGenerating(false)
@@ -1072,10 +1102,11 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
   async function handleEnhanceGlobal() {
     if (!project.globalPrompt.trim()) return
     try {
+      await syncDirectorProjectToVault(project, BACKEND_ORIGIN)
       const res = await director.enhance({
         prompt: project.globalPrompt,
         context: 'director_global',
-        project_context: { brief: project.globalPrompt, style: project.name },
+        project_context: buildDirectorCinemaEnhanceContext(project),
       })
       onUpdateProject({ globalPrompt: normalizeUnifiedPrompt(res?.enhanced, project.globalPrompt, res?.negative_prompt) })
     } catch {
@@ -1266,9 +1297,17 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
 // ── Main Screen ────────────────────────────────────────────────────────────────
 
 export default function DirectorCinemaScreen() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [projects, setProjects]        = useState(() => loadProjects())
   const [activeProjectId, setActiveId] = useState(null)
   const [showNewModal, setShowNew]     = useState(false)
+
+  useEffect(() => {
+    if (!location.state?.newProject) return
+    setShowNew(true)
+    navigate('/director', { replace: true, state: {} })
+  }, [location.state?.newProject])
 
   // Persist on every projects change
   useEffect(() => {

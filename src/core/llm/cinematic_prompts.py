@@ -343,15 +343,13 @@ Format: [CINEMATIC QUALITY], [CAMERA], [ENVIRONMENT DETAILS], [LIGHTING], [MOOD]
 - Example: "Cinematic wide shot, 35mm film grain, shallow depth of field. Rain-soaked cobblestone alley at dusk, warm sodium streetlights reflecting in puddles, deep atmospheric shadows, soft vignette, fog layers. Melancholic European urban setting, high production value, professional cinematography, dramatic chiaroscuro"
 
 LTX 2.3 VIDEO PROMPT RULES (for ltx_video_prompt field — img2video mode):
-Generate a single flowing paragraph (present tense, 60-150 words) that follows the LTX 2.3 spec:
-1. Camera framing and shot scale
-2. Subject + specific action described with physical cues (no emotional labels like "sad" or "happy")
-3. Environment details: textures, atmosphere, weather, spatial context
-4. Lighting: source direction, quality, color temperature
-5. Camera movement: explicit verb (e.g. "The camera slowly dollies forward...", "A handheld camera tracks...")
-6. Ambient audio: describe sounds that would be heard (rain on stone, distant crowd, wind, music)
-For img2video: focus on the MOTION that unfolds from the starting frame. Do NOT re-describe static elements already visible in the first frame image — instead describe what CHANGES and MOVES.
-Example: "The camera slowly pushes forward toward a woman standing at the edge of a rain-soaked canal at dusk. She raises her hand to touch the lamppost beside her, fingers trailing across the wet iron surface. The warm sodium glow shifts as she turns her face slightly away from camera, breath condensing in the cold evening air. Mist drifts leftward across frame as the camera continues its gentle approach. The sound of steady rain on cobblestone and distant water lapping fills the ambient space."
+ONE flowing paragraph, present tense, 4–8 sentences (70–130 words). Reference: LTX 2.3 prompt template.
+Order: (1) shot type + subject in setting, (2) lighting + mood atmosphere, (3) ONE camera move + lens,
+(4) timed physical action across the clip duration (first seconds → mid → end), (5) environment micro-motion,
+(6) final sentence "Sound: ..." only once.
+For img2video: describe MOTION and CHANGES only — do NOT re-describe static elements in the reference frame.
+Forbidden: keyword stacks, duplicate camera lines, "The scene shows...", emotion-only labels.
+Example: "A medium shot of a woman at a rain-soaked canal edge at dusk. The lighting is warm sodium streetlight from the left, creating a melancholic atmosphere. The camera slowly dollies forward on a 35mm lens. In the first seconds she raises her hand to the wet lamppost; mid-clip she turns her face away as breath condenses in the cold air. Mist drifts left across frame. Sound: steady rain on cobblestone and distant water lap."
 
 OUTPUT: Valid JSON only. Return the same shot_list with first_frame, last_frame, motion_prompt, ltx_global_prompt, and ltx_video_prompt added to each shot."""
 
@@ -515,7 +513,7 @@ RULES:
 - last_frame_prompt = DP last_frame_state expanded; must differ from first (implies motion)
 - scene_prompt = shorter hero still (30-50 words) for backup txt2img
 - motion_prompt = DP motion_intent refined, max 15 words, camera + subject verbs only
-- ltx_video_prompt: single flowing paragraph (present tense, 60-150 words) per LTX 2.3 img2video spec — describe motion from starting frame, camera movement, subject action (physical cues only), environment changes, ambient audio. Do NOT re-describe static scene elements already in the reference image.
+- ltx_video_prompt: LTX 2.3 paragraph (4–8 sentences): shot+subject, lighting+mood, one camera move+lens, timed action across duration_sec, env micro-motion, final "Sound:" line. Motion only — no static re-description of reference frame.
 - Include lens and depth-of-field cues from DP plan in [TECHNICAL]
 - Include lighting.time_of_day and sources in [LIGHTING]
 - negative_prompt: use full anti-text negative (text, letters, typography, watermark, gibberish writing, malformed hands, bad anatomy, cartoon, CGI)

@@ -126,38 +126,20 @@ def build_rich_ltx_video_prompt(
     brief: str,
     existing: str = "",
 ) -> str:
-    """Paragrafo LTX 80–150 parole: camera, soggetto, azione, ambiente, luce, audio."""
-    if existing and _word_count(_strip_prompt_leaks(existing)) >= 70:
-        return finalize_positive_prompt(_strip_prompt_leaks(existing))
+    """Paragrafo LTX 2.3 (4–8 frasi, timeline azione, Sound: finale)."""
+    from src.core.llm.ltx23_prompt_builder import refine_ltx23_video_prompt
 
-    base = build_ltx_video_prompt_fallback(dop, style=style, slot_emotion=mood, brief=brief)
-    dn = director_narrative or {}
-    vis = vision or {}
-    hint = (visual_hint or dop.get("scene_description") or brief or "").strip()
-    anchors = ". ".join((vis.get("character_anchors") or [])[:3])
-    env = ", ".join((vis.get("environment_anchors") or [])[:2])
-    motifs = "; ".join((dn.get("visual_motifs") or [])[:3])
-
-    extra: list[str] = []
-    if hint and hint.lower() not in base.lower():
-        cut = hint[:350] + ("." if not hint.endswith(".") else "")
-        extra.append(
-            f"The scene shows {cut.rstrip('.')}, with every surface and object clearly visible."
-        )
-    if anchors and anchors.lower() not in base.lower():
-        extra.append(f"The subject remains consistent: {anchors}.")
-    if env and env.lower() not in base.lower():
-        extra.append(f"The environment includes {env}.")
-    if motifs and motifs.lower() not in base.lower():
-        extra.append(f"Recurring visual elements: {motifs}.")
-    extra.append(f"The mood is {mood}, {style.split(',')[0].strip()} aesthetic.")
-    from src.core.llm.reel_slot_variety import ltx_audio_line
-    extra.append(ltx_audio_line(brief))
-
-    paragraph = _strip_prompt_leaks(" ".join([base] + extra))
-    paragraph = re.sub(r"\s+", " ", paragraph).strip()
-    if len(paragraph) > 900:
-        paragraph = paragraph[:897].rsplit(" ", 1)[0] + "."
+    duration = float(dop.get("duration_sec") or 5.0)
+    paragraph = refine_ltx23_video_prompt(
+        _strip_prompt_leaks(existing or ""),
+        dop,
+        style=style,
+        mood=mood,
+        visual_hint=visual_hint,
+        brief=brief,
+        duration_sec=duration,
+        slot_emotion=mood,
+    )
     return finalize_positive_prompt(paragraph)
 
 
@@ -223,6 +205,8 @@ def enrich_reel_clip_prompts(
     )
 
     dop = dict(dop)
+    if pdata.get("duration_sec"):
+        dop.setdefault("duration_sec", float(pdata["duration_sec"]))
     if slot_total > 1:
         dop = enrich_visual_plan_for_slot(
             dop,

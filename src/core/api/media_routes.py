@@ -324,6 +324,18 @@ async def scan_and_register_media(
                 if frame_type is None and subdir == "final":
                     frame_type = "final"
 
+                from src.core.utils.media_prompt_resolver import resolve_fields
+
+                scan_tags = _json.dumps(["scan", pid])
+                resolved_prompt = resolve_fields(
+                    project_id=pid,
+                    shot_id=shot_id,
+                    frame_type=frame_type,
+                    media_type=mtype,
+                    tags=scan_tags,
+                    filename=fpath.name,
+                )
+
                 item = MediaItemORM(
                     id=str(uuid4()),
                     filename=fpath.name,
@@ -337,7 +349,8 @@ async def scan_and_register_media(
                     height=height,
                     size_bytes=fpath.stat().st_size,
                     source="generated",
-                    tags=_json.dumps(["scan", pid]),
+                    tags=scan_tags,
+                    description=resolved_prompt or None,
                 )
                 db.add(item)
                 known_paths.add(str(fpath))

@@ -10,6 +10,7 @@ from typing import Optional
 import structlog
 
 from src.core.comfyui.client import ComfyUIClient
+from src.core.comfyui.execution_watchdog import resolve_execution_timeouts
 from src.core.config import get_config, ComfyUINodeConfig
 
 log = structlog.get_logger()
@@ -188,9 +189,13 @@ class ComfyUINodePool:
         progress_cb=None,
     ) -> tuple[dict, str]:
         """Esegue workflow sul client indicato (stesso nodo di upload/download)."""
+        max_sec, idle_sec = resolve_execution_timeouts(timeout)
         prompt_id = await client.queue_prompt(workflow)
         hist = await client.wait_for_completion(
-            prompt_id, timeout=timeout, progress_cb=progress_cb,
+            prompt_id,
+            max_timeout_sec=max_sec,
+            idle_timeout_sec=idle_sec,
+            progress_cb=progress_cb,
         )
         return hist, prompt_id
 

@@ -17,6 +17,7 @@ import {
   MonitorDot,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { API_BASE } from '../utils/apiClient'
 
 // ---------------------------------------------------------------------------
 // Model catalog data
@@ -396,7 +397,7 @@ function LLMModelsTab() {
   useEffect(() => {
     let cancelled = false
     setLoadingConfig(true)
-    fetch('http://localhost:8765/api/config')
+    fetch(`${API_BASE}/config`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -419,7 +420,7 @@ function LLMModelsTab() {
   // Fetch Ollama models
   const loadOllamaModels = useCallback(() => {
     setLoadingOllama(true)
-    fetch('http://localhost:8765/api/llm/ollama/models')
+    fetch(`${API_BASE}/llm/ollama/models`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -445,7 +446,7 @@ function LLMModelsTab() {
     setPulling(true)
     setPullResult(null)
     try {
-      const r = await fetch('http://localhost:8765/api/llm/ollama/pull', {
+      const r = await fetch(`${API_BASE}/llm/ollama/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: name.trim() }),

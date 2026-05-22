@@ -6,8 +6,9 @@ import {
   ChevronRight, Sparkles, Zap, AlertTriangle,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { BACKEND_ORIGIN } from '../utils/apiClient'
 
-const BACKEND = 'http://localhost:8765'
+const BACKEND = BACKEND_ORIGIN
 
 // Shot production phases
 const PH = {

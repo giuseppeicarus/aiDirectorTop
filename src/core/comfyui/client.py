@@ -10,9 +10,16 @@ from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
+import structlog
 import websockets
 
+from src.core.comfyui.execution_watchdog import (
+    ExecutionWatchdog,
+    resolve_execution_timeouts,
+)
 from src.core.config import ComfyUINodeConfig
+
+_log = structlog.get_logger("comfyui.client")
 
 # ComfyUI nativo usa underscore; alcuni proxy espongono anche varianti kebab-case.
 _API_PATH_CANDIDATES: dict[str, list[str]] = {
@@ -220,15 +227,33 @@ class ComfyUIClient:
         prompt_id: str,
         timeout: int = 300,
         progress_cb: Optional[Union[Callable[[int, int], None], Callable[[int, int, Optional[str]], None]]] = None,
+        *,
+        max_timeout_sec: Optional[int] = None,
+        idle_timeout_sec: Optional[int] = None,
     ) -> dict:
         """
-        Attende il completamento via WebSocket.
-        Restituisce l'output del nodo SaveImage/SaveVideo.
-        progress_cb(value, max, node_id) — aggiornamenti sampling ComfyUI.
+        Attende il completamento via WebSocket + polling coda/history.
+
+        Non usa `timeout` come deadline fissa: attende finché ComfyUI mostra attività
+        (eventi WS, prompt in coda, history in corso). Scade solo dopo
+        execution_idle_timeout_sec senza segnali o execution_max_timeout_sec assoluto.
         """
+        max_sec, idle_sec = resolve_execution_timeouts(
+            timeout,
+            max_timeout_sec=max_timeout_sec,
+            idle_timeout_sec=idle_timeout_sec,
+        )
+        watchdog = ExecutionWatchdog(max_timeout_sec=max_sec, idle_timeout_sec=idle_sec)
+        watchdog.touch("queued")
+
+        _log.info(
+            "comfyui_wait_start",
+            prompt_id=prompt_id,
+            max_timeout_sec=max_sec,
+            idle_timeout_sec=idle_sec,
+        )
+
         ws_url = self._ws_connect_url()
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + timeout
         last_progress: tuple[int, int] = (0, 1)
 
         def _emit_progress(value: int, max_val: int, node: Optional[str] = None) -> None:
@@ -238,6 +263,7 @@ class ComfyUIClient:
             if value == last_progress[0] and max_val == last_progress[1] and not node:
                 return
             last_progress = (value, max_val)
+            watchdog.touch(f"progress:{node or 'sampling'}")
             if not progress_cb:
                 return
             try:
@@ -255,104 +281,153 @@ class ComfyUIClient:
             if status.get("status_str") == "error":
                 err = extract_history_error(hist) or "ComfyUI error"
                 raise RuntimeError(err)
+            if hist:
+                watchdog.touch("history_poll")
             return None
+
+        async def _wait_after_executed(ws_out: dict, node_id: Optional[str]) -> dict:
+            from src.core.comfyui.workflow_builder import inject_ws_executed_output
+
+            while watchdog.should_continue():
+                hist = await self.get_history(prompt_id)
+                if isinstance(ws_out, dict) and ws_out:
+                    hist = inject_ws_executed_output(hist, node_id, ws_out)
+                if extract_output_files(hist):
+                    return hist
+                status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
+                if status.get("status_str") == "error":
+                    err = extract_history_error(hist) or "ComfyUI error"
+                    raise RuntimeError(err)
+                active, state = await self.get_prompt_run_state(prompt_id)
+                if active:
+                    watchdog.touch(f"post_executed:{state}")
+                elif watchdog.idle_exceeded():
+                    break
+                await asyncio.sleep(1.5)
+            hist = await self.get_history(prompt_id)
+            if isinstance(ws_out, dict) and ws_out:
+                hist = inject_ws_executed_output(hist, node_id, ws_out)
+            return hist
+
+        async def _poll_until_done_or_timeout() -> dict:
+            last_state = "unknown"
+            while watchdog.should_continue():
+                polled = await _poll_history_once()
+                if polled is not None:
+                    return polled
+                active, last_state = await self.get_prompt_run_state(prompt_id)
+                if active:
+                    if watchdog.idle_exceeded():
+                        _log.debug(
+                            "comfyui_idle_reset",
+                            prompt_id=prompt_id,
+                            state=last_state,
+                            idle_sec=round(watchdog.idle_sec, 1),
+                        )
+                    watchdog.touch(f"queue:{last_state}")
+                elif watchdog.idle_exceeded():
+                    break
+                await asyncio.sleep(2.0)
+            raise TimeoutError(watchdog.timeout_message(prompt_id, last_state))
 
         ws_headers = self._ws_headers()
         last_history_poll = 0.0
-        async with websockets.connect(
-            ws_url, ping_interval=20, ping_timeout=30, additional_headers=ws_headers or None,
-        ) as ws:
-            while loop.time() < deadline:
-                now = loop.time()
-                if now - last_history_poll >= 4.0:
-                    last_history_poll = now
-                    polled = await _poll_history_once()
-                    if polled is not None:
-                        return polled
+        ws_failed = False
+        try:
+            async with websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=30,
+                additional_headers=ws_headers or None,
+            ) as ws:
+                while watchdog.should_continue():
+                    now = asyncio.get_event_loop().time()
+                    if now - last_history_poll >= 4.0:
+                        last_history_poll = now
+                        polled = await _poll_history_once()
+                        if polled is not None:
+                            return polled
+                        active, state = await self.get_prompt_run_state(prompt_id)
+                        if active:
+                            watchdog.touch(f"poll:{state}")
 
-                remaining = max(0.1, deadline - loop.time())
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=min(15.0, remaining))
-                except asyncio.TimeoutError:
-                    if loop.time() >= deadline:
-                        break
-                    continue
+                    if watchdog.idle_exceeded():
+                        active, state = await self.get_prompt_run_state(prompt_id)
+                        if active:
+                            watchdog.touch(f"idle_extend:{state}")
+                        else:
+                            break
 
-                msg = json.loads(raw)
-                mtype = msg.get("type")
-                data = msg.get("data") or {}
-
-                if mtype == "progress":
-                    pid = data.get("prompt_id")
-                    if pid and pid != prompt_id:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                    except asyncio.TimeoutError:
                         continue
-                    _emit_progress(
-                        int(data.get("value", 0)),
-                        int(data.get("max", 1)),
-                        data.get("node"),
-                    )
 
-                elif mtype == "executing":
-                    pid = data.get("prompt_id")
-                    if pid and pid != prompt_id:
-                        continue
-                    node = data.get("node")
-                    if node is None:
-                        _emit_progress(last_progress[0], max(last_progress[1], 1), None)
-                    else:
-                        _emit_progress(0, last_progress[1] if last_progress[1] > 1 else 1, node)
+                    msg = json.loads(raw)
+                    mtype = msg.get("type")
+                    data = msg.get("data") or {}
 
-                elif mtype == "executed":
-                    data = msg.get("data", {})
-                    if data.get("prompt_id") == prompt_id:
-                        from src.core.comfyui.workflow_builder import (
-                            inject_ws_executed_output,
+                    if mtype == "progress":
+                        pid = data.get("prompt_id")
+                        if pid and pid != prompt_id:
+                            continue
+                        _emit_progress(
+                            int(data.get("value", 0)),
+                            int(data.get("max", 1)),
+                            data.get("node"),
                         )
 
-                        ws_hist: dict = {}
-                        ws_out = data.get("output")
-                        if isinstance(ws_out, dict) and ws_out:
-                            ws_hist = inject_ws_executed_output(
-                                ws_hist, data.get("node"), ws_out,
+                    elif mtype == "executing":
+                        pid = data.get("prompt_id")
+                        if pid and pid != prompt_id:
+                            continue
+                        node = data.get("node")
+                        watchdog.touch(f"executing:{node or 'done'}")
+                        if node is None:
+                            _emit_progress(last_progress[0], max(last_progress[1], 1), None)
+                        else:
+                            _emit_progress(
+                                0,
+                                last_progress[1] if last_progress[1] > 1 else 1,
+                                node,
                             )
-                            if extract_output_files(ws_hist):
-                                return ws_hist
 
-                        post_deadline = loop.time() + min(90.0, max(15.0, timeout * 0.25))
-                        while loop.time() < post_deadline:
-                            hist = await self.get_history(prompt_id)
+                    elif mtype == "executed":
+                        data = msg.get("data", {})
+                        if data.get("prompt_id") == prompt_id:
+                            from src.core.comfyui.workflow_builder import (
+                                inject_ws_executed_output,
+                            )
+
+                            ws_hist: dict = {}
+                            ws_out = data.get("output")
                             if isinstance(ws_out, dict) and ws_out:
-                                hist = inject_ws_executed_output(
-                                    hist, data.get("node"), ws_out,
+                                ws_hist = inject_ws_executed_output(
+                                    ws_hist, data.get("node"), ws_out,
                                 )
-                            if extract_output_files(hist):
-                                return hist
-                            status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
-                            if status.get("status_str") == "error":
-                                err = extract_history_error(hist) or "ComfyUI error"
-                                raise RuntimeError(err)
-                            await asyncio.sleep(1.5)
-                        hist = await self.get_history(prompt_id)
-                        if isinstance(ws_out, dict) and ws_out:
-                            hist = inject_ws_executed_output(hist, data.get("node"), ws_out)
-                        return hist
+                                if extract_output_files(ws_hist):
+                                    return ws_hist
+                            watchdog.touch("executed")
+                            return await _wait_after_executed(
+                                ws_out if isinstance(ws_out, dict) else {},
+                                data.get("node"),
+                            )
 
-                elif mtype == "execution_error":
-                    data = msg.get("data", {})
-                    if data.get("prompt_id") == prompt_id:
-                        raise RuntimeError(
-                            f"ComfyUI error: {data.get('exception_message', 'unknown')}"
-                        )
+                    elif mtype == "execution_error":
+                        data = msg.get("data", {})
+                        if data.get("prompt_id") == prompt_id:
+                            raise RuntimeError(
+                                f"ComfyUI error: {data.get('exception_message', 'unknown')}"
+                            )
+        except Exception as exc:
+            ws_failed = True
+            _log.warning("comfyui_ws_fallback", prompt_id=prompt_id, error=str(exc))
+            watchdog.touch("ws_fallback")
 
-        # Fallback polling (proxy RunPod / WS senza eventi o timeout WS)
-        poll_deadline = loop.time() + min(90.0, max(30.0, timeout * 0.35))
-        while loop.time() < poll_deadline:
-            polled = await _poll_history_once()
-            if polled is not None:
-                return polled
-            await asyncio.sleep(2.0)
+        if ws_failed or watchdog.should_continue():
+            return await _poll_until_done_or_timeout()
 
-        raise TimeoutError(f"Timeout {timeout}s scaduto per prompt {prompt_id}")
+        raise TimeoutError(watchdog.timeout_message(prompt_id))
 
     async def get_history(self, prompt_id: str) -> dict:
         """Recupera l'output di un prompt completato."""
@@ -531,6 +606,42 @@ class ComfyUIClient:
             return len(data.get("queue_running", [])) + len(data.get("queue_pending", []))
         except Exception:
             return 999  # Nodo non raggiungibile = coda "piena"
+
+    async def get_prompt_run_state(self, prompt_id: str) -> tuple[bool, str]:
+        """
+        True se il prompt sembra ancora in esecuzione (coda o history incompleta).
+        Usato dal watchdog per non scadere mentre ComfyUI lavora senza eventi WS.
+        """
+        from src.core.comfyui.workflow_builder import extract_history_error, extract_output_files
+
+        hist: dict = {}
+        try:
+            hist = await self.get_history(prompt_id)
+        except Exception:
+            pass
+
+        if hist:
+            if extract_output_files(hist):
+                return False, "completed"
+            status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
+            if status.get("status_str") == "error":
+                return False, "error"
+            if status.get("completed") is False:
+                return True, "history_incomplete"
+
+        try:
+            r = await self._request("GET", "queue", "/queue", timeout=5.0)
+            data = r.json()
+            for label, key in (("running", "queue_running"), ("pending", "queue_pending")):
+                for item in data.get(key, []):
+                    if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:
+                        return True, label
+        except Exception:
+            pass
+
+        if hist:
+            return True, "history_no_output"
+        return False, "not_queued"
 
     async def get_object_info(self) -> dict:
         """Elenco nodi e modelli disponibili."""

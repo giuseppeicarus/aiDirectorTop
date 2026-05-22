@@ -7,7 +7,17 @@ import asyncio
 import io
 import logging
 import sys
+import warnings
 from contextlib import asynccontextmanager
+
+# Paramiko/cryptography deprecation noise (transitive, e.g. demucs/torch on conda)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"paramiko.*")
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except ImportError:
+    pass
 
 # Force UTF-8 stdout/stderr on Windows to avoid charmap errors with LLM output
 if hasattr(sys.stdout, 'reconfigure'):
@@ -35,6 +45,8 @@ from src.core.api.trailer_routes import router as trailer_router
 from src.core.api.reel_routes import router as reel_router
 from src.core.api.obsidian_routes import router as obsidian_router
 from src.core.api.admin_routes import router as admin_router
+from src.core.api.nav_routes import router as nav_router
+from src.core.api.dashboard_routes import router as dashboard_router
 
 log = structlog.get_logger()
 
@@ -103,6 +115,8 @@ app.include_router(trailer_router,  prefix="/api/trailer",   tags=["trailer"])
 app.include_router(reel_router,     prefix="/api/reel",      tags=["reel"])
 app.include_router(obsidian_router, prefix="/api/obsidian",  tags=["obsidian"])
 app.include_router(admin_router,    tags=["admin"])
+app.include_router(nav_router,      prefix="/api/nav",      tags=["nav"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 
 
 @app.get("/health")

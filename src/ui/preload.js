@@ -64,6 +64,18 @@ contextBridge.exposeInMainWorld('studio', {
     url: () => ipcRenderer.invoke('backend:url'),
   },
 
+  window: {
+    minimize: () => ipcRenderer.invoke('window:minimize'),
+    toggleMaximize: () => ipcRenderer.invoke('window:toggleMaximize'),
+    isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+    close: () => ipcRenderer.invoke('window:close'),
+    onMaximizedChange: (cb) => {
+      const handler = (_, value) => cb(Boolean(value))
+      ipcRenderer.on('window:maximized', handler)
+      return () => ipcRenderer.removeListener('window:maximized', handler)
+    },
+  },
+
   // Tools (standalone generation)
   tools: {
     run:     (req)  => ipcRenderer.invoke('tools:run', req),
@@ -142,6 +154,12 @@ contextBridge.exposeInMainWorld('studio', {
         ipcRenderer.removeListener('trailer:progress', listener)
       })
     },
+  },
+
+  // Impostazioni — script modelli ComfyUI
+  settings: {
+    downloadComfyModelScript: (scriptId) =>
+      ipcRenderer.invoke('settings:downloadComfyModelScript', scriptId),
   },
 
   // Shell utilities

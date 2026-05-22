@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Film, Plus, Trash2, Play, Clock } from 'lucide-react'
 import { useProjectStore } from '../stores'
 import clsx from 'clsx'
+import NewProjectTypeModal, { NEW_PROJECT_OPTIONS } from '../components/NewProjectTypeModal'
 
 const STATUS_LABEL = {
   draft: 'Bozza',
@@ -23,6 +24,14 @@ export default function ProjectListScreen() {
   const { projects, loading, loadProjects, deleteProject } = useProjectStore()
   const navigate = useNavigate()
   const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
+
+  function handleNewProjectType(optionId) {
+    const opt = NEW_PROJECT_OPTIONS.find(o => o.id === optionId)
+    if (!opt) return
+    setNewProjectOpen(false)
+    navigate(opt.to, opt.state ? { state: opt.state } : undefined)
+  }
   // { id, title, mediaCount, mediaSize }
 
   useEffect(() => { loadProjects() }, [])
@@ -56,13 +65,18 @@ export default function ProjectListScreen() {
 
   return (
     <div className="p-8">
+      <NewProjectTypeModal
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onSelect={handleNewProjectType}
+      />
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="font-['Playfair_Display'] text-2xl text-[#f0ede8]">I tuoi Progetti</h1>
           <p className="text-sm text-[#9090a0] mt-1">{projects.length} progetto/i</p>
         </div>
         <button
-          onClick={() => navigate('/projects/new')}
+          onClick={() => setNewProjectOpen(true)}
           className="flex items-center gap-2 px-4 py-2 bg-[#c9a84c] hover:bg-[#d4b55e]
                      text-[#0a0a0f] font-medium text-sm rounded-md transition-colors"
         >
@@ -77,7 +91,7 @@ export default function ProjectListScreen() {
           <p className="text-lg font-['Playfair_Display']">Nessun progetto ancora</p>
           <p className="text-sm mt-2">Crea il tuo primo video cinematografico</p>
           <button
-            onClick={() => navigate('/projects/new')}
+            onClick={() => setNewProjectOpen(true)}
             className="mt-6 flex items-center gap-2 px-5 py-2.5 bg-[#c9a84c]/10
                        border border-[#c9a84c]/30 hover:bg-[#c9a84c]/20 text-[#c9a84c]
                        rounded-md transition-colors text-sm"

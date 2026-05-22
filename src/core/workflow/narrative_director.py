@@ -42,7 +42,11 @@ def _unwrap_story_arc(raw: object) -> dict:
     return raw
 
 
-async def generate_narrative_arc(analysis: StoryAnalysis, inp: ProjectInput) -> StoryArc:
+async def generate_narrative_arc(
+    analysis: StoryAnalysis,
+    inp: ProjectInput,
+    vault_context: str = "",
+) -> StoryArc:
     """LLM 2: genera l'arco narrativo completo."""
     config = get_config()
     role_cfg = config.get_llm_for_role("narrative_director")
@@ -52,7 +56,7 @@ async def generate_narrative_arc(analysis: StoryAnalysis, inp: ProjectInput) -> 
     try:
         raw = await adapter.generate_json(
             system=NARRATIVE_DIRECTOR_SYSTEM,
-            user=build_narrative_director_prompt(analysis, inp),
+            user=(vault_context or "") + build_narrative_director_prompt(analysis, inp),
             temperature=getattr(role_cfg, "temperature", 0.70),
             max_tokens=4000,
         )

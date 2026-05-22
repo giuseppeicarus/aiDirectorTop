@@ -1,7 +1,7 @@
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Image as ImageIcon, Film, Music, Upload, Search, Trash2,
   ExternalLink, FolderOpen, X, ChevronDown, Eye, Layers,
@@ -46,9 +46,28 @@ const SORT_OPTS = [
 ]
 
 const ACCEPT_TYPES = 'image/*,video/*,audio/*'
-const GRID_SIZES   = ['sm', 'md', 'lg']
-const GRID_COLS    = { sm: 'grid-cols-6', md: 'grid-cols-4', lg: 'grid-cols-3' }
-const THUMB_H      = { sm: 'h-24', md: 'h-40', lg: 'h-56' }
+const GRID_SIZES = ['sm', 'md', 'lg']
+/** Colonne fluide: si adattano alla larghezza finestra (anche fullscreen). */
+const GRID_TEMPLATE = {
+  sm: 'repeat(auto-fill, minmax(9rem, 1fr))',
+  md: 'repeat(auto-fill, minmax(11rem, 1fr))',
+  lg: 'repeat(auto-fill, minmax(14rem, 1fr))',
+}
+/** Limite altezza anteprima per non dominare la griglia con portrait molto alti. */
+const THUMB_MAX_H = { sm: 'max-h-28', md: 'max-h-44', lg: 'max-h-60' }
+const THUMB_MIN_H = { sm: 'min-h-[5.5rem]', md: 'min-h-[7rem]', lg: 'min-h-[9rem]' }
+
+function mediaAspectRatio(item) {
+  const w = Number(item.width) || 0
+  const h = Number(item.height) || 0
+  if (w > 0 && h > 0) {
+    const r = w / h
+    return Math.min(2.5, Math.max(0.4, r))
+  }
+  if (item.type === 'video') return 16 / 9
+  if (item.type === 'image') return 1
+  return 1
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -86,9 +105,13 @@ function sortItems(items, sortKey) {
 
 // ── Anteprima in griglia (img / video / audio) ───────────────────────────────
 
-function MediaGridPreview({ item, onPreview, onImageContextMenu }) {
+function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize }) {
   const fileUrl = mediaFileUrl(item.id)
   const [imgSrc, setImgSrc] = useState(() => mediaThumbUrl(item.id) || fileUrl)
+
+  const reportSize = (w, h) => {
+    if (w > 0 && h > 0) onIntrinsicSize?.(w, h)
+  }
 
   if (!fileUrl) {
     return (
@@ -105,10 +128,11 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu }) {
         <img
           src={imgSrc}
           alt={item.filename}
-          className="w-full h-full object-cover cursor-zoom-in pointer-events-auto"
+          className="max-w-full max-h-full w-auto h-auto object-contain cursor-zoom-in pointer-events-auto"
           loading="lazy"
           onClick={(e) => { e.stopPropagation(); onPreview(item) }}
           onContextMenu={(e) => onImageContextMenu?.(e, item)}
+          onLoad={(e) => reportSize(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
           onError={() => {
             if (imgSrc !== fileUrl) setImgSrc(fileUrl)
           }}
@@ -133,8 +157,12 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu }) {
           muted
           playsInline
           preload="metadata"
-          className="w-full h-full object-cover cursor-pointer pointer-events-auto bg-black"
+          className="max-w-full max-h-full w-auto h-auto object-contain cursor-pointer pointer-events-auto bg-black"
           onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget
+            reportSize(v.videoWidth, v.videoHeight)
+          }}
         />
         <button
           type="button"
@@ -176,20 +204,38 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu }) {
 function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign, onDownload, onImageContextMenu }) {
   const isImage = item.type === 'image'
   const isAudio = item.type === 'audio'
-  const h = isAudio ? 'min-h-[7.5rem]' : THUMB_H[thumbSize]
+  const [intrinsic, setIntrinsic] = useState(null)
   const tags = (() => { try { return JSON.parse(item.tags || '[]') } catch { return [] } })()
 
+  useEffect(() => {
+    setIntrinsic(null)
+  }, [item.id])
+
+  const dims = intrinsic || (item.width > 0 && item.height > 0
+    ? { w: item.width, h: item.height }
+    : null)
+  const aspectStyle = dims
+    ? { aspectRatio: `${dims.w} / ${dims.h}` }
+    : { aspectRatio: mediaAspectRatio(item) }
+
   return (
-    <div className="group relative rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--bg2)] hover:border-[var(--gold)]/40 transition-colors">
-      {/* Thumbnail */}
+    <div className="group relative rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--bg2)] hover:border-[var(--gold)]/40 transition-colors flex flex-col">
+      {/* Thumbnail — proporzioni da metadati o dimensioni reali del file */}
       <div
-        className={clsx('relative overflow-hidden bg-[var(--bg3)] flex items-center justify-center', h)}
+        className={clsx(
+          'relative overflow-hidden bg-[var(--bg3)] flex items-center justify-center w-full',
+          isAudio ? 'min-h-[7.5rem]' : [THUMB_MIN_H[thumbSize], THUMB_MAX_H[thumbSize]],
+        )}
+        style={isAudio ? undefined : aspectStyle}
         onContextMenu={isImage ? (e) => onImageContextMenu?.(e, item) : undefined}
       >
         <MediaGridPreview
           item={item}
           onPreview={onPreview}
           onImageContextMenu={onImageContextMenu}
+          onIntrinsicSize={(w, h) => {
+            if (!item.width || !item.height) setIntrinsic({ w, h })
+          }}
         />
 
         {/* Source badge */}
@@ -318,7 +364,7 @@ function PreviewModal({ item, allItems, onClose, onNavigate, onDownload }) {
               controls
               autoPlay
               playsInline
-              className="max-w-full max-h-[80vh] bg-black"
+              className="max-w-full max-h-[80vh] w-auto h-auto object-contain bg-black"
             />
           )}
           {item.type === 'audio' && (
@@ -596,12 +642,20 @@ function StatItem({ label, val, Icon }) {
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+const MEDIA_TYPE_KEYS = new Set(['all', 'image', 'video', 'audio'])
+
+function mediaTypeFromSearch(params) {
+  const t = params.get('type') || 'all'
+  return MEDIA_TYPE_KEYS.has(t) ? t : 'all'
+}
+
 export default function MediaLibraryScreen() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [items,      setItems]      = useState([])
   const [stats,      setStats]      = useState(null)
   const [loading,    setLoading]    = useState(false)
-  const [typeFilter, setTypeFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState(() => mediaTypeFromSearch(searchParams))
   const [srcFilter,  setSrcFilter]  = useState('all')
   const [sort,       setSort]       = useState('date_desc')
   const [search,     setSearch]     = useState('')
@@ -634,6 +688,21 @@ export default function MediaLibraryScreen() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    setTypeFilter(mediaTypeFromSearch(searchParams))
+    setPage(1)
+  }, [searchParams])
+
+  function setMediaTypeFilter(key) {
+    setTypeFilter(key)
+    setPage(1)
+    if (key === 'all') {
+      setSearchParams({}, { replace: true })
+    } else {
+      setSearchParams({ type: key }, { replace: true })
+    }
+  }
 
   // ── Filtering / sorting ─────────────────────────────────────────────────────
 
@@ -846,7 +915,7 @@ export default function MediaLibraryScreen() {
           {TYPE_TABS.map(({ key, label, Icon }) => (
             <button
               key={key}
-              onClick={() => { setTypeFilter(key); setPage(1) }}
+              onClick={() => setMediaTypeFilter(key)}
               className={clsx(
                 'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs transition-colors',
                 typeFilter === key
@@ -937,7 +1006,10 @@ export default function MediaLibraryScreen() {
         )}
 
         {paginated.length > 0 && (
-          <div className={clsx('grid gap-2', GRID_COLS[gridSize])}>
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: GRID_TEMPLATE[gridSize] }}
+          >
             {paginated.map(item => (
               <MediaCard
                 key={item.id}

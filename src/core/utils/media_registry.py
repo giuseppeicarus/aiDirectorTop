@@ -1,8 +1,9 @@
 """
 Utility condivisa per registrare file generati nella Media Library.
-Progettata per essere chiamata dalla pipeline e dai routes dei tool
-senza bloccare il flusso principale in caso di errore.
+Il prompt di generazione è sempre persistito in MediaItemORM.description.
 """
+
+from __future__ import annotations
 
 import json
 import uuid
@@ -18,6 +19,185 @@ from src.core.models.media import MediaItemORM
 
 log = structlog.get_logger()
 
+GENERATION_PROMPT_MAX = 2048
+
+# Progetti virtuali senza checkpoint shot/clip
+_VIRTUAL_PROJECT_IDS = frozenset({"__tools__", "__library__", "__director__"})
+
+
+def normalize_generation_prompt(
+    *texts: Optional[str],
+    tags: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Primo testo non vuoto, oppure tag ``prompt:...``."""
+    for text in texts:
+        if text is None:
+            continue
+        s = str(text).strip()
+        if s:
+            return s[:GENERATION_PROMPT_MAX]
+    if tags:
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith("prompt:"):
+                p = tag[7:].strip()
+                if p:
+                    return p[:GENERATION_PROMPT_MAX]
+    return None
+
+
+def prompt_for_cinematic_shot(
+    shot: Any,
+    media_type: str,
+    frame_type: Optional[str] = None,
+) -> Optional[str]:
+    """Estrae il prompt da CinematicShot (o dict shot list)."""
+    if shot is None:
+        return None
+
+    def _get(obj: Any, key: str, default: Any = "") -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    if media_type == "video":
+        return normalize_generation_prompt(
+            _get(shot, "ltx_global_prompt"),
+            _get(shot, "motion_prompt"),
+            _get(shot, "scene_description"),
+        )
+
+    ft = frame_type or "first"
+    if ft == "last":
+        lf = _get(shot, "last_frame") or {}
+        if isinstance(lf, dict):
+            lp = lf.get("prompt")
+        else:
+            lp = getattr(lf, "prompt", None) if lf else None
+        return normalize_generation_prompt(lp, _get(shot, "scene_description"))
+
+    ff = _get(shot, "first_frame") or {}
+    if isinstance(ff, dict):
+        fp = ff.get("prompt")
+    else:
+        fp = getattr(ff, "prompt", None) if ff else None
+    return normalize_generation_prompt(fp, _get(shot, "scene_description"))
+
+
+def prompt_for_trailer_clip(
+    clip: Any,
+    media_type: str,
+    asset_role: Optional[str] = None,
+) -> Optional[str]:
+    """Estrae il prompt da TrailerClip / reel clip (oggetto o dict)."""
+
+    def _get(obj: Any, key: str, default: Any = "") -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    if media_type == "video" or asset_role == "clip":
+        return normalize_generation_prompt(
+            _get(clip, "ltx_video_prompt"),
+            _get(clip, "motion_prompt"),
+            _get(clip, "scene_prompt"),
+        )
+    if asset_role == "last" or _get(clip, "frame_type") == "last":
+        return normalize_generation_prompt(
+            _get(clip, "last_frame_prompt"),
+            _get(clip, "scene_prompt"),
+        )
+    return normalize_generation_prompt(
+        _get(clip, "first_frame_prompt"),
+        _get(clip, "scene_prompt"),
+    )
+
+
+def prompt_for_shots_summary(shots: List[Any], max_items: int = 5) -> Optional[str]:
+    """Riassunto prompt per video assembly / LTX full."""
+    parts: list[str] = []
+    for shot in (shots or [])[:max_items]:
+        if isinstance(shot, dict):
+            sid = shot.get("shot_id", "")
+            p = (
+                shot.get("ltx_global_prompt")
+                or shot.get("motion_prompt")
+                or shot.get("scene_description")
+            )
+        else:
+            sid = getattr(shot, "shot_id", "")
+            p = (
+                getattr(shot, "ltx_global_prompt", None)
+                or getattr(shot, "motion_prompt", None)
+                or getattr(shot, "scene_description", None)
+            )
+        if p and str(p).strip():
+            parts.append(f"{sid}: {str(p).strip()[:500]}")
+    return normalize_generation_prompt("\n---\n".join(parts)) if parts else None
+
+
+def prompt_for_assembly_final(
+    project_title: str,
+    project_input: Optional[dict] = None,
+    shots: Optional[List[Any]] = None,
+    logline: Optional[str] = None,
+) -> str:
+    """Prompt descrittivo per output assembly / finale."""
+    if logline and str(logline).strip():
+        return normalize_generation_prompt(f"Assemblaggio finale — {logline}") or ""
+    if project_input:
+        brief = (project_input.get("story_brief") or project_input.get("title") or "").strip()
+        if brief:
+            return normalize_generation_prompt(f"Assemblaggio finale — {brief}") or ""
+    summary = prompt_for_shots_summary(shots or [])
+    if summary:
+        return summary
+    title = (project_title or "progetto").strip()
+    return normalize_generation_prompt(f"Assemblaggio finale — {title}") or f"Assemblaggio finale — {title}"
+
+
+def prompt_for_director_timeline(global_prompt: str, clips: List[Any]) -> str:
+    """Timeline Director Cinema: global + prompt per clip."""
+    parts: list[str] = []
+    gp = (global_prompt or "").strip()
+    if gp:
+        parts.append(gp)
+    for clip in clips or []:
+        if isinstance(clip, dict):
+            cid, p = clip.get("id", "clip"), clip.get("prompt", "")
+        else:
+            cid, p = getattr(clip, "id", "clip"), getattr(clip, "prompt", "")
+        p = str(p or "").strip()
+        if p:
+            parts.append(f"[{cid}] {p}")
+    return normalize_generation_prompt("\n".join(parts)) or gp or "Director Cinema"
+
+
+async def _resolve_prompt_fallback(
+    *,
+    project_id: str,
+    shot_id: Optional[str],
+    frame_type: Optional[str],
+    media_type: str,
+    tags: Optional[List[str]],
+    filename: str,
+) -> Optional[str]:
+    if not project_id or project_id in _VIRTUAL_PROJECT_IDS:
+        return None
+    try:
+        from src.core.utils.media_prompt_resolver import resolve_fields
+
+        return resolve_fields(
+            project_id=project_id,
+            shot_id=shot_id,
+            frame_type=frame_type,
+            media_type=media_type,
+            tags=json.dumps(tags) if tags else None,
+            filename=filename,
+        ) or None
+    except Exception as exc:
+        log.debug("media_prompt_fallback_failed", project_id=project_id, error=str(exc))
+        return None
+
 
 async def register_media(
     filepath: Path,
@@ -28,13 +208,14 @@ async def register_media(
     shot_id: Optional[str] = None,
     frame_type: Optional[str] = None,
     tags: Optional[List[str]] = None,
+    description: Optional[str] = None,
+    generation_prompt: Optional[str] = None,
 ) -> str:
     """
     Registra un file generato nella media library.
-    Ritorna l'id del MediaItemORM creato, oppure stringa vuota in caso di errore.
+    ``generation_prompt`` (o ``description``) viene sempre salvato in DB se disponibile.
 
-    Gestisce le eccezioni silenziosamente — la pipeline non deve crashare
-    per un fallimento della registrazione media.
+    Ritorna l'id del MediaItemORM creato, oppure stringa vuota in caso di errore.
     """
     try:
         size_bytes = filepath.stat().st_size if filepath.exists() else 0
@@ -47,6 +228,27 @@ async def register_media(
                     width, height = img.size
             except Exception:
                 pass
+
+        stored_prompt = normalize_generation_prompt(generation_prompt, description, tags=tags)
+        if not stored_prompt:
+            stored_prompt = await _resolve_prompt_fallback(
+                project_id=project_id,
+                shot_id=shot_id,
+                frame_type=frame_type,
+                media_type=media_type,
+                tags=tags,
+                filename=filepath.name,
+            )
+
+        if not stored_prompt:
+            log.warning(
+                "media_register_missing_prompt",
+                filepath=str(filepath),
+                project_id=project_id,
+                shot_id=shot_id,
+                media_type=media_type,
+                source=source,
+            )
 
         tags_json = json.dumps(tags) if tags else None
         item_id = str(uuid.uuid4())
@@ -65,6 +267,7 @@ async def register_media(
             size_bytes=size_bytes,
             source=source,
             tags=tags_json,
+            description=stored_prompt,
         )
 
         async with AsyncSessionLocal() as session:
@@ -76,6 +279,7 @@ async def register_media(
             id=item_id,
             filepath=str(filepath),
             project_id=project_id,
+            has_prompt=bool(stored_prompt),
         )
         return item_id
 

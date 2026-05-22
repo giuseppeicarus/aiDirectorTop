@@ -5,8 +5,9 @@ import {
   Music2, CheckCircle, Loader2, Image as ImageIcon, Zap, RefreshCw, Video,
 } from 'lucide-react'
 import { useProjectStore } from '../stores/index'
+import { API_BASE } from '../utils/apiClient'
 
-const API = 'http://localhost:8765/api'
+const API = API_BASE
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

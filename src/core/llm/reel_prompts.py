@@ -277,12 +277,23 @@ GOOD: "Inside a dark neo-noir pub with deep blue ambient light and warm amber pr
 
 {REEL_SHOT_FRAMING_RULES}
 
-LTX VIDEO PROMPT FORMAT (mandatory — ltx_video_prompt is a flowing paragraph for video generation):
-- 90-140 words in ONE continuous paragraph, present tense, English only
-- Start with camera movement: "The camera slowly pushes in on...", "A tracking shot follows..."
-- Describe: camera motion, subject identity and materials, physical action with cues, environment changes, lighting shift, ambient sound
-- Do NOT append platform names (instagram/tiktok/adv). Do NOT write "X emotion" as a label.
-- NO bullet points, NO lists — flowing prose only
+LTX 2.3 VIDEO PROMPT FORMAT (mandatory — ltx_video_prompt, img2video from reference frame):
+Reference: LTX 2.3 prompt guide — ONE flowing paragraph, present tense, 4–8 sentences, English only.
+Do NOT re-describe the static first frame (already in the image). Describe only MOTION, light CHANGES, and audio.
+
+STRUCTURE (strict order — one sentence each, no keyword dumps):
+1) [SHOT TYPE] of [SUBJECT] in [SETTING] — who/where only, no style buckets
+2) The lighting is [LIGHT], creating a [MOOD] atmosphere.
+3) [CAMERA MOVEMENT] on a [LENS]mm lens — one clear camera verb (dolly, track, pan, orbit, handheld)
+4) Temporal action: what happens in the first seconds, mid-clip, and before the end (use clip duration_sec)
+5) One environment micro-motion (haze, crowd blur, rain, lights)
+6) Final sentence MUST start with "Sound: " (ambient audio, no duplicate audio lines)
+
+FORBIDDEN: "The scene shows...", "with every surface visible", repeated shot types, duplicate camera sentences,
+trailing "cinematic aesthetic / photorealistic / natural skin texture" keyword stacks, emotion labels alone ("anticipation energy").
+
+GOOD EXAMPLE (5s clip):
+"A wide shot of a rap artist in a leather jacket and chains in a dim urban interior. The lighting is warm directional key light with deep shadows, creating an intense anticipation atmosphere. The camera slowly dollies forward on a 24mm lens. In the first seconds he steps out of shadow with head bowed, then lifts his chin toward lens with deliberate pace. Background haze drifts subtly in the depth of field. Sound: muted city room tone and a low bass pulse under the beat."
 
 CHARACTER RULE (CRITICAL):
 - If the scene features a character, their COMPLETE physical description from CHARACTER ANCHORS
@@ -299,7 +310,7 @@ RULES:
 - first_frame_prompt: 90-130 words, structured prose per formula above
 - last_frame_prompt: 90-130 words, must DIFFER from first (visible pose/light/progression)
 - scene_prompt: 45-70 words — hero still naming protagonist + one action + environment scale
-- ltx_video_prompt: 90-140 words, flowing paragraph, camera+subject action+environment+light+audio
+- ltx_video_prompt: 70-130 words, LTX 2.3 structure above (4–8 sentences + Sound:)
 - motion_prompt: max 15 words, camera + subject verbs only, no punctuation
 - negative_prompt: full anti-artifact list
 - English only; no quoted instructions; no reasoning text in prompts
@@ -359,7 +370,7 @@ negative_prompt for every slot: "{CINEMATIC_NEGATIVE_PROMPT}"
 
 For EACH plan (same order) output one prompts entry with ALL fields:
 slot_id, scene_prompt, first_frame_prompt, last_frame_prompt,
-ltx_video_prompt (60-120 word flowing paragraph — REQUIRED),
+ltx_video_prompt (LTX 2.3 paragraph per structure above — REQUIRED),
 motion_prompt, negative_prompt.
 
 Output JSON: {{"prompts":[...]}}"""

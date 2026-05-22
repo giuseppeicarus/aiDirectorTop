@@ -58,8 +58,11 @@ class ReelAudioAnalyzeRequest(BaseModel):
 @router.post("/analyze-audio")
 async def reel_analyze_audio(req: ReelAudioAnalyzeRequest):
     """Analisi BPM/sezioni + timing lirica manuale sulla finestra reel."""
-    import asyncio
     from pathlib import Path as P
+
+    import structlog
+
+    log = structlog.get_logger()
 
     audio_path = P(req.audio_path)
     if not audio_path.exists():
@@ -71,12 +74,40 @@ async def reel_analyze_audio(req: ReelAudioAnalyzeRequest):
     work = get_config().app.data_path / "uploads" / "reel_analyze"
     work.mkdir(parents=True, exist_ok=True)
 
-    sections, downbeats, duration, lyric_beats = await analyze_reel_audio_window(
-        audio_path,
+    timeout_sec = max(90.0, min(300.0, float(req.duration_sec) * 3))
+    log.info(
+        "reel_analyze_audio_start",
+        path=str(audio_path),
         start_sec=req.audio_start_sec,
-        duration_sec=float(req.duration_sec),
-        work_dir=work,
-        lyrics=req.lyrics,
+        duration_sec=req.duration_sec,
+        timeout_sec=timeout_sec,
+    )
+    try:
+        sections, downbeats, duration, lyric_beats = await asyncio.wait_for(
+            analyze_reel_audio_window(
+                audio_path,
+                start_sec=req.audio_start_sec,
+                duration_sec=float(req.duration_sec),
+                work_dir=work,
+                lyrics=req.lyrics,
+            ),
+            timeout=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        log.warning("reel_analyze_audio_timeout", timeout_sec=timeout_sec)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Analisi audio scaduta dopo {int(timeout_sec)}s. "
+                "Riduci la durata del reel o verifica che ffmpeg sia disponibile."
+            ),
+        ) from None
+
+    log.info(
+        "reel_analyze_audio_done",
+        sections=len(sections),
+        downbeats=len(downbeats),
+        lyric_beats=len(lyric_beats),
     )
     return {
         "duration_sec": round(duration, 2),
@@ -196,18 +227,37 @@ async def upload_references(
 
 @router.get("/jobs")
 async def list_reel_jobs(project_id: str = "reel_standalone"):
-    from src.core.workflow.reel_jobs import load_jobs, job_storage_project_id
+    from src.core.workflow.reel_jobs import load_jobs, job_storage_project_id, upsert_job
 
     jobs = load_jobs(project_id)
-    return {
-        "jobs": [
-            {
-                **j.model_dump(),
-                "storage_project_id": job_storage_project_id(j),
-            }
-            for j in jobs
-        ],
-    }
+    changed = False
+    for j in jobs:
+        if j.status == "running":
+            j.status = "interrupted"
+            j.error = j.error or "Pipeline interrotta (app o backend riavviato)"
+            changed = True
+    if changed:
+        for j in jobs:
+            if j.status == "interrupted":
+                upsert_job(j)
+
+    out_jobs = []
+    for j in jobs:
+        row = {
+            **j.model_dump(),
+            "storage_project_id": job_storage_project_id(j),
+        }
+        cp = _find_reel_checkpoint(project_id, j.job_id)
+        row["has_checkpoint"] = cp is not None
+        if j.status in ("interrupted", "failed") and cp is not None:
+            row["can_resume"] = True
+        elif j.status == "awaiting_storyboard":
+            row["can_resume"] = True
+        else:
+            row["can_resume"] = False
+        out_jobs.append(row)
+
+    return {"jobs": out_jobs}
 
 
 def _find_reel_job_record(project_id: str, job_id: str):
@@ -405,8 +455,14 @@ def _hydrate_reel_job_detail(project_id: str, job_id: str) -> dict:
         out["can_resume_pause"] = task_live and pipeline_registry.is_job_paused(job_id)
         out["can_continue"] = False
 
-    if job.status == "interrupted" and raw.get("phase"):
-        out["can_continue"] = True
+    if job.status in ("interrupted", "failed"):
+        if raw.get("phase") or pipeline is not None:
+            out["can_continue"] = True
+        elif result.get("clips") or result.get("storyboard"):
+            out["can_continue"] = True
+        out["stale_running"] = out.get("stale_running") or (
+            job.status == "interrupted" and out["can_continue"]
+        )
 
     return out
 
@@ -660,33 +716,23 @@ async def reconcile_job_clips(
     job_id: str,
     storyboard: bool = True,
     hd_frames: bool = False,
+    videos: bool = False,
 ):
     """
     Recupera clip senza file locale: cerca su disco e scarica da ComfyUI (/view)
     quando il job remoto è già completato.
     """
-    loaded = _load_reel_pipeline_from_checkpoint(project_id, job_id)
-    if not loaded[0]:
+    from src.core.workflow.media_reconcile_service import reconcile_reel_or_trailer_job
+
+    result = await reconcile_reel_or_trailer_job(
+        project_id, job_id, "reel",
+        storyboard=storyboard,
+        hd_frames=hd_frames,
+        videos=videos,
+    )
+    if not result.get("ok") and result.get("error") == "Checkpoint non trovato":
         raise HTTPException(status_code=404, detail="Checkpoint non trovato")
-
-    pipeline, state_path, _raw = loaded
-    try:
-        events = await pipeline.reconcile_missing_clip_media(
-            storyboard=storyboard,
-            hd_frames=hd_frames,
-        )
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "recovered": []}
-
-    if events and state_path:
-        _persist_clips_to_checkpoint(state_path, pipeline)
-
-    return {
-        "ok": True,
-        "recovered": events,
-        "count": len(events),
-        "clip_ids": [e.get("clip_id") for e in events if e.get("clip_id")],
-    }
+    return result
 
 
 @router.get("/jobs/{project_id}/{job_id}/clips/{clip_id}/regen")

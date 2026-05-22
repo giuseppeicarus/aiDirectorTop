@@ -18,6 +18,7 @@ CHUNK_SIZE = 3  # smaller chunks: prompt now includes full shot JSON (more token
 async def generate_frame_prompts(
     shot_list: List[CinematicShot],
     inp: ProjectInput,
+    vault_context: str = "",
 ) -> List[CinematicShot]:
     """LLM 4: genera prompt immagine/video per ogni shot."""
     config = get_config()
@@ -36,7 +37,9 @@ async def generate_frame_prompts(
 
         raw = await adapter.generate_json(
             system=PROMPT_ENGINEER_SYSTEM,
-            user=build_prompt_engineer_prompt(chunk_dicts, inp.characters, inp.style_references),
+            user=(vault_context or "") + build_prompt_engineer_prompt(
+                chunk_dicts, inp.characters, inp.style_references,
+            ),
             temperature=getattr(role_cfg, "temperature", 0.65),
             max_tokens=6000,
         )

@@ -54,3 +54,60 @@ def test_sync_trailer_checkpoint(tmp_path: Path) -> None:
 
     hits = mgr.search("dolly", project_id="test_proj")
     assert len(hits) >= 1
+
+    arc_note = vault / "Projects" / "test_proj" / "Memory" / "Regia-Memory.md"
+    assert arc_note.exists()
+
+
+def test_sync_cinematic_pipeline_memory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    mgr = ObsidianVaultManager(vault)
+    state = {
+        "completed_stages": ["story_analysis", "narrative_arc"],
+        "project_input": {
+            "title": "Test Film",
+            "story_brief": "A hero returns home",
+            "genre": "short_film",
+            "aspect_ratio": "16:9",
+            "runtime_target_sec": 60,
+            "style_references": ["noir"],
+            "mood_references": ["melancholic"],
+            "characters": [],
+        },
+        "data": {
+            "story_analysis": {
+                "themes": ["nostalgia"],
+                "narrative_summary": "Return journey",
+                "visual_metaphors": ["empty station"],
+            },
+            "story_arc": {
+                "title": "Home",
+                "logline": "She comes back",
+                "sequences": [],
+            },
+            "shot_list": [
+                {
+                    "shot_id": "shot_001_001",
+                    "sequence_id": "seq_01",
+                    "scene_id": "scene_01",
+                    "location": "station",
+                    "emotion": "longing",
+                    "camera": {"shot_type": "wide", "movement": "dolly_in", "lens_mm": 35},
+                    "lighting": {"time_of_day": "night", "mood": "cold"},
+                    "first_frame": {"prompt": "wide station"},
+                    "motion_prompt": "slow push",
+                },
+            ],
+        },
+    }
+    out = mgr.sync_cinematic_pipeline(project_id="cinema_1", pipeline_state=state)
+    assert out["shots_synced"] == 1
+    assert (vault / "Projects" / "cinema_1" / "Memory" / "01-Story-Analysis.md").exists()
+    assert (vault / "Projects" / "cinema_1" / "Story-Arc.md").exists()
+    bundle = mgr.get_context_bundle(
+        project_id="cinema_1",
+        include=("story_analysis", "story_arc", "shot"),
+        shot_id="shot_001_001",
+    )
+    assert "nostalgia" in bundle or "Return journey" in bundle
+    assert "station" in bundle

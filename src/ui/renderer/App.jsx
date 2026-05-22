@@ -20,6 +20,7 @@ import DirectorCinemaScreen from './screens/DirectorCinemaScreen'
 import TrailerScreen from './screens/TrailerScreen'
 import CreateReelScreen from './screens/CreateReelScreen'
 import ObsidianScreen from './screens/ObsidianScreen'
+import DashboardScreen from './screens/DashboardScreen'
 
 /** Nessun hook custom qui — evita warning HMR sull'ordine degli hook. */
 export default function App() {
@@ -27,7 +28,8 @@ export default function App() {
     <StartupGate>
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<Navigate to="/projects" replace />} />
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard"               element={<DashboardScreen />} />
           <Route path="projects"                element={<ProjectListScreen />} />
           <Route path="projects/:id"            element={<ProjectDetailScreen />} />
           <Route path="projects/new"            element={<ProjectCreatorScreen />} />
