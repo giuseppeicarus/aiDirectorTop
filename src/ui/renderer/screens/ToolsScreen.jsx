@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Image, Film, Music, Wand2, Sparkles, Download,
   Upload, FolderOpen, X, Play, Loader2, AlertTriangle,
@@ -632,7 +632,10 @@ function SourceThumb({ source, label, onPickFile, onPickMedia, onDropPath, onCle
 export default function ToolsScreen() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [activeTool, setActiveTool]   = useState('txt2img')
+  const [searchParams] = useSearchParams()
+  const toolFromUrl = searchParams.get('tool')
+  const initialTool = TOOLS.some(t => t.id === toolFromUrl) ? toolFromUrl : 'txt2img'
+  const [activeTool, setActiveTool]   = useState(initialTool)
   const [prompt, setPrompt]           = useState('')
   const [aspectRatio, setAspectRatio] = useState('16:9')
   const [resolution, setResolution]   = useState(RESOLUTIONS_BY_RATIO['16:9'][1])
@@ -670,6 +673,13 @@ export default function ToolsScreen() {
   const [ctxMenu, setCtxMenu]               = useState(null)
 
   const tool = TOOLS.find(t => t.id === activeTool)
+
+  useEffect(() => {
+    const t = searchParams.get('tool')
+    if (t && TOOLS.some(x => x.id === t) && t !== activeTool) {
+      setActiveTool(t)
+    }
+  }, [searchParams, activeTool])
 
   // ── Init ─────────────────────────────────────────────────────────────────
 

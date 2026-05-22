@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Activity, CheckCircle, XCircle, RefreshCw, Brain, Server, Database, Film, HardDrive } from 'lucide-react'
 
-const API = 'http://localhost:8765/api'
+const API = 'http://127.0.0.1:8765/api'
 
 function ServiceCard({ icon: Icon, title, status }) {
   const ok = status?.ok

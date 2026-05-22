@@ -84,7 +84,11 @@
       "Bash(taskkill /PID 38900 /F)",
       "Bash(taskkill /PID 37536 /F)",
       "Bash(taskkill /PID 17528 /F)",
-      "Bash(sort -t_ -k2)"
+      "Bash(sort -t_ -k2)",
+      "WebFetch(domain:ltx.io)",
+      "Bash(Select-String -Path \"F:\\\\SOLO_AI\\\\AidirectorTOP\\\\src\\\\core\\\\workflow\\\\trailer_pipeline.py\" -Pattern \"_ClipShot|TrailerClip\\\\\\(\")",
+      "Bash(Select-Object -First 40)",
+      "Bash(Format-Table LineNumber, Line -AutoSize)"
     ]
   }
 }

@@ -1,5 +1,9 @@
 import { create } from 'zustand'
 
+import { useGlobalActivityStore } from './globalActivityStore'
+
+export { useGlobalActivityStore }
+
 // ── Project Store ─────────────────────────────────────────────────────────────
 export const useProjectStore = create((set, get) => ({
   projects: [],
@@ -74,6 +78,9 @@ export const usePipelineStore = create((set, get) => ({
   error: null,
 
   startPipeline: async (req) => {
+    if (req?.project_id) {
+      useGlobalActivityStore.getState().setProjectHint(req.project_id, req.title || req.project_id)
+    }
     set({
       stage: 'story_analysis',
       paused: false,

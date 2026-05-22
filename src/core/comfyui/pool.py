@@ -16,6 +16,56 @@ log = structlog.get_logger()
 
 QUARANTINE_SECONDS = 60
 
+_VIDEO_SAVERS = {"SaveAnimatedWEBP", "VHS_VideoCombine", "SaveVideo", "VideoSave"}
+_SAMPLERS = {"KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced", "LTXVScheduler"}
+
+
+def _infer_stat_meta(workflow: dict) -> tuple[str, str, int, int, int, float]:
+    """
+    Heuristically extract (kind, workflow_name, width, height, steps, duration_sec)
+    from a ComfyUI workflow dict. Returns defaults if unable to determine.
+    """
+    kind = "image"
+    wf_name = ""
+    width = height = steps = 0
+    duration_sec = 0.0
+
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        ctype = node.get("class_type", "")
+        inp = node.get("inputs", {})
+
+        if ctype in _VIDEO_SAVERS:
+            kind = "video"
+
+        if ctype in ("EmptyLatentImage", "EmptySD3LatentImage"):
+            width = width or int(inp.get("width", 0))
+            height = height or int(inp.get("height", 0))
+
+        if ctype in _SAMPLERS:
+            steps = steps or int(inp.get("steps", inp.get("num_steps", 0)))
+
+        # LTX / WAN video frames → estimate duration
+        if ctype in ("LTXVConditioning", "LTXVidConditioningNode"):
+            frame_rate = inp.get("frame_rate", 24)
+            num_frames = inp.get("num_frames", inp.get("length", 0))
+            if num_frames and frame_rate:
+                duration_sec = duration_sec or round(num_frames / frame_rate, 2)
+
+        if ctype == "WanVideoSampler":
+            frame_rate = inp.get("fps", 24)
+            num_frames = inp.get("num_frames", 0)
+            if num_frames and frame_rate:
+                duration_sec = duration_sec or round(num_frames / frame_rate, 2)
+
+        if ctype in ("SaveImage", "Image Save"):
+            prefix = inp.get("filename_prefix", "")
+            if prefix and not wf_name:
+                wf_name = str(prefix).split("/")[0][:40]
+
+    return kind, wf_name, width, height, steps, duration_sec
+
 
 @dataclass
 class ComfyUIRunResult:
@@ -149,6 +199,13 @@ class ComfyUINodePool:
         workflow: dict,
         timeout: int = 300,
         progress_cb=None,
+        # optional metadata for gen_stats tracking
+        _stat_kind: str = "",
+        _stat_workflow: str = "",
+        _stat_width: int = 0,
+        _stat_height: int = 0,
+        _stat_steps: int = 0,
+        _stat_duration_sec: float = 0.0,
     ) -> ComfyUIRunResult:
         """
         Esegue un workflow: prova prima il nodo principale, poi i fallback in ordine.
@@ -156,6 +213,12 @@ class ComfyUINodePool:
         """
         tried: set[str] = set()
         ordered = self._priority_entries()
+        _t_start = time.monotonic()
+
+        # Auto-detect stat metadata from workflow if not provided
+        if not _stat_kind and isinstance(workflow, dict):
+            _stat_kind, _stat_workflow, _stat_width, _stat_height, _stat_steps, _stat_duration_sec = \
+                _infer_stat_meta(workflow)
 
         for entry in ordered:
             if not entry.is_available:
@@ -176,19 +239,58 @@ class ComfyUINodePool:
                 log.info("comfyui_fallback_attempt", node=entry.config.name)
 
             try:
+                from src.core.comfyui.model_check import validate_workflow_models
                 from src.core.comfyui.workflow_builder import (
                     extract_history_error,
                     extract_output_files,
                 )
 
+                try:
+                    oi = await entry.client.get_object_info()
+                    check = validate_workflow_models(oi, workflow)
+                    if not check.get("ok"):
+                        missing = ", ".join(
+                            f"{m['kind']}:{m['name']}" for m in check.get("missing", [])
+                        )
+                        raise RuntimeError(
+                            f"Modelli mancanti su {entry.config.name}: {missing}"
+                        )
+                    for hint in check.get("hints") or []:
+                        log.warning("comfyui_model_hint", node=entry.config.name, hint=hint)
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+
                 hist, prompt_id = await self.run_workflow_on(
                     entry.client, workflow, timeout=timeout, progress_cb=progress_cb,
                 )
+                err = extract_history_error(hist)
+                if err:
+                    raise RuntimeError(err)
                 if not extract_output_files(hist):
-                    err = extract_history_error(hist)
-                    raise RuntimeError(
-                        err or f"ComfyUI ({entry.config.name}) senza output nel workflow",
+                    log.warning(
+                        "comfyui_history_no_files",
+                        node=entry.config.name,
+                        prompt_id=prompt_id,
+                        msg="History senza file — download per prefisso /view",
                     )
+                elapsed = time.monotonic() - _t_start
+                if _stat_kind:
+                    try:
+                        from src.core.comfyui.gen_stats import record as _record_stat
+                        _record_stat(
+                            kind=_stat_kind,
+                            workflow=_stat_workflow,
+                            elapsed_sec=elapsed,
+                            width=_stat_width,
+                            height=_stat_height,
+                            steps=_stat_steps,
+                            duration_sec=_stat_duration_sec,
+                            node=entry.config.name,
+                        )
+                    except Exception:
+                        pass
                 return ComfyUIRunResult(
                     history=hist,
                     client=entry.client,

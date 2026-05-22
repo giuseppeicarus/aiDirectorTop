@@ -6,14 +6,16 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
+import { useJobQueryDeepLink } from '../hooks/useJobQueryDeepLink'
 import {
   Music2, Upload, Play, Pause, Loader2, CheckCircle, AlertCircle,
   Film, Wand2, X, ChevronDown, Clock, Zap,
   Image as ImageIcon, Sparkles, Video, RefreshCw, Tv, ChevronRight,
-  LayoutGrid, Check, FolderOpen, Copy,
+  LayoutGrid, Check, FolderOpen, Copy, Settings2, Cpu,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ProjectDirBanner from '../components/ProjectDirBanner'
+import GenQueueBadge from '../components/GenQueueBadge'
 import {
   BACKEND_ORIGIN,
   resolveBackendUrl,
@@ -1410,6 +1412,180 @@ function EDLTimelineBar({ edl }) {
   )
 }
 
+
+const BACKEND_ORIGIN_TR = 'http://127.0.0.1:8765'
+const LS_TR_OVERRIDES_KEY = (wfId) => `cinematic_model_overrides_${wfId}`
+
+function loadWfOverrides(wfId) {
+  if (!wfId) return null
+  try { return JSON.parse(localStorage.getItem(LS_TR_OVERRIDES_KEY(wfId)) || 'null') }
+  catch { return null }
+}
+
+function TrailerModelOverridesSection({ config, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [nodeModels, setNodeModels] = useState(null)
+  const [wfModelNodes, setWfModelNodes] = useState({})
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [overrides, setOverrides] = useState(() => ({
+    txt2img: loadWfOverrides(config.txt2img_workflow) || {},
+    video:   loadWfOverrides(config.img2video_workflow) || {},
+  }))
+
+  useEffect(() => {
+    setOverrides({
+      txt2img: loadWfOverrides(config.txt2img_workflow) || {},
+      video:   loadWfOverrides(config.img2video_workflow) || {},
+    })
+  }, [config.txt2img_workflow, config.img2video_workflow])
+
+  useEffect(() => {
+    const merged = {}
+    if (overrides.txt2img?.checkpoint)  merged.checkpoint  = overrides.txt2img.checkpoint
+    if (overrides.video?.video_model)   merged.video_model = overrides.video.video_model
+    const loras = overrides.video?.loras || overrides.txt2img?.loras || []
+    if (loras.length > 0) merged.loras = loras
+    onChange(Object.keys(merged).length > 0 ? merged : null)
+  }, [overrides])
+
+  async function fetchModels() {
+    if (nodeModels) return
+    setLoadingModels(true)
+    try {
+      const res = await fetch(`${BACKEND_ORIGIN_TR}/api/comfyui/nodes/0/models`)
+      const data = await res.json()
+      setNodeModels(data)
+      const wfIds = [config.txt2img_workflow, config.img2video_workflow].filter(Boolean)
+      const results = {}
+      await Promise.all(wfIds.map(async (id) => {
+        try {
+          const r = await fetch(`${BACKEND_ORIGIN_TR}/api/comfyui/workflow/${id}/model-nodes`)
+          results[id] = await r.json()
+        } catch {}
+      }))
+      setWfModelNodes(results)
+    } catch {}
+    setLoadingModels(false)
+  }
+
+  function handleToggle() {
+    if (!open) fetchModels()
+    setOpen(o => !o)
+  }
+
+  const checkpoints = nodeModels?.checkpoints  || []
+  const videoModels = nodeModels?.video_models || []
+  const loras       = nodeModels?.loras        || []
+  const t2iNodes = wfModelNodes[config.txt2img_workflow]
+  const vidNodes = wfModelNodes[config.img2video_workflow]
+  const cpNodes   = t2iNodes?.checkpoint_nodes  || []
+  const vmNodes   = vidNodes?.video_model_nodes || []
+  const loraNodes = vidNodes?.lora_nodes        || []
+  const hasOverrides = !!(overrides.txt2img?.checkpoint || overrides.video?.video_model ||
+    (overrides.video?.loras || []).some(l => l?.lora_name))
+
+  return (
+    <div className="mt-4 rounded border border-[#252533] overflow-hidden">
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="w-full flex items-center gap-2 px-3 py-2.5 bg-[#16161f] hover:bg-[#1e1e2a] transition-colors"
+      >
+        <Settings2 size={12} className="text-[#9090a8] shrink-0" />
+        <span className="text-[10px] font-mono text-[#9090a8] flex-1 text-left">Modelli & LoRA</span>
+        {hasOverrides && (
+          <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 text-[#c9a84c]">attivo</span>
+        )}
+        <ChevronDown size={12} className={"text-[#555568] transition-transform " + (open ? "rotate-180" : "")} />
+      </button>
+      {open && (
+        <div className="border-t border-[#252533] bg-[#0f0f18] p-3 space-y-3">
+          {loadingModels && (
+            <div className="flex items-center gap-2 text-[#555568]">
+              <Loader2 size={12} className="animate-spin" />
+              <span className="text-[10px] font-mono">Caricamento...</span>
+            </div>
+          )}
+          {!loadingModels && nodeModels && (
+            <>
+              {(cpNodes.length > 0 || checkpoints.length > 0) && (
+                <div>
+                  <p className="text-[9px] font-mono text-[#555568] mb-1">Checkpoint (txt2img)</p>
+                  <select
+                    value={overrides.txt2img?.checkpoint || ''}
+                    onChange={e => setOverrides(o => ({ ...o, txt2img: { ...o.txt2img, checkpoint: e.target.value || undefined } }))}
+                    className="w-full text-[10px] bg-[#16161f] text-[#e8e4dd] rounded px-2 py-1.5 border border-[#252533] font-mono"
+                  >
+                    <option value="">(dal workflow JSON)</option>
+                    {checkpoints.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
+              {(vmNodes.length > 0 || videoModels.length > 0) && (
+                <div>
+                  <p className="text-[9px] font-mono text-[#555568] mb-1">Video Model (img2video)</p>
+                  <select
+                    value={overrides.video?.video_model || ''}
+                    onChange={e => setOverrides(o => ({ ...o, video: { ...o.video, video_model: e.target.value || undefined } }))}
+                    className="w-full text-[10px] bg-[#16161f] text-[#e8e4dd] rounded px-2 py-1.5 border border-[#252533] font-mono"
+                  >
+                    <option value="">(dal workflow JSON)</option>
+                    {videoModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+              )}
+              {loraNodes.map((loraNode, idx) => {
+                const ov = (overrides.video?.loras || [])[idx] || {}
+                const smVal = ov.strength_model ?? loraNode.strength_model ?? 1.0
+                return (
+                  <div key={loraNode.node_id}>
+                    <p className="text-[9px] font-mono text-[#555568] mb-1">LoRA slot {idx + 1}</p>
+                    <select
+                      value={ov.lora_name || ''}
+                      onChange={e => {
+                        setOverrides(o => {
+                          const ls = [...(o.video?.loras || [])]
+                          if (!ls[idx]) ls[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+                          ls[idx] = { ...ls[idx], lora_name: e.target.value }
+                          return { ...o, video: { ...o.video, loras: ls } }
+                        })
+                      }}
+                      className="w-full text-[10px] bg-[#16161f] text-[#e8e4dd] rounded px-2 py-1.5 border border-[#252533] font-mono mb-2"
+                    >
+                      <option value="">(dal workflow JSON)</option>
+                      {loras.map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] font-mono text-[#555568] w-16">strength</span>
+                      <input
+                        type="range" min={0} max={1.5} step={0.05}
+                        value={parseFloat(smVal)}
+                        onChange={e => {
+                          setOverrides(o => {
+                            const ls = [...(o.video?.loras || [])]
+                            if (!ls[idx]) ls[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+                            ls[idx] = { ...ls[idx], strength_model: parseFloat(e.target.value), strength_clip: parseFloat(e.target.value) }
+                            return { ...o, video: { ...o.video, loras: ls } }
+                          })
+                        }}
+                        className="flex-1 h-1.5 accent-[#c9a84c] cursor-pointer"
+                      />
+                      <span className="text-[9px] font-mono text-[#c9a84c] w-8 text-right">{parseFloat(smVal).toFixed(2)}</span>
+                    </div>
+                  </div>
+                )
+              })}
+              {cpNodes.length === 0 && vmNodes.length === 0 && loraNodes.length === 0 && checkpoints.length === 0 && videoModels.length === 0 && (
+                <p className="text-[10px] font-mono text-[#555568] italic text-center py-1">Nessun modello trovato. Verifica il nodo.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Setup View ───────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
@@ -1425,6 +1601,7 @@ const DEFAULT_CONFIG = {
 }
 
 function SetupView({ onGenerate, projectId, onBack, initialAudioFile, initialConfig }) {
+  const [modelOverrides, setModelOverrides] = useState(null)
   const [audioFile, setAudioFile] = useState(initialAudioFile ?? null)
   const [lyrics, setLyrics] = useState('')
   const [workflows, setWorkflows] = useState({ txt2img: [], img2video: [] })
@@ -1498,10 +1675,13 @@ function SetupView({ onGenerate, projectId, onBack, initialAudioFile, initialCon
           <Tv size={18} className="text-[#c9a84c]" />
           <h1 className="font-['Playfair_Display'] text-lg text-[#e8e4dd]">Nuova Generazione</h1>
         </div>
-        <GoldBtn onClick={() => onGenerate({ audioFile, lyrics, config })} disabled={!canGenerate}>
-          <Sparkles size={14} />
-          Genera
-        </GoldBtn>
+        <div className="flex items-center gap-2">
+          <GoldBtn onClick={() => onGenerate({ audioFile, lyrics, config: { ...config, model_overrides: modelOverrides || undefined } })} disabled={!canGenerate}>
+            <Sparkles size={14} />
+            Genera
+          </GoldBtn>
+          <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
+        </div>
       </div>
 
       {/* Body */}
@@ -1802,6 +1982,7 @@ function SetupView({ onGenerate, projectId, onBack, initialAudioFile, initialCon
             </p>
 
             <PipelineInfoBox />
+            <TrailerModelOverridesSection config={config} onChange={setModelOverrides} />
           </Card>
 
           <JobsPanel projectId={projectId} onRestart={handleRestartJob} />
@@ -2744,6 +2925,14 @@ export default function TrailerScreen() {
     setSelectedJob(job)
     setView('detail')
   }
+
+  const viewDetailRef = useRef(handleViewDetail)
+  viewDetailRef.current = handleViewDetail
+  useJobQueryDeepLink({
+    catalogProjectId,
+    apiPrefix: 'trailer',
+    onOpenJob: (job) => viewDetailRef.current(job),
+  })
 
   function handleRestartJob(job) {
     if (job.status === 'awaiting_storyboard' && job.audio_path) {

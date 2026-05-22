@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Settings, RefreshCw, Eye, EyeOff,
   Server, Plus, Trash2, Check, X,
@@ -6,9 +6,11 @@ import {
   Cpu, Activity, BookOpen, Clapperboard, Camera, PenLine,
   ClipboardCheck, ChevronRight, Save, RotateCcw, Globe, Star,
   HardDrive, FolderOpen, ExternalLink,
+  AlertTriangle, Film, Package, Database, Library, ShieldCheck, Sparkles,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { apiGet, waitForBackend, API_BASE } from '../utils/apiClient'
+import RoleStudioPanel from '../components/RoleStudioPanel'
 
 // ── Language data ─────────────────────────────────────────────────────────────
 
@@ -300,6 +302,321 @@ function StorageSection() {
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+// ── Data Management Section ───────────────────────────────────────────────────
+
+function fmtBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let v = bytes
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(i > 0 ? 1 : 0)} ${units[i]}`
+}
+
+// Modal asking about media fate before purge
+function PurgeConfirmModal({ scope, stats, onConfirm, onCancel }) {
+  const [keepMedia, setKeepMedia] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const SCOPE_META = {
+    projects: { label: 'tutti i Progetti',  icon: Package,     color: '#ef4444' },
+    reels:    { label: 'tutti i Reel',       icon: Film,        color: '#f59e0b' },
+    trailers: { label: 'tutti i Trailer',    icon: Clapperboard,color: '#f59e0b' },
+    all:      { label: 'TUTTI i dati',       icon: Database,    color: '#ef4444' },
+  }
+  const meta = SCOPE_META[scope] || SCOPE_META.all
+  const Icon = meta.icon
+  const s = stats?.[scope] || (scope === 'all'
+    ? { count: (stats?.projects?.count||0)+(stats?.reels?.count||0)+(stats?.trailers?.count||0),
+        bytes: (stats?.projects?.bytes||0)+(stats?.reels?.bytes||0)+(stats?.trailers?.bytes||0) }
+    : {})
+
+  async function handleConfirm() {
+    setBusy(true)
+    await onConfirm(keepMedia)
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <div className="bg-[#0f0f18] border border-[#252533] rounded-xl w-full max-w-md shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#252533]">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: meta.color + '20' }}>
+            <Icon size={16} style={{ color: meta.color }} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-[#e8e4dd]">Elimina {meta.label}</h3>
+            {s.count > 0 && (
+              <p className="text-[10px] font-mono text-[#9090a8] mt-0.5">
+                {s.count} element{s.count !== 1 ? 'i' : 'o'} · {fmtBytes(s.bytes)} su disco
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Media choice */}
+        <div className="px-5 py-4 space-y-3">
+          <p className="text-xs text-[#9090a8]">Cosa fare con i <strong className="text-[#e8e4dd]">file media generati</strong> (immagini e video)?</p>
+
+          <label className={clsx(
+            'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+            keepMedia ? 'border-[#c9a84c]/50 bg-[#c9a84c]/5' : 'border-[#252533] hover:border-[#32324a]'
+          )}>
+            <input type="radio" className="mt-0.5 accent-[#c9a84c]" checked={keepMedia} onChange={() => setKeepMedia(true)} />
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-[#e8e4dd] mb-0.5">
+                <Library size={12} className="text-[#c9a84c]" /> Sposta nella Media Library
+              </div>
+              <p className="text-[10px] text-[#9090a8]">
+                Le immagini e i video generati vengono copiati nella libreria generica prima di eliminare il progetto.
+              </p>
+            </div>
+          </label>
+
+          <label className={clsx(
+            'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+            !keepMedia ? 'border-[#ef4444]/50 bg-[#ef4444]/5' : 'border-[#252533] hover:border-[#32324a]'
+          )}>
+            <input type="radio" className="mt-0.5 accent-[#ef4444]" checked={!keepMedia} onChange={() => setKeepMedia(false)} />
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-[#e8e4dd] mb-0.5">
+                <Trash2 size={12} className="text-[#ef4444]" /> Elimina tutto definitivamente
+              </div>
+              <p className="text-[10px] text-[#9090a8]">
+                Tutti i file vengono eliminati permanentemente dal disco. Operazione irreversibile.
+              </p>
+            </div>
+          </label>
+
+          {!keepMedia && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded border border-[#ef4444]/30 bg-[#ef4444]/8 text-[#ef4444] text-[10px]">
+              <AlertTriangle size={11} className="shrink-0" />
+              I file eliminati non potranno essere recuperati.
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[#252533]">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-1.5 text-xs font-mono rounded border border-[#252533] text-[#9090a8] hover:text-[#e8e4dd] disabled:opacity-40"
+          >
+            Annulla
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={busy}
+            className={clsx(
+              'flex items-center gap-1.5 px-4 py-1.5 text-xs font-mono rounded transition-colors disabled:opacity-40',
+              keepMedia
+                ? 'bg-[#c9a84c] text-[#0a0a0f] hover:bg-[#e6c46a]'
+                : 'bg-[#ef4444] text-white hover:bg-[#dc2626]'
+            )}
+          >
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+            {busy ? 'Eliminazione…' : keepMedia ? 'Sposta e elimina' : 'Elimina tutto'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DataManagementSection() {
+  const [stats, setStats] = useState(null)
+  const [loadingStats, setLoadingStats] = useState(false)
+  const [modal, setModal] = useState(null)   // scope being confirmed
+  const [result, setResult] = useState(null) // last purge result
+  const [error, setError] = useState(null)
+
+  async function loadStats() {
+    setLoadingStats(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/admin/stats`)
+      if (!res.ok) throw new Error(await res.text())
+      setStats(await res.json())
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoadingStats(false)
+    }
+  }
+
+  useEffect(() => { loadStats() }, [])
+
+  async function handlePurge(keepMedia) {
+    setError(null)
+    try {
+      const res = await fetch(`${API}/admin/purge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: modal, keep_media: keepMedia }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      setResult({ scope: modal, ...data })
+      setModal(null)
+      await loadStats()
+    } catch (e) {
+      setError(e.message)
+      setModal(null)
+    }
+  }
+
+  const ROWS = [
+    {
+      scope: 'projects',
+      label: 'Progetti',
+      desc: 'Progetti standard con storyboard, pipeline e media associati.',
+      icon: Package,
+      color: '#3b82f6',
+      count: stats?.projects?.count,
+      bytes: stats?.projects?.bytes,
+    },
+    {
+      scope: 'reels',
+      label: 'Reel (CreateReel)',
+      desc: 'Tutti i job CreateReel con clip, storyboard e file generati.',
+      icon: Film,
+      color: '#c9a84c',
+      count: stats?.reels?.count,
+      bytes: stats?.reels?.bytes,
+      extra: stats?.reels?.job_count != null ? `${stats.reels.job_count} job` : null,
+    },
+    {
+      scope: 'trailers',
+      label: 'Trailer',
+      desc: 'Tutti i job Trailer con frame, clip e video finali.',
+      icon: Clapperboard,
+      color: '#c9a84c',
+      count: stats?.trailers?.count,
+      bytes: stats?.trailers?.bytes,
+      extra: stats?.trailers?.job_count != null ? `${stats.trailers.job_count} job` : null,
+    },
+    {
+      scope: 'all',
+      label: 'Tutto',
+      desc: 'Elimina tutti i progetti, reel e trailer in una sola operazione.',
+      icon: Database,
+      color: '#ef4444',
+      count: stats
+        ? (stats.projects.count + stats.reels.count + stats.trailers.count)
+        : undefined,
+      bytes: stats
+        ? (stats.projects.bytes + stats.reels.bytes + stats.trailers.bytes)
+        : undefined,
+    },
+  ]
+
+  return (
+    <Section title="Gestione Dati & Reset" defaultOpen={false}>
+      <p className="text-xs text-[var(--text3)] mb-4 leading-relaxed">
+        Elimina definitivamente progetti, reel e trailer dal database e dal disco.
+        Puoi scegliere di spostare i file media nella libreria prima di eliminare.
+      </p>
+
+      {error && (
+        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded border border-red-500/30 bg-red-500/8 text-xs text-red-400">
+          <AlertTriangle size={11} className="shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="mb-4 px-3 py-3 rounded-lg border border-[#22c55e]/30 bg-[#22c55e]/5 text-xs font-mono">
+          <div className="flex items-center gap-1.5 text-[#22c55e] font-semibold mb-1.5">
+            <ShieldCheck size={12} /> Eliminazione completata
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 text-[#9090a8]">
+            {result.deleted_projects > 0 && <span>Progetti eliminati: <strong className="text-[#e8e4dd]">{result.deleted_projects}</strong></span>}
+            {result.deleted_reels > 0 && <span>Reel eliminati: <strong className="text-[#e8e4dd]">{result.deleted_reels}</strong></span>}
+            {result.deleted_trailers > 0 && <span>Trailer eliminati: <strong className="text-[#e8e4dd]">{result.deleted_trailers}</strong></span>}
+            {result.media_moved > 0 && <span>Media spostati: <strong className="text-[#c9a84c]">{result.media_moved}</strong></span>}
+            {result.media_deleted > 0 && <span>Media eliminati: <strong className="text-[#ef4444]">{result.media_deleted}</strong></span>}
+            {result.bytes_freed > 0 && <span>Spazio liberato: <strong className="text-[#e8e4dd]">{fmtBytes(result.bytes_freed)}</strong></span>}
+          </div>
+        </div>
+      )}
+
+      {/* Refresh stats */}
+      <div className="flex items-center justify-end mb-3">
+        <button
+          onClick={loadStats}
+          disabled={loadingStats}
+          className="flex items-center gap-1.5 text-[10px] font-mono text-[var(--text3)] hover:text-[var(--text2)] disabled:opacity-40"
+        >
+          {loadingStats ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+          Aggiorna statistiche
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {ROWS.map(row => {
+          const Icon = row.icon
+          const isEmpty = row.count === 0
+          const isAll = row.scope === 'all'
+          return (
+            <div
+              key={row.scope}
+              className={clsx(
+                'flex items-center gap-3 px-4 py-3 rounded-lg border transition-colors',
+                isAll ? 'border-[#ef4444]/20 bg-[#ef4444]/4' : 'border-[#252533] bg-[#16161f]',
+              )}
+            >
+              <div
+                className="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
+                style={{ background: row.color + '18' }}
+              >
+                <Icon size={14} style={{ color: row.color }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-[#e8e4dd]">{row.label}</span>
+                  {loadingStats && <Loader2 size={9} className="animate-spin text-[#555568]" />}
+                  {!loadingStats && row.count != null && (
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#1e1e2a] text-[#9090a8]">
+                      {row.count} {isAll ? 'totali' : row.scope === 'projects' ? 'progett' + (row.count !== 1 ? 'i' : 'o') : 'director'}
+                      {row.extra && ` · ${row.extra}`}
+                      {row.bytes > 0 && ` · ${fmtBytes(row.bytes)}`}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] text-[#555568] mt-0.5 truncate">{row.desc}</p>
+              </div>
+              <button
+                onClick={() => { setResult(null); setModal(row.scope) }}
+                disabled={isEmpty || loadingStats}
+                className={clsx(
+                  'shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-mono transition-colors disabled:opacity-30',
+                  isAll
+                    ? 'border border-[#ef4444]/40 text-[#ef4444] hover:bg-[#ef4444]/10'
+                    : 'border border-[#252533] text-[#9090a8] hover:border-[#ef4444]/40 hover:text-[#ef4444]'
+                )}
+              >
+                <Trash2 size={10} />
+                Elimina
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      {modal && (
+        <PurgeConfirmModal
+          scope={modal}
+          stats={stats}
+          onConfirm={handlePurge}
+          onCancel={() => setModal(null)}
+        />
+      )}
+    </Section>
+  )
+}
+
 export default function SettingsScreen() {
   return (
     <div className="p-6 max-w-2xl mx-auto overflow-y-auto h-full">
@@ -312,7 +629,9 @@ export default function SettingsScreen() {
       <StorageSection />
       <LlmSection />
       <LlmAgentsSection />
+      <LlmModelRegistrySection />
       <ComfyUINodesSection />
+      <DataManagementSection />
 
       <Section title="Informazioni" defaultOpen={false}>
         <p className="text-[var(--text3)] text-xs leading-relaxed">
@@ -347,6 +666,33 @@ function ModelTags({ models, onSelect }) {
         ))}
       </div>
     </div>
+  )
+}
+
+function StudioModelSuggestButton({ suggestedModel, matches, onApply }) {
+  if (!suggestedModel) return null
+  return (
+    <button
+      type="button"
+      onClick={onApply}
+      title={
+        matches
+          ? 'Il modello coincide con il consiglio dello Studio Regia AI'
+          : 'Imposta nel campo Modello il consiglio dello Studio Regia AI'
+      }
+      className={clsx(
+        'mt-1.5 w-full flex items-center gap-1.5 text-left text-[10px] font-mono px-2 py-1.5 rounded border transition-colors min-w-0',
+        matches
+          ? 'border-[var(--green)]/45 bg-[var(--green)]/12 text-[var(--green)]'
+          : 'border-[var(--amber)]/45 bg-[var(--amber)]/10 text-[var(--amber)] hover:bg-[var(--amber)]/18 hover:border-[var(--amber)]/65',
+      )}
+    >
+      <Sparkles size={10} className="shrink-0 opacity-80" />
+      <span className="truncate flex-1">
+        {matches ? 'Consiglio studio' : 'Applica consiglio studio'}: {suggestedModel}
+      </span>
+      {matches && <Check size={10} className="shrink-0" />}
+    </button>
   )
 }
 
@@ -389,18 +735,28 @@ function LlmSection() {
     setStatus(null)
     setModels(null)
     try {
+      const ready = await waitForBackend()
+      if (!ready) {
+        setStatus({ ok: false, msg: '✗ Backend non avviato (avvia npm run dev)' })
+        return
+      }
+      const payload = {
+        ...cfg,
+        base_url: (cfg.base_url || '').trim() || null,
+        api_key: (cfg.api_key || '').trim() || null,
+      }
       const [health, discovered] = await Promise.all([
         fetch(`${API}/llm/health`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cfg),
+          body: JSON.stringify(payload),
         }).then(r => r.json()),
-        fetchModels(cfg).catch(() => []),
+        fetchModels(payload).catch(() => []),
       ])
       setStatus({
         ok: health.ok,
         msg: health.ok
-          ? `✓ ${health.provider} — connesso`
+          ? `✓ ${health.provider} — connesso${health.base_url ? ` (${health.base_url})` : ''}`
           : `✗ ${health.error || 'Non raggiungibile'}`,
       })
       if (discovered.length) setModels(discovered)
@@ -475,7 +831,7 @@ function LlmSection() {
           className={inp}
           value={cfg.base_url || ''}
           onChange={e => setCfg(c => ({ ...c, base_url: e.target.value }))}
-          placeholder="http://localhost:1234/v1"
+          placeholder="http://192.168.1.2:8083/v1"
         />
       </Field>
 
@@ -583,14 +939,29 @@ function LlmAgentsSection() {
   const [roleModels, setRoleModels] = useState({})       // { [key]: string[] }
   const [saving, setSaving]       = useState(false)
   const [saveStatus, setSaveStatus] = useState(null)
+  const [globalLlmOk, setGlobalLlmOk] = useState(false)
+  const [studioOpen, setStudioOpen] = useState(false)
+  const [studioLoading, setStudioLoading] = useState(false)
+  const [studioError, setStudioError] = useState(null)
+  const [studioSummary, setStudioSummary] = useState('')
+  const [studioAssignments, setStudioAssignments] = useState([])
+  const [studioProvider, setStudioProvider] = useState('')
+  const [studioModelsCount, setStudioModelsCount] = useState(0)
+  const [studioVerifyLoading, setStudioVerifyLoading] = useState(false)
+  const [studioVerifyResults, setStudioVerifyResults] = useState({})
+  const [studioVerifySummary, setStudioVerifySummary] = useState(null)
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       await waitForBackend()
       try {
-        const data = await apiGet('/llm/roles')
+        const [data, health] = await Promise.all([
+          apiGet('/llm/roles'),
+          apiGet('/llm/health').catch(() => ({ ok: false })),
+        ])
         if (cancelled) return
+        setGlobalLlmOk(!!health?.ok)
         const merged = {}
         for (const meta of ROLES_META) {
           merged[meta.key] = { ...ROLE_DEFAULTS(meta), ...(data[meta.key] || {}) }
@@ -598,6 +969,7 @@ function LlmAgentsSection() {
         setRoles(merged)
       } catch {
         if (cancelled) return
+        setGlobalLlmOk(false)
         const defaults = {}
         for (const meta of ROLES_META) defaults[meta.key] = ROLE_DEFAULTS(meta)
         setRoles(defaults)
@@ -605,6 +977,157 @@ function LlmAgentsSection() {
     })()
     return () => { cancelled = true }
   }, [])
+
+  async function runRoleStudio() {
+    setStudioOpen(true)
+    setStudioLoading(true)
+    setStudioError(null)
+    setStudioSummary('')
+    setStudioAssignments([])
+    setStudioVerifyResults({})
+    setStudioVerifySummary(null)
+    try {
+      const res = await fetch(`${API}/llm/roles/studio`, { method: 'POST' }).then(r => r.json())
+      if (!res.ok) {
+        setStudioError(res.error || 'Studio non disponibile')
+        return
+      }
+      setStudioSummary(res.summary || '')
+      setStudioAssignments(res.assignments || [])
+      setStudioProvider(res.provider || '')
+      setStudioModelsCount(res.models_count || 0)
+    } catch (e) {
+      setStudioError(e.message || 'Errore di connessione')
+    } finally {
+      setStudioLoading(false)
+    }
+  }
+
+  async function verifyRoleStudioModels() {
+    if (!studioAssignments.length) return
+    setStudioVerifyLoading(true)
+    setStudioVerifyResults({})
+    setStudioVerifySummary({ passed: 0, total: studioAssignments.length, current_model: null })
+
+    const pending = {}
+    for (const a of studioAssignments) {
+      pending[a.role] = { checking: false, ok: null, message: 'In coda…', pending: true }
+    }
+    setStudioVerifyResults(pending)
+
+    const byModel = {}
+    for (const a of studioAssignments) {
+      if (!byModel[a.model]) byModel[a.model] = []
+      byModel[a.model].push(a)
+    }
+
+    let passed = 0
+
+    try {
+      for (const [model, agents] of Object.entries(byModel)) {
+        setStudioVerifySummary(s => ({ ...s, current_model: model }))
+
+        setStudioVerifyResults(prev => {
+          const next = { ...prev }
+          for (const a of agents) {
+            next[a.role] = { checking: true, ok: null, message: `Verifica ${model}…`, pending: false }
+          }
+          return next
+        })
+
+        const res = await fetch(`${API}/llm/roles/studio/verify-model`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            assignments: agents,
+          }),
+        }).then(r => r.json())
+
+        let batchPassed = 0
+        setStudioVerifyResults(prev => {
+          const next = { ...prev }
+          for (const a of agents) {
+            const r = res.results?.find(x => x.role === a.role)
+            if (r) {
+              next[a.role] = { ...r, checking: false, pending: false }
+              if (r.ok) batchPassed += 1
+            } else {
+              next[a.role] = {
+                ok: false,
+                message: res.error || res.message || 'Verifica fallita',
+                checking: false,
+                pending: false,
+                model,
+              }
+            }
+          }
+          return next
+        })
+        passed += batchPassed
+
+        setStudioVerifySummary({
+          passed,
+          total: studioAssignments.length,
+          current_model: model,
+        })
+      }
+
+      window.dispatchEvent(new CustomEvent('llm-registry-updated'))
+    } catch (e) {
+      const failed = {}
+      for (const a of studioAssignments) {
+        failed[a.role] = { ok: false, message: e.message, checking: false, pending: false }
+      }
+      setStudioVerifyResults(failed)
+      setStudioVerifySummary({ passed: 0, total: studioAssignments.length, current_model: null })
+    } finally {
+      setStudioVerifyLoading(false)
+      setStudioVerifySummary(s => (s ? { ...s, current_model: null } : s))
+    }
+  }
+
+  const studioByRole = useMemo(() => {
+    const map = {}
+    for (const a of studioAssignments) {
+      if (a?.role) map[a.role] = a.model
+    }
+    return map
+  }, [studioAssignments])
+
+  async function acceptRoleStudio() {
+    try {
+      const globalCfg = await apiGet('/llm/config')
+      const next = { ...roles }
+      for (const a of studioAssignments) {
+        const meta = ROLES_META.find(m => m.key === a.role)
+        if (!meta) continue
+        next[a.role] = {
+          custom: true,
+          provider: globalCfg.provider || 'lmstudio',
+          model: a.model,
+          api_key: '',
+          base_url: globalCfg.base_url || '',
+          temperature: a.temperature ?? meta.defaultTemp,
+          max_tokens: a.max_tokens ?? meta.defaultTokens,
+        }
+      }
+      setRoles(next)
+      setStudioOpen(false)
+      setSaving(true)
+      await fetch(`${API}/llm/roles`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roles: next }),
+      })
+      setSaveStatus({ ok: true, msg: 'Regia AI configurata dallo studio' })
+      setTimeout(() => setSaveStatus(null), 4000)
+    } catch (e) {
+      setSaveStatus({ ok: false, msg: `Errore: ${e.message}` })
+    } finally {
+      setSaving(false)
+    }
+  }
 
   function patchRole(key, patch) {
     setRoles(r => ({ ...r, [key]: { ...r[key], ...patch } }))
@@ -682,6 +1205,50 @@ function LlmAgentsSection() {
         Ogni fase della pipeline usa un agente LLM dedicato. Se non personalizzato, l'agente eredita il provider globale.
       </p>
 
+      {globalLlmOk && (
+        <div className="mb-4 p-3 rounded-lg border border-[var(--gold)]/25 bg-[var(--gold)]/6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-[var(--text)] font-medium">Studio Regia AI</p>
+              <p className="text-[10px] text-[var(--text3)] mt-0.5 max-w-md">
+                L&apos;LLM analizza i modelli disponibili sul provider globale e propone la configurazione ottimale per ogni agente.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={runRoleStudio}
+              disabled={studioLoading}
+              className="flex items-center gap-2 px-4 py-2 text-xs rounded border border-[var(--gold)] text-[var(--gold)] hover:bg-[var(--gold)]/12 disabled:opacity-50 transition-colors shrink-0"
+            >
+              <Sparkles size={14} className={studioLoading ? 'animate-pulse' : ''} />
+              {studioLoading ? 'Studio in corso…' : 'Avvia studio modelli'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!globalLlmOk && (
+        <p className="text-[11px] text-[var(--text3)] mb-4 italic">
+          Configura e testa il provider LLM globale per abilitare lo Studio Regia AI.
+        </p>
+      )}
+
+      <RoleStudioPanel
+        open={studioOpen}
+        loading={studioLoading}
+        error={studioError}
+        summary={studioSummary}
+        assignments={studioAssignments}
+        provider={studioProvider}
+        modelsCount={studioModelsCount}
+        verifyLoading={studioVerifyLoading}
+        verifyResults={studioVerifyResults}
+        verifySummary={studioVerifySummary}
+        onClose={() => setStudioOpen(false)}
+        onAccept={acceptRoleStudio}
+        onVerifyModels={verifyRoleStudioModels}
+      />
+
       <div className="space-y-2">
         {ROLES_META.map(meta => {
           const cfg = roles[meta.key] || ROLE_DEFAULTS(meta)
@@ -690,6 +1257,9 @@ function LlmAgentsSection() {
           const isTesting = !!testing[meta.key]
           const result = testResult[meta.key]
           const discoveredModels = roleModels[meta.key]
+          const suggestedModel = studioByRole[meta.key]
+          const currentModel = (cfg.model || '').trim()
+          const studioMatches = suggestedModel && currentModel === suggestedModel.trim()
 
           return (
             <div key={meta.key} className={clsx(
@@ -777,10 +1347,22 @@ function LlmAgentsSection() {
                         <div>
                           <label className="block text-[10px] text-[var(--text3)] mb-1">Modello</label>
                           <input
-                            className={inp}
+                            className={clsx(
+                              inp,
+                              suggestedModel && studioMatches && 'border-[var(--green)]/50 focus:border-[var(--green)]',
+                              suggestedModel && !studioMatches && 'border-[var(--amber)]/35',
+                            )}
                             value={cfg.model}
                             onChange={e => patchRole(meta.key, { model: e.target.value })}
                             placeholder="gpt-4o, claude-sonnet-4-6…"
+                          />
+                          <StudioModelSuggestButton
+                            suggestedModel={suggestedModel}
+                            matches={!!studioMatches}
+                            onApply={() => patchRole(meta.key, {
+                              custom: true,
+                              model: suggestedModel,
+                            })}
                           />
                           <ModelTags
                             models={discoveredModels}
@@ -897,6 +1479,139 @@ function LlmAgentsSection() {
           </button>
         </div>
       </div>
+    </Section>
+  )
+}
+
+// ── LLM Model registry (blacklist / verified) ─────────────────────────────────
+
+function LlmModelRegistrySection() {
+  const [data, setData] = useState({ blacklist: [], verified_ok: [] })
+  const [loading, setLoading] = useState(true)
+  const [removing, setRemoving] = useState(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      await waitForBackend()
+      const d = await apiGet('/llm/models/registry')
+      if (d.ok !== false) {
+        setData({
+          blacklist: d.blacklist || [],
+          verified_ok: d.verified_ok || [],
+        })
+      }
+    } catch {
+      setData({ blacklist: [], verified_ok: [] })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+    const onUpdate = () => load()
+    window.addEventListener('llm-registry-updated', onUpdate)
+    return () => window.removeEventListener('llm-registry-updated', onUpdate)
+  }, [load])
+
+  async function removeBlacklist(entry) {
+    const key = `${entry.provider}:${entry.model_id}`
+    setRemoving(key)
+    try {
+      const q = new URLSearchParams({
+        provider: entry.provider,
+        model: entry.model_id,
+      })
+      const res = await fetch(`${API}/llm/models/blacklist?${q}`, { method: 'DELETE' })
+      const j = await res.json()
+      if (j.ok) await load()
+    } finally {
+      setRemoving(null)
+    }
+  }
+
+  return (
+    <Section title="Registro modelli LLM" defaultOpen={false}>
+      <p className="text-[var(--text3)] text-xs mb-4 leading-relaxed">
+        Dopo la verifica nello Studio Regia AI, i modelli funzionanti sono registrati come OK;
+        quelli falliti finiscono in blacklist e non vengono suggeriti né usati su quel provider.
+      </p>
+
+      {loading ? (
+        <p className="text-xs text-[var(--text3)] animate-pulse">Caricamento registro…</p>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wider text-[var(--red)] mb-2 flex items-center gap-1.5">
+              <AlertTriangle size={12} /> Blacklist ({data.blacklist.length})
+            </h4>
+            {data.blacklist.length === 0 ? (
+              <p className="text-[11px] text-[var(--text3)]">Nessun modello bloccato.</p>
+            ) : (
+              <ul className="space-y-1.5 max-h-48 overflow-y-auto">
+                {data.blacklist.map((e) => (
+                  <li
+                    key={e.id}
+                    className="flex items-start gap-2 p-2 rounded border border-[var(--red)]/20 bg-[var(--red)]/5 text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-mono text-[var(--text)] block truncate">{e.model_id}</span>
+                      <span className="text-[10px] text-[var(--text3)]">{e.provider}</span>
+                      {e.reason && (
+                        <p className="text-[10px] text-[var(--text3)] mt-0.5 line-clamp-2">{e.reason}</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      title="Rimuovi da blacklist"
+                      disabled={removing === `${e.provider}:${e.model_id}`}
+                      onClick={() => removeBlacklist(e)}
+                      className="p-1.5 rounded text-[var(--text3)] hover:text-[var(--red)] hover:bg-[var(--bg3)] shrink-0"
+                    >
+                      {removing === `${e.provider}:${e.model_id}`
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <Trash2 size={12} />}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wider text-[var(--green)] mb-2 flex items-center gap-1.5">
+              <Check size={12} /> Verificati OK ({data.verified_ok.length})
+            </h4>
+            {data.verified_ok.length === 0 ? (
+              <p className="text-[11px] text-[var(--text3)]">Nessuna verifica salvata — usa Studio Regia AI.</p>
+            ) : (
+              <ul className="space-y-1.5 max-h-48 overflow-y-auto">
+                {data.verified_ok.map((e) => (
+                  <li
+                    key={e.id}
+                    className="p-2 rounded border border-[var(--green)]/20 bg-[var(--green)]/5 text-xs"
+                  >
+                    <span className="font-mono text-[var(--text)] block truncate">{e.model_id}</span>
+                    <span className="text-[10px] text-[var(--text3)]">
+                      {e.provider}
+                      {e.verified_at && ` · ${new Date(e.verified_at).toLocaleString('it-IT')}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={load}
+        className="mt-3 flex items-center gap-1.5 text-[10px] text-[var(--text3)] hover:text-[var(--gold)]"
+      >
+        <RefreshCw size={11} /> Aggiorna registro
+      </button>
     </Section>
   )
 }

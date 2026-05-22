@@ -342,7 +342,18 @@ Format: [CINEMATIC QUALITY], [CAMERA], [ENVIRONMENT DETAILS], [LIGHTING], [MOOD]
 - Length: 40-80 words, comma-separated descriptors
 - Example: "Cinematic wide shot, 35mm film grain, shallow depth of field. Rain-soaked cobblestone alley at dusk, warm sodium streetlights reflecting in puddles, deep atmospheric shadows, soft vignette, fog layers. Melancholic European urban setting, high production value, professional cinematography, dramatic chiaroscuro"
 
-OUTPUT: Valid JSON only. Return the same shot_list with first_frame, last_frame, motion_prompt, and ltx_global_prompt added to each shot."""
+LTX 2.3 VIDEO PROMPT RULES (for ltx_video_prompt field — img2video mode):
+Generate a single flowing paragraph (present tense, 60-150 words) that follows the LTX 2.3 spec:
+1. Camera framing and shot scale
+2. Subject + specific action described with physical cues (no emotional labels like "sad" or "happy")
+3. Environment details: textures, atmosphere, weather, spatial context
+4. Lighting: source direction, quality, color temperature
+5. Camera movement: explicit verb (e.g. "The camera slowly dollies forward...", "A handheld camera tracks...")
+6. Ambient audio: describe sounds that would be heard (rain on stone, distant crowd, wind, music)
+For img2video: focus on the MOTION that unfolds from the starting frame. Do NOT re-describe static elements already visible in the first frame image — instead describe what CHANGES and MOVES.
+Example: "The camera slowly pushes forward toward a woman standing at the edge of a rain-soaked canal at dusk. She raises her hand to touch the lamppost beside her, fingers trailing across the wet iron surface. The warm sodium glow shifts as she turns her face slightly away from camera, breath condensing in the cold evening air. Mist drifts leftward across frame as the camera continues its gentle approach. The sound of steady rain on cobblestone and distant water lapping fills the ambient space."
+
+OUTPUT: Valid JSON only. Return the same shot_list with first_frame, last_frame, motion_prompt, ltx_global_prompt, and ltx_video_prompt added to each shot."""
 
 
 def build_prompt_engineer_prompt(
@@ -375,12 +386,14 @@ For EACH shot above (in the SAME ORDER), output a JSON array entry with ONLY the
 - "last_frame": {{"prompt": "...", "negative_prompt": "..."}}   (ending state after movement)
 - "motion_prompt": "..." (max 15 words: camera movement + subject movement)
 - "ltx_global_prompt": "..." (40-80 words: cinematic style + environment + lighting for LTX Director video model)
+- "ltx_video_prompt": "..." (60-150 words: full flowing paragraph per LTX 2.3 img2video spec)
 
 prompt format: [CINEMATIC STYLE], [SHOT TYPE], [SUBJECT + ACTION], [ENVIRONMENT], [LIGHTING], [MOOD], [TECHNICAL]
 first_frame = the FIRST frame of the shot (beginning of movement)
 last_frame  = the LAST frame of the shot (end of movement — camera/subject has moved)
 motion_prompt = e.g. "camera slowly pushes forward, character turns toward horizon, mist drifts left"
 ltx_global_prompt = cinematic style/atmosphere ONLY — no characters, no movement verbs, 40-80 words
+ltx_video_prompt = LTX 2.3 img2video flowing paragraph (present tense, 60-150 words, describe motion from starting frame, camera movement, subject action with physical cues, environment changes, ambient audio)
 negative_prompt for all frames: "{neg}"
 
 EXAMPLE OUTPUT (replace values, maintain structure):
@@ -396,11 +409,12 @@ EXAMPLE OUTPUT (replace values, maintain structure):
       "negative_prompt": "{neg}"
     }},
     "motion_prompt": "camera slowly pushes forward, protagonist turns toward canal, rain drifts left",
-    "ltx_global_prompt": "cinematic film still, 35mm grain, shallow depth of field. Rain-soaked cobblestone canal at dusk, warm sodium lamplight from left, deep shadows and wet reflections, atmospheric fog, melancholic European setting, high production value, professional cinematography"
+    "ltx_global_prompt": "cinematic film still, 35mm grain, shallow depth of field. Rain-soaked cobblestone canal at dusk, warm sodium lamplight from left, deep shadows and wet reflections, atmospheric fog, melancholic European setting, high production value, professional cinematography",
+    "ltx_video_prompt": "The camera slowly pushes forward toward a man standing at the edge of a rain-soaked canal at dusk. He raises his hand to touch the lamppost beside him, fingers trailing across the wet iron surface. The warm sodium glow shifts as he turns his face slightly away from camera, breath condensing in the cold evening air. Mist drifts leftward across frame as the camera continues its gentle approach. The sound of steady rain on cobblestone and distant water lapping fills the ambient space."
   }}
 ]
 
-Return a JSON array — one entry per shot, SAME ORDER as input, ONLY the five fields above (shot_id, first_frame, last_frame, motion_prompt, ltx_global_prompt)."""
+Return a JSON array — one entry per shot, SAME ORDER as input, ONLY the six fields above (shot_id, first_frame, last_frame, motion_prompt, ltx_global_prompt, ltx_video_prompt)."""
 
 
 # ── Trailer Generator: Cinematographer → Prompt Engineer ─────────────────────
@@ -501,6 +515,7 @@ RULES:
 - last_frame_prompt = DP last_frame_state expanded; must differ from first (implies motion)
 - scene_prompt = shorter hero still (30-50 words) for backup txt2img
 - motion_prompt = DP motion_intent refined, max 15 words, camera + subject verbs only
+- ltx_video_prompt: single flowing paragraph (present tense, 60-150 words) per LTX 2.3 img2video spec — describe motion from starting frame, camera movement, subject action (physical cues only), environment changes, ambient audio. Do NOT re-describe static scene elements already in the reference image.
 - Include lens and depth-of-field cues from DP plan in [TECHNICAL]
 - Include lighting.time_of_day and sources in [LIGHTING]
 - negative_prompt: use full anti-text negative (text, letters, typography, watermark, gibberish writing, malformed hands, bad anatomy, cartoon, CGI)
@@ -538,10 +553,11 @@ For EACH plan (same order), output in "prompts":
 - first_frame_prompt: full 7-part format from first_frame_state (50-90 words)
 - last_frame_prompt: full 7-part format from last_frame_state (50-90 words)
 - motion_prompt: max 15 words from motion_intent
+- ltx_video_prompt: single flowing paragraph (present tense, 60-150 words) per LTX 2.3 img2video spec — describe motion from starting frame, camera movement, subject action (physical cues only), environment changes, ambient audio
 - negative_prompt: "{neg}"
 
 Output JSON:
-{{"prompts":[{{"slot_id":"slot_001","scene_prompt":"...","first_frame_prompt":"...",...}}]}}"""
+{{"prompts":[{{"slot_id":"slot_001","scene_prompt":"...","first_frame_prompt":"...","ltx_video_prompt":"...",...}}]}}"""
 
 
 # ── LLM 5: Continuity Checker ─────────────────────────────────────────────────

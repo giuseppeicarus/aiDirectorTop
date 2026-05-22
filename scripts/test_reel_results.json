@@ -1,0 +1,170 @@
+{
+  "brief": "Spot pubblicitario cinematografico ultra realistico per una lametta da barba premium.\n\nIl reel deve trasmettere lusso, precisione, mascolinità moderna ed eleganza visiva,\ncon lo stile di una pubblicità di profumo di fascia alta mescolata a un commercial\nautomotive cinematografico. L'atmosfera deve essere sensuale, sofisticata e potente.\n\nLa scena si apre con macro estreme delle lame metalliche della lametta illuminate\nda luce cinematografica morbida e riflessi caldi. Gocce d'acqua scorrono lentamente\nsull'acciaio lucidato mentre bassi profondi e cinematici accompagnano i movimenti\nin slow motion.\n\nUn uomo carismatico con barba curata e capelli scuri si trova all'interno di un\nbagno moderno di lusso con marmo nero, specchi appannati, vapore leggero e\nilluminazione ambientale calda color ambra.\n\nLa rasatura deve risultare visivamente appagante: linee perfettamente pulite,\nscorrimento fluido della lametta sulla pelle, rimozione realistica dei peli.\n\nMovimenti camera: macro lens, slow motion, side tracking shot, orbite lente,\nrack focus tra occhi e lama, close-up estremi della pelle.\n\nIlluminazione: luce cinematografica premium, riflessi ambra e freddi combinati,\nhaze volumetrico, pelle leggermente lucida, ombre morbide e profonde.\n\nStile visivo: ultra realistic cinematic commercial, look ARRI Alexa LF,\nlente anamorfica, profondità di campo ridotta, texture della pelle ultra dettagliata.",
+  "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+  "narrative": {
+    "logline": "Un rituale di precisione e lusso, dove la lametta trasforma la mascolinità in un'opera d'arte sensuale.",
+    "mood": "Sensuale, Sofisticato, Potente",
+    "visual_theme": "L'intersezione tra il freddo acciaio della lama e il caldo vapore del lusso mattutino.",
+    "narrative_arc": "Il reel inizia focalizzandosi sull'oggetto di desiderio: la lametta perfetta. Questa precisione si trasferisce poi al rituale dell'uomo, mostrando ogni dettaglio sublime della rasatura. L'arco culmina nell'affermazione di una mascolinità impeccabile e dominante.",
+    "visual_motifs": [
+      "Luce ambra calda contro acciaio freddo",
+      "Vapore denso del bagno di lusso",
+      "Texture iper-dettagliata della pelle dopo la rasatura",
+      "Movimenti slow motion ipnotici",
+      "Marmo nero e superfici lucide"
+    ]
+  },
+  "slots": [
+    {
+      "slot_id": "slot_001",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Anticipazione, Mistero",
+      "visual_hint": "Macro estrema sulle lame della lametta. Acqua gocciola lentamente sull'acciaio lucidato; i riflessi sono caldi e distorti dal vapore circostante. Illuminazione cinematografica morbida, enfasi sul dettaglio metallico perfetto. Slow motion assoluto. (Ultra realistic cinematic commercial, 9:16 aspect ratio).",
+      "duration_sec": 5.0,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "intro"
+    },
+    {
+      "slot_id": "slot_002",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Riflessione, Eleganza",
+      "visual_hint": "Introduzione dell'uomo (barba curata, capelli scuri) nel bagno di marmo nero. Primo piano sul suo profilo mentre si prepara, il vapore avvolge leggermente lo specchio appannato. Luce ambientale calda color ambra domina l'ambiente circostante. Rack focus lento dal dettaglio del viso allo sfondo marmoreo.",
+      "duration_sec": 3.75,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "build"
+    },
+    {
+      "slot_id": "slot_003",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Concentrazione, Precisione",
+      "visual_hint": "Close-up estremo della lama che tocca la pelle. Il movimento è estremamente fluido e controllato. Si vedono linee perfettamente pulite formarsi. Utilizzare un side tracking shot lento per seguire il passaggio della lametta sulla zona del collo/guancia, enfatizzando l'efficacia chirurgica. (Shallow depth of field).",
+      "duration_sec": 6.25,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "build"
+    },
+    {
+      "slot_id": "slot_004",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Soddisfazione, Potenza",
+      "visual_hint": "Orbita lenta attorno al volto dell'uomo dopo la rasatura. La pelle è appena umida e lucida. L'illuminazione esalta le ombre morbide e profonde che definiscono i lineamenti maschili. Un rapido primo piano sui suoi occhi, intensi e carismatici, mentre guarda dritto nell'obiettivo. (Volumetric haze presente).",
+      "duration_sec": 6.25,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "peak"
+    },
+    {
+      "slot_id": "slot_005",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Compiacimento, Dominanza",
+      "visual_hint": "Medium shot finale dell'uomo che si asciuga con un panno di lusso. Il contrasto tra la pelle appena rasata e il marmo scuro è netto. Un ultimo sguardo alla lametta posizionata elegantemente su una superficie di marmo nero come elemento di chiusura visiva.",
+      "duration_sec": 5.0,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "resolution"
+    },
+    {
+      "slot_id": "slot_006",
+      "section_type": "verse",
+      "energy": "medium",
+      "emotion": "Lusso, Immagine Finale",
+      "visual_hint": "Fade out lento su un dettaglio estetico: una goccia d'acqua che scivola via da uno spigolo di marmo nero lucido. Nessuna persona visibile, solo l'atmosfera potente e raffinata del bagno. L'immagine si stabilizza sulla texture ultra dettagliata.",
+      "duration_sec": 3.75,
+      "style": "ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail",
+      "narrative_role": "resolution"
+    }
+  ],
+  "clips": [
+    {
+      "clip_id": "clip_000_slot_001",
+      "slot_id": "slot_001",
+      "emotion": "Anticipazione, Mistero",
+      "duration": 5.0,
+      "first_frame_prompt": "cinematic commercial, medium close-up, gleaming razor blades dripping water droplets, detailed macro shot of polished steel reflecting warm amber light and volumetric haze, dark marble bathroom setting, warm amber and cold steel tones, shallow depth of field, 8K detail, photorealistic, professional photography, sharp focus",
+      "motion_prompt": "gentle tracking razor blades dripping, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "The camera slowly pushes in on the perfectly polished razor blades, capturing water droplets clinging to the cold steel surface. Warm directional light catches the distorted reflections within the dense, humid vapor of the luxury bathroom. A gentle tracking movement follows the slow descent of a single drop, emphasizing the exquisite detail of the metalwork against the dark marble backdrop. This sequence builds an atmosphere of intense anticipation and sophisticated mystery, conveying sensual, luxurious aesthetic, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "cinematic commercial, 9:16 aspect ratio), photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    },
+    {
+      "clip_id": "clip_001_slot_002",
+      "slot_id": "slot_002",
+      "emotion": "Riflessione, Eleganza",
+      "duration": 3.75,
+      "first_frame_prompt": "cinematic commercial, medium close-up, the man with neatly trimmed dark beard and dark hair gazing into a foggy mirror, surrounded by black marble surfaces in a luxurious bathroom, warm amber directional light filtering through steam, shallow depth of field, 8K detail, photorealistic, professional photography, sharp focus",
+      "motion_prompt": "gentle tracking man profile gazing, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "A gentle tracking shot follows the profile of the man with neatly trimmed dark beard and dark hair as he stands in the opulent black marble bathroom. Warm amber directional light bathes the steam-covered mirror, creating a soft glow around his features. The camera slowly racks focus from the intricate detail of his face to the luxurious texture of the surrounding marble. This movement conveys deep reflection and elegant sophistication, embodying a sensual, powerful aesthetic, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "Introduzione dell'uomo (barba curata, capelli scuri) nel bagno di marmo nero. Primo piano sul suo profilo mentre si prepara, il vapore avvolge leggermente lo specchio appannato. Luce ambientale calda color ambra domina l'ambiente circostante. Rack focus lento dal dettaglio del viso allo sfondo marmoreo, photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    },
+    {
+      "clip_id": "clip_002_slot_003",
+      "slot_id": "slot_003",
+      "emotion": "Concentrazione, Precisione",
+      "duration": 6.25,
+      "first_frame_prompt": "cinematic film still, medium_close, medium close-up, subject-focused, the subject, Concentrazione, Precisione emotion, ultra realistic cinematic commercial, 50mm lens, ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail, detailed environment, subject in sharp focus, 35mm lens, shallow depth of field, photorealistic, dramatic lighting, 8k",
+      "motion_prompt": "gentle tracking razor gliding across skin, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "The camera gentle tracking in a medium_close framing, 50mm lens. medium close-up, subject-focused, the subject, Concentrazione, Precisione emotion, ultra realistic cinematic commercial, 50mm lens. gentle tracking, Concentrazione, Precisione mood. The light is warm directional light, Sensuale, Sofisticato, Potente. ultra realistic cinematic commercial aesthetic. Ambient sound fills the scene, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "Close-up estremo della lama che tocca la pelle. Il movimento è estremamente fluido e controllato. Si vedono linee perfettamente pulite formarsi. Utilizzare un side tracking shot lento per seguire il passaggio della lametta sulla zona del collo/guancia, enfatizzando l'efficacia chirurgica. (Shallow depth of field), photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    },
+    {
+      "clip_id": "clip_003_slot_004",
+      "slot_id": "slot_004",
+      "emotion": "Soddisfazione, Potenza",
+      "duration": 6.25,
+      "first_frame_prompt": "cinematic commercial, medium close-up, the man with neatly trimmed dark beard and dark hair, post-shave, his skin glistening slightly under soft light, intense gaze directed at the camera, surrounded by volumetric haze in a marble setting, warm amber and cold steel tones, 8K detail, photorealistic, professional photography, sharp focus",
+      "motion_prompt": "gentle tracking orbit around face, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "The camera gentle tracking in a medium_close framing, 50mm lens. medium close-up, subject-focused, the subject, Soddisfazione, Potenza emotion, ultra realistic cinematic commercial, 50mm lens. gentle tracking, Soddisfazione, Potenza mood. The light is warm directional light, Sensuale, Sofisticato, Potente. ultra realistic cinematic commercial aesthetic. Ambient sound fills the scene, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "Orbita lenta attorno al volto dell'uomo dopo la rasatura. La pelle è appena umida e lucida. L'illuminazione esalta le ombre morbide e profonde che definiscono i lineamenti maschili. Un rapido primo piano sui suoi occhi, intensi e carismatici, mentre guarda dritto nell'obiettivo. (Volumetric haze presente), photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    },
+    {
+      "clip_id": "clip_004_slot_005",
+      "slot_id": "slot_005",
+      "emotion": "Compiacimento, Dominanza",
+      "duration": 5.0,
+      "first_frame_prompt": "cinematic commercial, medium close-up, the man with neatly trimmed dark beard and dark hair gently drying his face with a luxurious white towel, sharp contrast between smooth skin and black marble, warm amber light illuminating the scene, shallow depth of field, 8K detail, photorealistic, professional photography, sharp focus",
+      "motion_prompt": "gentle tracking man drying face, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "A gentle tracking shot follows the man with neatly trimmed dark beard and dark hair as he meticulously dries his face using a plush luxury towel within the steam-filled bathroom. The strong contrast between his freshly shaven skin and the deep black marble is visually arresting. The camera lingers on the razor resting elegantly on the stone surface, capturing the final touch of cold steel against warm amber light. This concluding movement conveys supreme satisfaction and confident dominance, achieving a powerful, sophisticated aesthetic, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "Medium shot finale dell'uomo che si asciuga con un panno di lusso. Il contrasto tra la pelle appena rasata e il marmo scuro è netto. Un ultimo sguardo alla lametta posizionata elegantemente su una superficie di marmo nero come elemento di chiusura visiva.. Luce ambra calda contro acciaio freddo; Vapore denso del bagno di lusso; Texture iper-dettagliata della pelle dopo la rasatura, photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    },
+    {
+      "clip_id": "clip_005_slot_006",
+      "slot_id": "slot_006",
+      "emotion": "Lusso, Immagine Finale",
+      "duration": 3.75,
+      "first_frame_prompt": "cinematic film still, medium_close, medium close-up, subject-focused, the subject, Lusso, Immagine Finale emotion, ultra realistic cinematic commercial, 50mm lens, ultra realistic cinematic commercial, ARRI Alexa LF, anamorphic lens, shallow depth of field, luxury grooming aesthetic, premium photography, warm amber and cold steel tones, volumetric haze, 8K detail, detailed environment, subject in sharp focus, 35mm lens, shallow depth of field, photorealistic, dramatic lighting, 8k",
+      "motion_prompt": "gentle tracking water drop sliding, photorealistic, professional photography, sharp focus",
+      "ltx_video_prompt": "The camera slowly pushes in on a solitary drop of water as it traces its path down the highly polished edge of the black marble. The scene is saturated with dense vapor, bathed in warm amber light that contrasts sharply with the cool sheen of the stone. This final shot holds steady on the exquisite texture, allowing the viewer to absorb the atmosphere of refined luxury and power. The movement concludes by settling into a powerful, sophisticated aesthetic, photorealistic, professional photography, sharp focus",
+      "scene_prompt": "Fade out lento su un dettaglio estetico: una goccia d'acqua che scivola via da uno spigolo di marmo nero lucido. Nessuna persona visibile, solo l'atmosfera potente e raffinata del bagno. L'immagine si stabilizza sulla texture ultra dettagliata.. Luce ambra calda contro acciaio freddo; Vapore denso del bagno di lusso; Texture iper-dettagliata della pelle dopo la rasatura, photorealistic, professional photography, sharp focus",
+      "negative_prompt": "ugly, deformed, blurry, low quality, watermark, logo, brand mark, text, letters, words, numbers, typography, caption, subtitle, speech bubble, signage with text, billboard text, screen text, UI overlay, gibberish writing, unreadable text, scrambled letters, misspelled words, extra fingers, extra limbs, malformed hands, fused fingers, distorted face, asymmetrical eyes, crossed eyes, bad anatomy, di, photorealistic, professional photography, sharp focus",
+      "dop_shot_type": "medium_close",
+      "dop_camera_movement": "gentle tracking",
+      "dop_lighting": null
+    }
+  ],
+  "quality": {
+    "avg_score": 0.883,
+    "critical_issues": 0,
+    "warnings": 6
+  }
+}

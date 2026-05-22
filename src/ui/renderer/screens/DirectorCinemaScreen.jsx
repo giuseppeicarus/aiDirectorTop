@@ -607,7 +607,7 @@ function AudioTrack({ audio, totalWidth, onAdd, onRemove }) {
 
 // ── Clip Editor Sidebar ────────────────────────────────────────────────────────
 
-function ClipEditorSidebar({ clip, clipIndex, mode, onUpdate, onDelete, onClose }) {
+function ClipEditorSidebar({ clip, clipIndex, mode, project, onUpdate, onDelete, onClose }) {
   const [enhancing, setEnhancing] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
@@ -616,7 +616,14 @@ function ClipEditorSidebar({ clip, clipIndex, mode, onUpdate, onDelete, onClose 
     if (!clip.prompt.trim() || enhancing) return
     setEnhancing(true)
     try {
-      const res = await director.enhance({ prompt: clip.prompt, context: 'director_clip' })
+      const res = await director.enhance({
+        prompt: clip.prompt,
+        context: 'director_clip',
+        project_context: {
+          brief: project?.globalPrompt,
+          style: project?.name,
+        },
+      })
       onUpdate({ prompt: normalizeUnifiedPrompt(res?.enhanced, clip.prompt, res?.negative_prompt) })
     } catch {
       // silent
@@ -795,7 +802,11 @@ function GenerationDock({
     if (!project.globalPrompt.trim() || enhancingGlobal) return
     setEnhancingGlobal(true)
     try {
-      const res = await director.enhance({ prompt: project.globalPrompt, context: 'director_global' })
+      const res = await director.enhance({
+        prompt: project.globalPrompt,
+        context: 'director_global',
+        project_context: { brief: project.globalPrompt, style: project.name },
+      })
       onUpdateProject({ globalPrompt: normalizeUnifiedPrompt(res?.enhanced, project.globalPrompt, res?.negative_prompt) })
     } catch {
       // silent
@@ -1061,7 +1072,11 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
   async function handleEnhanceGlobal() {
     if (!project.globalPrompt.trim()) return
     try {
-      const res = await director.enhance({ prompt: project.globalPrompt, context: 'director_global' })
+      const res = await director.enhance({
+        prompt: project.globalPrompt,
+        context: 'director_global',
+        project_context: { brief: project.globalPrompt, style: project.name },
+      })
       onUpdateProject({ globalPrompt: normalizeUnifiedPrompt(res?.enhanced, project.globalPrompt, res?.negative_prompt) })
     } catch {
       // silent
@@ -1223,6 +1238,7 @@ function WorkspaceView({ project, onBack, onUpdateProject }) {
             clip={selectedClip}
             clipIndex={selectedClipIndex}
             mode={project.mode}
+            project={project}
             onUpdate={patch => updateClip(selectedClip.id, patch)}
             onDelete={id => { deleteClip(id); setSelectedClipId(null) }}
             onClose={() => setSelectedClipId(null)}

@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import StartupGate from './components/StartupGate'
 import Layout from './components/Layout'
 import ProjectListScreen from './screens/ProjectListScreen'
 import ProjectCreatorScreen from './screens/ProjectCreatorScreen'
@@ -18,33 +19,38 @@ import ModelsScreen from './screens/ModelsScreen'
 import DirectorCinemaScreen from './screens/DirectorCinemaScreen'
 import TrailerScreen from './screens/TrailerScreen'
 import CreateReelScreen from './screens/CreateReelScreen'
+import ObsidianScreen from './screens/ObsidianScreen'
 
+/** Nessun hook custom qui — evita warning HMR sull'ordine degli hook. */
 export default function App() {
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Navigate to="/projects" replace />} />
-        <Route path="projects"                element={<ProjectListScreen />} />
-        <Route path="projects/:id"            element={<ProjectDetailScreen />} />
-        <Route path="projects/new"            element={<ProjectCreatorScreen />} />
-        <Route path="projects/:id/storyboard" element={<StoryboardScreen />} />
-        <Route path="projects/:id/pipeline"   element={<PipelineScreen />} />
-        <Route path="projects/:id/copilot"   element={<CopilotScreen />} />
-        <Route path="projects/:id/trailer"    element={<TrailerScreen />} />
-        <Route path="nodes"                   element={<NodesScreen />} />
-        <Route path="services"                element={<ServicesScreen />} />
-        <Route path="media"                   element={<MediaLibraryScreen />} />
-        <Route path="frame-cut-optimizer"     element={<FrameCutOptimizerScreen />} />
-        <Route path="queue"                   element={<QueueScreen />} />
-        <Route path="workflows"               element={<WorkflowsScreen />} />
-        <Route path="tools"                   element={<ToolsScreen />} />
-        <Route path="models"                  element={<ModelsScreen />} />
-        <Route path="director"                element={<DirectorCinemaScreen />} />
-        <Route path="trailer"                 element={<TrailerScreen />} />
-        <Route path="createreel"              element={<CreateReelScreen />} />
-        <Route path="projects/:id/reel"       element={<CreateReelScreen />} />
-        <Route path="settings"               element={<SettingsScreen />} />
-      </Route>
-    </Routes>
+    <StartupGate>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Navigate to="/projects" replace />} />
+          <Route path="projects"                element={<ProjectListScreen />} />
+          <Route path="projects/:id"            element={<ProjectDetailScreen />} />
+          <Route path="projects/new"            element={<ProjectCreatorScreen />} />
+          <Route path="projects/:id/storyboard" element={<StoryboardScreen />} />
+          <Route path="projects/:id/pipeline"   element={<PipelineScreen />} />
+          <Route path="projects/:id/copilot"   element={<CopilotScreen />} />
+          <Route path="projects/:id/trailer"    element={<TrailerScreen />} />
+          <Route path="nodes"                   element={<NodesScreen />} />
+          <Route path="services"                element={<ServicesScreen />} />
+          <Route path="media"                   element={<MediaLibraryScreen />} />
+          <Route path="frame-cut-optimizer"     element={<FrameCutOptimizerScreen />} />
+          <Route path="queue"                   element={<QueueScreen />} />
+          <Route path="workflows"               element={<WorkflowsScreen />} />
+          <Route path="tools"                   element={<ToolsScreen />} />
+          <Route path="models"                  element={<ModelsScreen />} />
+          <Route path="director"                element={<DirectorCinemaScreen />} />
+          <Route path="trailer"                 element={<TrailerScreen />} />
+          <Route path="createreel"              element={<CreateReelScreen />} />
+          <Route path="projects/:id/reel"       element={<CreateReelScreen />} />
+          <Route path="obsidian"               element={<ObsidianScreen />} />
+          <Route path="settings"               element={<SettingsScreen />} />
+        </Route>
+      </Routes>
+    </StartupGate>
   )
 }

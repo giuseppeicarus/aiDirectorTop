@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.core.comfyui.workflow_builder import extract_output_files, inject_ws_executed_output
 from src.core.utils.comfyui_outputs import (
     COMFY_REAL_IMAGE_MIN_BYTES,
     STORYBOARD_IMAGE_MIN_BYTES,
@@ -53,6 +54,29 @@ def test_is_ffmpeg_placeholder_detects_836_byte_png(tmp_path: Path):
     p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 820)
     assert is_ffmpeg_placeholder_image(p)
     assert not is_real_comfy_image(p, min_bytes=STORYBOARD_IMAGE_MIN_BYTES)
+
+
+def test_inject_ws_executed_output_provides_download_filename():
+    hist = inject_ws_executed_output(
+        {},
+        "9",
+        {"images": [{"filename": "clip_001_slot_002_sb_0005_.png", "type": "output"}]},
+    )
+    files = extract_output_files(hist)
+    assert files[0]["filename"] == "clip_001_slot_002_sb_0005_.png"
+
+
+def test_extract_output_files_deep_scan_nested():
+    history = {
+        "outputs": {
+            "9": {
+                "text": ["ok"],
+                "nested": {"filename": "clip_001_slot_002_sb_0005_.png", "type": "output"},
+            }
+        }
+    }
+    files = extract_output_files(history)
+    assert any(f["filename"] == "clip_001_slot_002_sb_0005_.png" for f in files)
 
 
 def test_pick_largest_real_image_skips_placeholder(tmp_path: Path):

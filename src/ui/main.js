@@ -14,8 +14,9 @@ log.initialize()
 log.transports.file.level = 'info'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
-const BACKEND_PORT = 8765
-const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
+const BACKEND_PORT = Number(process.env.CINEMATIC_BACKEND_PORT || 8123)
+const DEV_RENDERER_URL = 'http://127.0.0.1:5300'
+const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
 
 let mainWindow = null
 let backendProcess = null
@@ -69,27 +70,45 @@ function startBackend() {
   backendProcess.on('exit', (code) => log.info('Backend exited', { code }))
 }
 
+async function _fetchOk(url, timeoutMs = 2500) {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
 async function waitForBackend(maxMs = 15000) {
   const start = Date.now()
   while (Date.now() - start < maxMs) {
-    try {
-      const r = await fetch(`${BACKEND_URL}/health`)
-      if (r.ok) return true
-    } catch { /* not ready yet */ }
+    if (await _fetchOk(`${BACKEND_URL}/health`)) return true
     await new Promise(res => setTimeout(res, 400))
   }
+  return false
+}
+
+async function _waitForViteDevServer(maxMs = 30000) {
+  const start = Date.now()
+  while (Date.now() - start < maxMs) {
+    if (await _fetchOk(DEV_RENDERER_URL)) return true
+    await new Promise(res => setTimeout(res, 300))
+  }
+  log.warn('Vite dev server not reachable', { url: DEV_RENDERER_URL })
   return false
 }
 
 // ── Window ────────────────────────────────────────────────────────────────────
 
 async function createWindow() {
+  const isWin = process.platform === 'win32'
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
+    show: false,
+    ...(isWin ? {} : { titleBarStyle: 'hiddenInset' }),
     backgroundColor: '#0a0a0f',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -98,11 +117,25 @@ async function createWindow() {
     },
   })
 
-  if (isDev) {
-    await mainWindow.loadURL('http://localhost:5300')
-    mainWindow.webContents.openDevTools()
-  } else {
-    await mainWindow.loadFile(path.join(__dirname, '../../dist-renderer/index.html'))
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show()
+    mainWindow.focus()
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_ev, code, desc, url) => {
+    log.error('Renderer failed to load', { code, desc, url })
+  })
+
+  try {
+    if (isDev) {
+      await mainWindow.loadURL(DEV_RENDERER_URL)
+      mainWindow.webContents.openDevTools({ mode: 'detach' })
+    } else {
+      await mainWindow.loadFile(path.join(__dirname, '../../dist-renderer/index.html'))
+    }
+  } catch (err) {
+    log.error('createWindow load failed', err)
+    throw err
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -141,6 +174,7 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('llm:health',      ()               => apiCall('GET',  '/api/llm/health'))
+  ipcMain.handle('llm:enhancePrompt', (_, req) => apiCall('POST', '/api/llm/enhance-prompt', req))
   ipcMain.handle('comfyui:nodes',   ()               => apiCall('GET',  '/api/comfyui/nodes'))
 
   ipcMain.handle('config:get',      ()               => apiCall('GET',  '/health')) // placeholder
@@ -328,6 +362,21 @@ function registerIpcHandlers() {
     (m.workflows || []).filter(w => ['director', 'img2video', 'img2video_lastframe', 'img_audio2video'].includes(w.type))
   ))
   ipcMain.handle('director:enhance', (_, req) => apiCall('POST', '/api/director/enhance', req))
+
+  ipcMain.handle('obsidian:status',      () => apiCall('GET',  '/api/obsidian/status'))
+  ipcMain.handle('obsidian:dockerStart', () => apiCall('POST', '/api/obsidian/docker/start'))
+  ipcMain.handle('obsidian:dockerStop',  () => apiCall('POST', '/api/obsidian/docker/stop'))
+  ipcMain.handle('obsidian:syncProject', (_, req) => apiCall('POST', '/api/obsidian/sync/project', req))
+  ipcMain.handle('obsidian:search',      (_, req) => apiCall('POST', '/api/obsidian/search', req))
+  ipcMain.handle('obsidian:context',     (_, req) => {
+    const q = new URLSearchParams(req || {}).toString()
+    return apiCall('GET', `/api/obsidian/context?${q}`)
+  })
+  ipcMain.handle('obsidian:openWeb', (_, url) => {
+    if (url) shell.openExternal(url)
+    return { ok: true }
+  })
+
   ipcMain.handle('director:generate', (event, params) => {
     return new Promise((resolve) => {
       const body = JSON.stringify(params)
@@ -557,6 +606,19 @@ function registerIpcHandlers() {
     const safeId = String(catalogProjectId || 'reel_standalone').replace(/[^a-zA-Z0-9_-]/g, '_')
     return nodePath.join(os.homedir(), '.cinematic-studio', 'projects', safeId, 'references', 'staged')
   }
+
+  ipcMain.handle('reel:pickAudio', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
+    })
+    if (canceled || !filePaths.length) return null
+    const fs = require('fs')
+    const stat = fs.statSync(filePaths[0])
+    return { path: filePaths[0], name: path.basename(filePaths[0]), size: stat.size }
+  })
+
+  ipcMain.handle('reel:analyzeAudio', (_, req) => apiCall('POST', '/api/reel/analyze-audio', req))
 
   ipcMain.handle('reel:copyReferenceFiles', async (_, paths, catalogProjectId) => {
     const fs = require('fs')
@@ -798,27 +860,49 @@ app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
 app.whenReady().then(async () => {
   registerIpcHandlers()
 
-  // In dev mode, check if backend is already running (manually started uvicorn)
-  // to avoid double-spawning. In production always spawn.
+  // npm run dev avvia uvicorn via dev:backend — non spawnare un secondo processo sulla 8765
   let backendAlreadyUp = false
+  try {
+    const r = await fetch(`${BACKEND_URL}/health`)
+    backendAlreadyUp = r.ok
+  } catch { /* not running yet */ }
+
   if (isDev) {
-    try {
-      const r = await fetch(`${BACKEND_URL}/health`)
-      backendAlreadyUp = r.ok
-    } catch { /* not running yet */ }
-  }
-
-  if (!backendAlreadyUp) {
+    if (backendAlreadyUp) {
+      log.info(`Dev: backend già attivo su :${BACKEND_PORT}`)
+    } else {
+      log.info('Dev: in attesa del backend (npm run dev:backend)...')
+    }
+  } else if (!backendAlreadyUp) {
     startBackend()
-  } else {
-    log.info('Backend already running — skipping spawn')
   }
 
-  log.info('Waiting for backend...')
-  const ready = await waitForBackend()
-  if (!ready) log.warn('Backend did not start in time — UI will show connection error')
+  if (isDev) console.log(`[electron] In attesa backend :${BACKEND_PORT}...`)
+  const ready = await waitForBackend(isDev ? 60000 : 15000)
+  if (!ready) {
+    log.warn('Backend did not start in time — UI will show connection error')
+    if (isDev) console.warn(`[electron] Backend non raggiungibile su ${BACKEND_URL}/health`)
+  } else if (isDev) {
+    console.log('[electron] Backend OK')
+  }
 
-  await createWindow()
+  if (isDev) {
+    const viteUp = await _waitForViteDevServer(30000)
+    if (!viteUp) {
+      console.error(`[electron] Vite non disponibile su ${DEV_RENDERER_URL} — esegui: npm run dev:clean && npm run dev`)
+      return
+    }
+    console.log('[electron] Vite OK')
+  }
+
+  try {
+    await createWindow()
+    log.info('Main window created', { dev: isDev })
+    if (isDev) console.log('[electron] Finestra principale aperta')
+  } catch (err) {
+    log.error('Failed to create window', err)
+    if (isDev) console.error('[electron] Errore creazione finestra:', err?.message || err)
+  }
 })
 
 app.on('window-all-closed', () => {

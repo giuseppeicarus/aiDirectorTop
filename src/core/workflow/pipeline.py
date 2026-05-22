@@ -174,6 +174,14 @@ class CinematicPipeline:
         tmp = self._state_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding='utf-8')
         tmp.replace(self._state_path)
+        try:
+            from src.core.config import get_config
+            from src.core.obsidian.sync import schedule_obsidian_sync_cinematic
+
+            if get_config().obsidian.enabled and get_config().obsidian.auto_sync_on_checkpoint:
+                schedule_obsidian_sync_cinematic(self.project_id, self._state_path)
+        except Exception:
+            pass
 
     async def _check_pause(self, pause_event, on_progress, stage: str, pct: float):
         """If pause_event is cleared, emit a paused event and wait until resumed."""
@@ -518,9 +526,10 @@ class CinematicPipeline:
                     files = extract_output_files(run.history)
                     dest = None
                     if files:
-                        from src.core.utils.comfyui_outputs import download_comfyui_file
+                        from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_image_output
+                        best = pick_best_image_output(files)
                         dest = self._frames / f"{prefix}.png"
-                        await download_comfyui_file(run.client, files[0], dest, expect="image")
+                        await download_comfyui_file(run.client, best, dest, expect="image")
                         (shot.first_frame if ftype=="first" else shot.last_frame).image_path = str(dest)
                         ss[key] = "done"
                         _fire_register(register_media(
@@ -702,10 +711,11 @@ class CinematicPipeline:
                     )
                     files = extract_output_files(hist)
                     if files:
-                        from src.core.utils.comfyui_outputs import download_comfyui_file
-                        ext = Path(files[0]["filename"]).suffix or ".mp4"
+                        from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_video_output
+                        best_v = pick_best_video_output(files)
+                        ext = Path(best_v["filename"]).suffix or ".mp4"
                         dest = self._clips / f"{shot.shot_id}{ext}"
-                        await download_comfyui_file(c, files[0], dest, expect="video")
+                        await download_comfyui_file(c, best_v, dest, expect="video")
                         shot.clip_path = str(dest); ss["video"] = "done"
                         _fire_register(register_media(
                             dest, "video", self.project_id, self._project_title,
@@ -801,12 +811,11 @@ class CinematicPipeline:
                     )
                     files = extract_output_files(hist)
                     if files:
-                        ext  = Path(files[0]["filename"]).suffix or ".mp4"
+                        from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_video_output
+                        best_v = pick_best_video_output(files)
+                        ext  = Path(best_v["filename"]).suffix or ".mp4"
                         dest = self._clips / f"{shot.shot_id}{ext}"
-                        await c.download_output(
-                            files[0]["filename"], dest,
-                            subfolder=files[0].get("subfolder", ""),
-                        )
+                        await download_comfyui_file(c, best_v, dest, expect="video")
                         shot.clip_path = str(dest)
                         ss["video"]    = "done"
                         _fire_register(register_media(

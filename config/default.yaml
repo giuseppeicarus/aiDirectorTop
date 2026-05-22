@@ -5,7 +5,17 @@ app:
   version: "1.0.0"
   data_dir: "~/.cinematic-studio"
   log_level: "INFO"  # DEBUG|INFO|WARNING|ERROR
-  backend_port: 8765
+  backend_port: 8123  # 8765 spesso bloccato su Windows (Hyper-V excluded 8710-8809)
+
+# Obsidian — Single Source of Truth (vault Markdown + Docker GUI)
+obsidian:
+  enabled: true
+  vault_dir: "obsidian-vault"       # sotto data_dir (~/.cinematic-studio/obsidian-vault)
+  auto_sync_on_checkpoint: true     # aggiorna note a ogni checkpoint pipeline
+  start_docker_on_app_boot: true    # avvia linuxserver/obsidian se Docker è nel PATH
+  compose_file: ""                  # default: docker/obsidian/docker-compose.yml nel repo
+  web_port: 3000
+  web_https_port: 3001
 
 # ─── LLM Configuration ────────────────────────────────────────────────────────
 # Per-role overrides (se vuoto, tutti i ruoli usano la config `llm` principale)

@@ -14,6 +14,15 @@ def get_llm_adapter(config: Optional[LLMConfig] = None) -> BaseLLMAdapter:
     Accetta una LLMConfig opzionale per supportare i ruoli per-LLM della pipeline cinematic.
     """
     cfg = config or get_config().llm
+    from src.core.llm.model_registry import is_blacklisted_sync
+
+    if cfg.model and is_blacklisted_sync(cfg.provider, cfg.model):
+        global_cfg = get_config().llm
+        cfg = global_cfg.model_copy(update={
+            "temperature": cfg.temperature,
+            "max_tokens": cfg.max_tokens,
+        })
+
     provider = cfg.provider.lower()
 
     if provider == "openai":

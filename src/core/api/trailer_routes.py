@@ -7,6 +7,7 @@ GET  /api/trailer/output/{project_id}/{filename} — serve generated video files
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.core.config import get_config
 from src.core.utils.http_files import file_response
+from src.core import pipeline_registry
 
 router = APIRouter()
 
@@ -43,6 +45,7 @@ class TrailerGenerateRequest(BaseModel):
     allow_ffmpeg_fallback: bool = True
     storyboard_max_side: int = Field(default=320, ge=96, le=768)
     storyboard_steps: int = Field(default=10, ge=4, le=40)
+    hd_frame_steps: int = Field(default=25, ge=4, le=50)
 
 
 class AudioAnalyzeRequest(BaseModel):
@@ -60,36 +63,84 @@ async def trailer_generate(req: TrailerGenerateRequest):
       {"done": true, "video_path": "...", "duration_sec": N}
       {"error": "...", "phase": "..."}
     """
+    from src.core.workflow.trailer_pipeline import TrailerPipeline, TrailerRequest
+
+    job_id = req.resume_job_id or uuid.uuid4().hex[:10]
+    audio_name = req.audio_name or Path(req.audio_path).name
+    trailer_req = TrailerRequest(
+        project_id=req.project_id,
+        audio_path=req.audio_path,
+        audio_name=audio_name,
+        lyrics=req.lyrics,
+        duration_sec=req.duration_sec,
+        style=req.style,
+        aspect_ratio=req.aspect_ratio,
+        width=req.width,
+        height=req.height,
+        fps=req.fps,
+        txt2img_workflow=req.txt2img_workflow,
+        img2video_workflow=req.img2video_workflow,
+        concurrent_jobs=req.concurrent_jobs,
+        max_clip_sec=req.max_clip_sec,
+        resume_job_id=job_id,
+        phase=req.phase,
+        clip_backend=req.clip_backend,
+        allow_ffmpeg_fallback=req.allow_ffmpeg_fallback,
+        storyboard_max_side=req.storyboard_max_side,
+        storyboard_steps=req.storyboard_steps,
+        hd_frame_steps=req.hd_frame_steps,
+    )
+
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def _run() -> None:
+        try:
+            pipeline = TrailerPipeline(trailer_req)
+            async for event in pipeline.run():
+                await q.put(event)
+                if isinstance(event, dict):
+                    pipeline_registry.update_job(
+                        job_id,
+                        stage=event.get("phase", event.get("stage", "")),
+                        progress=event.get("progress", 0),
+                        message=event.get("message", event.get("msg", "")),
+                    )
+        except asyncio.CancelledError:
+            await q.put({"cancelled": True, "job_id": job_id})
+            pipeline_registry.complete_job(job_id, status="cancelled")
+            return
+        except Exception as exc:
+            await q.put({"error": str(exc), "job_id": job_id})
+            pipeline_registry.complete_job(job_id, status="failed", error=str(exc))
+            return
+        finally:
+            await q.put(None)
+
+    pipeline_registry.register_job(job_id, kind="trailer", title=audio_name, project_id=req.project_id)
+    task = asyncio.create_task(_run())
+    pipeline_registry.register_task(job_id, task)
 
     async def stream() -> AsyncGenerator[str, None]:
-        from src.core.workflow.trailer_pipeline import TrailerPipeline, TrailerRequest
-
-        audio_name = req.audio_name or Path(req.audio_path).name
-        trailer_req = TrailerRequest(
-            project_id=req.project_id,
-            audio_path=req.audio_path,
-            audio_name=audio_name,
-            lyrics=req.lyrics,
-            duration_sec=req.duration_sec,
-            style=req.style,
-            aspect_ratio=req.aspect_ratio,
-            width=req.width,
-            height=req.height,
-            fps=req.fps,
-            txt2img_workflow=req.txt2img_workflow,
-            img2video_workflow=req.img2video_workflow,
-            concurrent_jobs=req.concurrent_jobs,
-            max_clip_sec=req.max_clip_sec,
-            resume_job_id=req.resume_job_id,
-            phase=req.phase,
-            clip_backend=req.clip_backend,
-            allow_ffmpeg_fallback=req.allow_ffmpeg_fallback,
-            storyboard_max_side=req.storyboard_max_side,
-            storyboard_steps=req.storyboard_steps,
-        )
-        pipeline = TrailerPipeline(trailer_req)
-        async for event in pipeline.run():
-            yield "data: " + json.dumps(event) + "\n\n"
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=60)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if event is None:
+                    break
+                yield "data: " + json.dumps(event) + "\n\n"
+                if event.get("done") or event.get("error") or event.get("cancelled"):
+                    pipeline_registry.complete_job(
+                        job_id,
+                        status="cancelled" if event.get("cancelled") else
+                               "failed" if event.get("error") else "completed",
+                        error=event.get("error"),
+                    )
+                    break
+        except asyncio.CancelledError:
+            pass
 
     return StreamingResponse(
         stream(),

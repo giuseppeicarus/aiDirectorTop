@@ -32,6 +32,9 @@ export function reelFrameClipUrl(projectId, clipId) {
 /** Anteprima frame HD reel (dopo storyboard). */
 export function clipReelFramePreviewUrl(clip, projectId) {
   if (!clip) return null
+  const hdPhase = clip.clip_phase === 'frame_gen' || clip.clip_phase === 'video_gen'
+  const hdReady = clip.hd_frame_ready || clip.status === 'done'
+  if (!hdReady && !hdPhase) return null
   if (clip.first_frame_path) {
     const byPath = resolveBackendUrl(null, clip.first_frame_path)
     if (byPath) return byPath
@@ -40,7 +43,7 @@ export function clipReelFramePreviewUrl(clip, projectId) {
     const resolved = resolveBackendUrl(clip.frame_url)
     if (resolved) return resolved
   }
-  if (projectId && clip.clip_id && (clip.status === 'done' || clip.hd_frame_ready)) {
+  if (projectId && clip.clip_id && hdReady) {
     return reelFrameClipUrl(projectId, clip.clip_id)
   }
   return null
@@ -48,13 +51,27 @@ export function clipReelFramePreviewUrl(clip, projectId) {
 
 export function clipReelStoryboardPreviewUrl(clip, projectId) {
   if (!clip) return null
+  if (clip.storyboard_placeholder === true || clip.storyboard_ok === false) return null
+  if (clip.storyboard_path) {
+    const byPath = resolveBackendUrl(null, clip.storyboard_path)
+    if (byPath) return byPath
+  }
+  if (clip.preview_url) {
+    const fromPreview = resolveBackendUrl(clip.preview_url)
+    if (fromPreview) return fromPreview
+  }
+  // Non chiamare l'API finché non c'è un file atteso (evita 404 a raffica)
+  const ready = clip.storyboard_ok === true
+    || clip.status === 'storyboard'
+    || clip.status === 'done'
+    || Boolean(clip.storyboard_filename)
+  if (!ready && clip.status === 'waiting') return null
   if (projectId && clip.clip_id) {
     const byClip = reelStoryboardClipUrl(projectId, clip.clip_id)
     if (byClip) return byClip
     const name = clip.storyboard_filename || `${clip.clip_id}_sb.png`
     return `${BACKEND_ORIGIN}/api/reel/storyboard/${encodeURIComponent(projectId)}/${encodeURIComponent(name)}`
   }
-  if (clip.storyboard_path) return resolveBackendUrl(null, clip.storyboard_path)
   return resolveBackendUrl(clip.storyboard_url)
 }
 
@@ -67,13 +84,17 @@ export function resolveBackendUrl(relativeOrAbsolute, localPath) {
     ) {
       return relativeOrAbsolute
     }
-    const rel = relativeOrAbsolute.startsWith('/')
+    let rel = relativeOrAbsolute.startsWith('/')
       ? relativeOrAbsolute
       : `/${relativeOrAbsolute}`
+    // SSE reel può ancora inviare path /api/trailer/ — normalizza a /api/reel/
+    if (rel.startsWith('/api/trailer/')) {
+      rel = rel.replace('/api/trailer/', '/api/reel/')
+    }
     return `${BACKEND_ORIGIN}${rel}`
   }
   if (localPath) {
-    return `${BACKEND_ORIGIN}/api/trailer/source?path=${encodeURIComponent(localPath)}`
+    return `${BACKEND_ORIGIN}/api/reel/source?path=${encodeURIComponent(localPath)}`
   }
   return null
 }

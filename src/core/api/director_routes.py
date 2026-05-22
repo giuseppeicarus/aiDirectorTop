@@ -61,6 +61,7 @@ class DirectorGenerateRequest(BaseModel):
 class DirectorEnhanceRequest(BaseModel):
     prompt: str
     context: str = "director_clip"    # director_clip | director_global
+    project_context: Optional[dict] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -276,46 +277,20 @@ async def director_generate(req: DirectorGenerateRequest):
 
 @router.post("/enhance")
 async def director_enhance(req: DirectorEnhanceRequest):
-    """Usa LLM per migliorare un prompt di clip o il prompt globale."""
-    from src.core.llm.factory import get_llm_adapter
-    cfg = get_config()
+    """Migliora prompt clip/globale con il modello regia configurato (DP o narrativa)."""
+    from src.core.llm.prompt_enhance_service import run_prompt_enhance
+
     try:
-        role_cfg = cfg.get_llm_for_role("prompt_engineer")
-    except Exception:
-        raise HTTPException(500, "Nessun LLM configurato")
-
-    adapter = get_llm_adapter(role_cfg)
-    ctx = (
-        "LTX Director cinematic motion prompt (camera movement, subject action, atmosphere, max 30 words)"
-        if req.context == "director_clip"
-        else "LTX Director global scene description (overall mood, style, visual theme)"
-    )
-
-    from src.core.llm.prompt_enhance import parse_enhance_llm_result
-
-    result = await adapter.generate_json(
-        system=(
-            "You are an expert AI prompt engineer for cinematic video generation. "
-            'Respond with EXACTLY one JSON object: '
-            '{"enhanced": "<single improved prompt as plain text>"}. '
-            "The enhanced value must be ONE string only — no nested JSON, no extra keys. "
-            "No markdown, no thinking tags, no explanation."
-        ),
-        user=(
-            f"Improve this prompt for {ctx}.\n"
-            f"Make it more cinematic, specific and descriptive. Keep the same creative intent.\n"
-            f"Original: {req.prompt}\n\n"
-            'Return only: {"enhanced": "your improved prompt here"}'
-        ),
-        temperature=0.75,
-        max_tokens=500,
-    )
-    parsed = parse_enhance_llm_result(result, req.prompt, tool="director_clip")
-    return {
-        "enhanced": parsed["enhanced"],
-        "positive": parsed.get("positive"),
-        "negative_prompt": parsed.get("negative_prompt"),
-    }
+        return await run_prompt_enhance(
+            prompt=req.prompt,
+            context=req.context,
+            project_context=req.project_context,
+            max_tokens=500,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.get("/output/{filename:path}")

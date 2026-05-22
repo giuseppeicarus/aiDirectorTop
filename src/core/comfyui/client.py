@@ -245,17 +245,37 @@ class ComfyUIClient:
             except TypeError:
                 progress_cb(value, max_val)
 
+        from src.core.comfyui.workflow_builder import extract_history_error, extract_output_files
+
+        async def _poll_history_once() -> Optional[dict]:
+            hist = await self.get_history(prompt_id)
+            if extract_output_files(hist):
+                return hist
+            status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
+            if status.get("status_str") == "error":
+                err = extract_history_error(hist) or "ComfyUI error"
+                raise RuntimeError(err)
+            return None
+
         ws_headers = self._ws_headers()
+        last_history_poll = 0.0
         async with websockets.connect(
             ws_url, ping_interval=20, ping_timeout=30, additional_headers=ws_headers or None,
         ) as ws:
             while loop.time() < deadline:
+                now = loop.time()
+                if now - last_history_poll >= 4.0:
+                    last_history_poll = now
+                    polled = await _poll_history_once()
+                    if polled is not None:
+                        return polled
+
                 remaining = max(0.1, deadline - loop.time())
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=min(15.0, remaining))
                 except asyncio.TimeoutError:
                     if loop.time() >= deadline:
-                        raise TimeoutError(f"ComfyUI non ha risposto entro {timeout}s")
+                        break
                     continue
 
                 msg = json.loads(raw)
@@ -285,20 +305,37 @@ class ComfyUIClient:
                 elif mtype == "executed":
                     data = msg.get("data", {})
                     if data.get("prompt_id") == prompt_id:
-                        from src.core.comfyui.workflow_builder import extract_output_files
+                        from src.core.comfyui.workflow_builder import (
+                            inject_ws_executed_output,
+                        )
+
+                        ws_hist: dict = {}
+                        ws_out = data.get("output")
+                        if isinstance(ws_out, dict) and ws_out:
+                            ws_hist = inject_ws_executed_output(
+                                ws_hist, data.get("node"), ws_out,
+                            )
+                            if extract_output_files(ws_hist):
+                                return ws_hist
 
                         post_deadline = loop.time() + min(90.0, max(15.0, timeout * 0.25))
                         while loop.time() < post_deadline:
                             hist = await self.get_history(prompt_id)
+                            if isinstance(ws_out, dict) and ws_out:
+                                hist = inject_ws_executed_output(
+                                    hist, data.get("node"), ws_out,
+                                )
                             if extract_output_files(hist):
                                 return hist
                             status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
                             if status.get("status_str") == "error":
-                                from src.core.comfyui.workflow_builder import extract_history_error
                                 err = extract_history_error(hist) or "ComfyUI error"
                                 raise RuntimeError(err)
                             await asyncio.sleep(1.5)
-                        return await self.get_history(prompt_id)
+                        hist = await self.get_history(prompt_id)
+                        if isinstance(ws_out, dict) and ws_out:
+                            hist = inject_ws_executed_output(hist, data.get("node"), ws_out)
+                        return hist
 
                 elif mtype == "execution_error":
                     data = msg.get("data", {})
@@ -307,13 +344,12 @@ class ComfyUIClient:
                             f"ComfyUI error: {data.get('exception_message', 'unknown')}"
                         )
 
-        # Fallback polling (proxy RunPod / WS senza prompt_id match)
-        loop = asyncio.get_event_loop()
-        poll_deadline = loop.time() + timeout
+        # Fallback polling (proxy RunPod / WS senza eventi o timeout WS)
+        poll_deadline = loop.time() + min(90.0, max(30.0, timeout * 0.35))
         while loop.time() < poll_deadline:
-            hist = await self.get_history(prompt_id)
-            if hist.get("outputs"):
-                return hist
+            polled = await _poll_history_once()
+            if polled is not None:
+                return polled
             await asyncio.sleep(2.0)
 
         raise TimeoutError(f"Timeout {timeout}s scaduto per prompt {prompt_id}")
@@ -427,15 +463,50 @@ class ComfyUIClient:
         return await self.upload_input_file(image_path, mime=mime)
 
     async def download_output(self, filename: str, dest: Path, subfolder: str = "", ftype: str = "output") -> Path:
-        """Scarica un file di output e lo salva in dest."""
-        from src.core.utils.comfyui_outputs import ensure_parent_dir
+        """Scarica un file di output: valida il body, poi scrive su disco atomicamente."""
+        import structlog
+        from src.core.utils.comfyui_outputs import ensure_parent_dir, validate_downloaded_bytes
 
+        _log = structlog.get_logger("comfyui.download")
         view_params = {"filename": filename, "subfolder": subfolder, "type": ftype}
         base = self._http_extra()
         params = {**view_params, **(base.get("params") or {})}
-        r = await self._request("GET", "view", "/view", timeout=120.0, params=params)
+        # RunPod: Bearer su POST ma GET /view spesso richiede anche ?token=
+        if self._bearer_token():
+            params = {**params, **self._node.query_params()}
+        headers = base.get("headers")
+        r = await self._request(
+            "GET", "view", "/view", timeout=120.0, params=params, headers=headers,
+        )
+
+        data = r.content
+        if not data:
+            raise ValueError(f"ComfyUI /view empty body for {filename!r}")
+
+        ext = Path(filename).suffix.lower()
+        expect = "video" if ext in {".mp4", ".webm", ".avi", ".mov", ".mkv", ".gif"} else "image"
+        try:
+            validate_downloaded_bytes(data, expect=expect)
+        except ValueError as exc:
+            preview = data[:120].decode("utf-8", errors="replace")
+            raise ValueError(
+                f"Download non valido per {filename!r} ({len(data)} bytes): {exc} — body: {preview!r}"
+            ) from exc
+
         ensure_parent_dir(dest)
-        dest.write_bytes(r.content)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+        except Exception:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            raise
+
+        _log.debug("download_output_ok", filename=filename, dest=str(dest), size=len(data))
         return dest
 
     # ── Salute ────────────────────────────────────────────────────────────────

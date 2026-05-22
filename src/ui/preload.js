@@ -4,6 +4,9 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+const BACKEND_PORT = Number(process.env.CINEMATIC_BACKEND_PORT || 8123)
+const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`
+
 contextBridge.exposeInMainWorld('studio', {
   // Projects
   project: {
@@ -18,6 +21,7 @@ contextBridge.exposeInMainWorld('studio', {
   // LLM
   llm: {
     health: () => ipcRenderer.invoke('llm:health'),
+    enhancePrompt: (req) => ipcRenderer.invoke('llm:enhancePrompt', req),
   },
 
   // ComfyUI
@@ -99,6 +103,8 @@ contextBridge.exposeInMainWorld('studio', {
   // CreateReel — brief + reference images + vision LLM
   reel: {
     pickImages:      ()              => ipcRenderer.invoke('reel:pickImages'),
+    pickAudio:       ()              => ipcRenderer.invoke('reel:pickAudio'),
+    analyzeAudio:    (req)           => ipcRenderer.invoke('reel:analyzeAudio', req),
     copyReferenceFiles: (paths, catalogProjectId) =>
       ipcRenderer.invoke('reel:copyReferenceFiles', paths, catalogProjectId),
     saveReferenceBlob: (payload) =>
@@ -106,6 +112,9 @@ contextBridge.exposeInMainWorld('studio', {
     readImageLocal:  (path)          => ipcRenderer.invoke('trailer:readImageLocal', path),
     fetchImageUrl:   (url)           => ipcRenderer.invoke('trailer:fetchImageUrl', url),
     projectStorage:  (projectId)     => ipcRenderer.invoke('reel:projectStorage', projectId),
+    audioStreamUrl: (path)          => path
+      ? `${BACKEND_ORIGIN}/api/reel/source?path=${encodeURIComponent(path)}`
+      : null,
     generate: (params, onProgress) => {
       const listener = (_, data) => onProgress(data)
       ipcRenderer.on('reel:progress', listener)
@@ -124,7 +133,7 @@ contextBridge.exposeInMainWorld('studio', {
     fetchImageUrl:   (url)           => ipcRenderer.invoke('trailer:fetchImageUrl', url),
     projectStorage:  (projectId)     => ipcRenderer.invoke('trailer:projectStorage', projectId),
     audioStreamUrl: (path)          => path
-      ? `http://127.0.0.1:8765/api/trailer/source?path=${encodeURIComponent(path)}`
+      ? `${BACKEND_ORIGIN}/api/trailer/source?path=${encodeURIComponent(path)}`
       : null,
     generate: (params, onProgress) => {
       const listener = (_, data) => onProgress(data)
@@ -151,6 +160,42 @@ contextBridge.exposeInMainWorld('studio', {
 
   // Native notifications (Electron Notification API, più affidabile su Windows)
   notify: (title, body) => ipcRenderer.invoke('notify', { title, body }),
+
+  /** Ascolta tutti i canali progress (pipeline, reel, trailer, …) per il banner attività globale. */
+  activity: {
+    onEvent: (cb) => {
+      const channels = [
+        'pipeline:progress',
+        'reel:progress',
+        'trailer:progress',
+        'director:progress',
+        'tools:progress',
+        'frameCutOptimizer:progress',
+      ]
+      const handlers = channels.map((channel) => {
+        const fn = (_, data) => cb(channel, data)
+        ipcRenderer.on(channel, fn)
+        return [channel, fn]
+      })
+      return () => {
+        for (const [channel, fn] of handlers) {
+          ipcRenderer.removeListener(channel, fn)
+        }
+      }
+    },
+  },
+
+  // Obsidian vault + Docker
+  obsidian: {
+    status:       ()        => ipcRenderer.invoke('obsidian:status'),
+    dockerStart:  ()        => ipcRenderer.invoke('obsidian:dockerStart'),
+    dockerStop:   ()        => ipcRenderer.invoke('obsidian:dockerStop'),
+    syncProject:  (req)     => ipcRenderer.invoke('obsidian:syncProject', req),
+    search:       (req)     => ipcRenderer.invoke('obsidian:search', req),
+    context:      (req)     => ipcRenderer.invoke('obsidian:context', req),
+    openWeb:      (url)     => ipcRenderer.invoke('obsidian:openWeb', url),
+    openFolder:   (p)       => ipcRenderer.invoke('shell:openPath', p),
+  },
 
   // Frame Cut Optimizer
   frameCut: {

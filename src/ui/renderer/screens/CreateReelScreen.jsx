@@ -5,13 +5,24 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
+import { useJobQueryDeepLink } from '../hooks/useJobQueryDeepLink'
 import {
   ImagePlus, Loader2, Sparkles, Check, RefreshCw, X, Film,
   LayoutGrid, AlertCircle, Image as ImageIcon, Trash2, Clapperboard,
-  ChevronRight, Instagram, Library, Search,
+  ChevronRight, Instagram, Library, Search, ChevronDown, Settings2, Cpu, Square,
+  Save, RotateCcw, Edit3, ChevronUp, Wand2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ProjectDirBanner from '../components/ProjectDirBanner'
+import GenQueueBadge from '../components/GenQueueBadge'
+import {
+  ReelClipPlanGrid,
+  ReelEstimatedClipStrip,
+  ReelSystemActivityPanel,
+  PromptPreviewRow,
+  ReelPromptEditorModal,
+} from '../components/ReelClipCards'
+import ReelAudioSection from '../components/ReelAudioSection'
 import {
   BACKEND_ORIGIN,
   mediaThumbUrl,
@@ -25,6 +36,104 @@ import {
 import { resolveImagePaths } from '../utils/electronFilePaths'
 
 const MAX_REFS = 12
+
+const REEL_AGENT_LABELS = {
+  vision_analyst: 'Analista Vision',
+  story_analyst: 'Analisi Audio',
+  narrative_director: 'Regista Narrativo',
+  cinematographer: 'Direttore della Fotografia',
+  prompt_engineer: 'Prompt Engineer',
+  comfyui: 'ComfyUI / Produzione',
+}
+
+function reelAgentDone(prev, role) {
+  return {
+    ...prev,
+    [role]: {
+      status: 'done',
+      label: REEL_AGENT_LABELS[role] || role,
+      model: prev[role]?.model,
+    },
+  }
+}
+
+function reelAdvanceAgents(prev, activeRole, patch) {
+  let next = { ...prev, [activeRole]: patch }
+  if (activeRole === 'cinematographer' || activeRole === 'prompt_engineer' || activeRole === 'comfyui') {
+    next = reelAgentDone(next, 'narrative_director')
+  }
+  if (activeRole === 'prompt_engineer' || activeRole === 'comfyui') {
+    next = reelAgentDone(next, 'cinematographer')
+  }
+  if (activeRole === 'comfyui') {
+    next = reelAgentDone(next, 'prompt_engineer')
+  }
+  return next
+}
+
+function reelClipOrdinal(clipId, clips) {
+  if (!clipId) return { label: '', n: null, total: clips?.length || 0 }
+  const idx = clips.findIndex(c => c.clip_id === clipId)
+  let n = idx >= 0 ? idx + 1 : null
+  if (n == null) {
+    const m = String(clipId).match(/clip_(\d+)/i)
+    if (m) n = parseInt(m[1], 10) + 1
+  }
+  const total = clips?.length || 0
+  const label = n != null && total > 0
+    ? `clip ${n}/${total}`
+    : (n != null ? `clip ${n}` : clipId)
+  return { n, total, label }
+}
+
+function liveProductionMsg(data, clips) {
+  const { label } = reelClipOrdinal(data.clip_id, clips)
+  if (data.msg) return data.msg
+  if (data.event === 'clip_comfyui_progress') {
+    if (data.kind === 'video') return `Generazione clip video — ${label}`
+    if (data.kind === 'frame') {
+      const role = /last/i.test(String(data.label || '')) ? 'last frame' : 'first frame'
+      return `Generazione immagine ${role} — ${label}`
+    }
+    return label ? `ComfyUI — ${label}` : 'ComfyUI in esecuzione…'
+  }
+  if (data.clip_phase === 'video_gen') return `Generazione clip video — ${label}`
+  if (data.clip_phase === 'frame_gen') return `Generazione immagine HD — ${label}`
+  return label ? `Produzione — ${label}` : 'Produzione HD + video in corso…'
+}
+
+function mergeReelClipFromSse(existing, data) {
+  if (!data) return existing
+  return {
+    ...existing,
+    ...data,
+    clip_id: data.clip_id || existing?.clip_id,
+    slot_id: data.slot_id ?? data.slot ?? existing?.slot_id,
+    scene_prompt: data.scene_prompt ?? existing?.scene_prompt,
+    first_frame_prompt: data.first_frame_prompt ?? existing?.first_frame_prompt,
+    last_frame_prompt: data.last_frame_prompt ?? existing?.last_frame_prompt,
+    motion_prompt: data.motion_prompt ?? existing?.motion_prompt,
+    ltx_video_prompt: data.ltx_video_prompt ?? existing?.ltx_video_prompt,
+    negative_prompt: data.negative_prompt ?? existing?.negative_prompt,
+    duration_sec: data.duration_sec ?? existing?.duration_sec,
+    start_sec: data.start_sec ?? existing?.start_sec,
+    end_sec: data.end_sec ?? existing?.end_sec,
+    width: data.width ?? existing?.width,
+    height: data.height ?? existing?.height,
+    hd_width: data.hd_width ?? existing?.hd_width,
+    hd_height: data.hd_height ?? existing?.hd_height,
+    storyboard_width: data.storyboard_width ?? existing?.storyboard_width,
+    storyboard_height: data.storyboard_height ?? existing?.storyboard_height,
+    fps: data.fps ?? existing?.fps,
+    aspect_ratio: data.aspect_ratio ?? existing?.aspect_ratio,
+    shot_type: data.shot_type ?? existing?.shot_type,
+    lens_mm: data.lens_mm ?? existing?.lens_mm,
+    camera_movement: data.camera_movement ?? existing?.camera_movement,
+    depth_of_field: data.depth_of_field ?? existing?.depth_of_field,
+    lighting: data.lighting ?? existing?.lighting,
+    emotion: data.emotion ?? existing?.emotion,
+  }
+}
 
 const JOB_STATUS_META = {
   done: { label: 'Completato', color: '#22c55e', bg: '#22c55e18' },
@@ -67,20 +176,650 @@ function reelVideoUrl(job) {
   }
   return null
 }
+
+function jobHasFinalVideo(job) {
+  const r = job.result
+  return Boolean(r?.filename || r?.video_path || r?.video_url)
+}
+
+function jobHasStoryboard(job) {
+  return (job.result?.storyboard?.length ?? 0) > 0
+    || (job.result?.clips?.length ?? 0) > 0
+    || Boolean(job.has_checkpoint)
+}
+
+/** Schermata corretta aprendo un job dalla lista (Dettagli / card). */
+function resolveReelJobView(job) {
+  const hasMedia = jobHasStoryboard(job)
+  if (job.status === 'awaiting_storyboard') return 'storyboard'
+  if (job.status === 'done' || jobHasFinalVideo(job)) return 'done'
+  if (job.status === 'running') {
+    if (job.pipeline_ui_phase === 'production' || job.storyboard_approved) return 'generating'
+    if ((job.checkpoint_phase ?? 0) >= 55 && !job.storyboard_approved) return 'storyboard'
+    return 'generating'
+  }
+  if (job.status === 'interrupted') {
+    if (job.can_continue || (job.checkpoint_phase ?? 0) > 0) return 'generating'
+    if (hasMedia) return jobHasFinalVideo(job) ? 'done' : 'storyboard'
+    return 'detail'
+  }
+  if (job.status === 'failed') {
+    if (hasMedia) return jobHasFinalVideo(job) ? 'done' : 'storyboard'
+    return 'detail'
+  }
+  if (hasMedia) return jobHasFinalVideo(job) ? 'done' : 'storyboard'
+  return 'detail'
+}
+
+function reelSessionStorageKey(catalogProjectId) {
+  return `reel_active_session_${catalogProjectId}`
+}
+
+/** Normalizza clip da API/checkpoint per anteprime e stato UI. */
+function normalizeHydratedClips(clips, mediaProjectId, defaultStatus = 'waiting') {
+  if (!clips?.length) return []
+  return clips.map(c => {
+    const sbUrl = c.storyboard_clip_url
+      ? resolveBackendUrl(c.storyboard_clip_url)
+      : clipReelStoryboardPreviewUrl(c, mediaProjectId)
+    const frameUrl = resolveBackendUrl(c.frame_url)
+      || (c.hd_frame_ready ? reelFrameClipUrl(mediaProjectId, c.clip_id) : null)
+      || (c.status === 'storyboard' || c.storyboard_ok ? sbUrl : null)
+    return {
+      ...c,
+      status: c.status || defaultStatus,
+      frame_url: frameUrl,
+      preview_url: c.preview_url || sbUrl,
+      storyboard_url: c.storyboard_url || sbUrl,
+      clip_url: c.clip_url ? resolveBackendUrl(c.clip_url) : c.clip_url,
+    }
+  })
+}
+
+function clipNeedsMediaRecovery(c) {
+  if (!c?.clip_id) return false
+  if (!['generating', 'waiting'].includes(c.status)) return false
+  return !c.frame_url
+}
+
+function mergeReelClipRecoveryEvent(prevClip, ev, mediaProjectId) {
+  if (!ev?.clip_id) return prevClip
+  if (ev.event === 'storyboard_frame') {
+    const sbOk = ev.storyboard_ok !== false && !ev.storyboard_placeholder
+    const framePayload = sbOk ? {
+      storyboard_url: ev.url,
+      storyboard_path: ev.path,
+      storyboard_filename: ev.storyboard_filename,
+      preview_url: ev.preview_url,
+      storyboard_clip_url: ev.storyboard_clip_url,
+    } : {}
+    const sbUrl = sbOk
+      ? clipReelStoryboardPreviewUrl({ clip_id: ev.clip_id, ...framePayload }, mediaProjectId)
+      : null
+    return {
+      ...prevClip,
+      clip_id: ev.clip_id,
+      status: sbOk ? 'storyboard' : 'storyboard_failed',
+      storyboard_ok: sbOk,
+      storyboard_placeholder: !sbOk,
+      ...framePayload,
+      storyboard_filename: sbOk ? (ev.storyboard_filename || `${ev.clip_id}_sb.png`) : undefined,
+      frame_url: sbUrl,
+      comfyuiPct: 0,
+    }
+  }
+  if (ev.event === 'frame_done') {
+    const frameUrl = resolveBackendUrl(ev.frame_url)
+      || reelFrameClipUrl(mediaProjectId, ev.clip_id)
+    if (frameUrl) {
+      return {
+        ...prevClip,
+        frame_url: frameUrl,
+        first_frame_path: ev.path || prevClip.first_frame_path,
+        hd_frame_ready: Boolean(ev.hd_frame_ready),
+        clip_phase: ev.hd_frame_ready ? 'frame_gen' : prevClip.clip_phase,
+        status: 'generating',
+        comfyuiPct: 0,
+      }
+    }
+  }
+  return prevClip
+}
+
+function mapStoryboardFramesToClips(frames, mediaProjectId, clipStatus = 'storyboard') {
+  return frames.map(f => ({
+    ...f,
+    clip_id: f.clip_id,
+    slot_id: f.slot_id,
+    status: f.storyboard_ok === false ? 'storyboard_failed' : clipStatus,
+    storyboard_ok: f.storyboard_ok !== false,
+    storyboard_placeholder: f.storyboard_placeholder === true,
+    storyboard_path: f.path,
+    storyboard_filename: f.storyboard_filename || `${f.clip_id}_sb.png`,
+    storyboard_url: f.url,
+    preview_url: f.preview_url || f.url,
+    storyboard_clip_url: f.storyboard_clip_url,
+    scene_prompt: f.scene_prompt,
+    duration_sec: f.duration_sec,
+  }))
+}
+
+function buildDirectorDataFromJob(job) {
+  const dn = job.result?.director_narrative
+  const sb = job.result?.storyboard ?? []
+  if (!dn && !sb.length) return null
+  return {
+    logline: dn?.logline,
+    mood: dn?.mood,
+    visual_theme: dn?.visual_theme,
+    slots: sb.length || dn?.visual_motifs?.length || 0,
+    slot_details: sb.map(f => ({
+      slot_id: f.slot_id || f.clip_id,
+      emotion: f.emotion || '',
+      visual_hint: f.scene_prompt || f.visual_hint || '',
+      duration_sec: f.duration_sec,
+      energy: f.energy || 'medium',
+    })),
+  }
+}
+
+function hasDirectorNarrative(dn) {
+  if (!dn || typeof dn !== 'object') return false
+  return Boolean(
+    dn.logline || dn.mood || dn.narrative_arc || (dn.visual_motifs?.length > 0),
+  )
+}
+
+function buildPhaseStatusFromJob(job) {
+  const ps = {}
+  const cp = job.checkpoint_phase ?? 0
+  if (job.result?.vision || cp >= 1) ps.vision_analysis = 'done'
+  if (hasDirectorNarrative(job.result?.director_narrative) || cp >= 3) ps.reel_director = 'done'
+  if (job.result?.storyboard?.length || job.result?.clips?.length || cp >= 5) {
+    ps.storyboard = 'done'
+    ps.prompt_generator = 'done'
+  }
+  if (job.status === 'running' && job.pipeline_ui_phase === 'production') {
+    ps.production = 'active'
+  }
+  if (jobHasFinalVideo(job)) {
+    ps.prompt_generator = 'done'
+    ps.production = 'done'
+  }
+  const stale = job.stale_running || (job.status === 'running' && job.task_running === false)
+  if (stale) {
+    if (cp >= 1 && cp < 3 && !ps.reel_director) ps.reel_director = 'active'
+    else if (cp < 1) ps.vision_analysis = 'active'
+    else if (cp >= 3 && cp < 5) ps.prompt_generator = 'active'
+  } else if (job.status === 'running' && !Object.values(ps).includes('active')) {
+    if (cp >= 1 && cp < 3) ps.reel_director = 'active'
+    else if (cp < 1) ps.vision_analysis = 'active'
+  }
+  if (job.paused) {
+    Object.keys(ps).forEach(k => { if (ps[k] === 'active') ps[k] = 'paused' })
+  }
+  return ps
+}
+
+const REEL_ASPECT_RATIO_OPTIONS = ['9:16', '16:9', '1:1', '4:3', '21:9']
+
+/** Risoluzioni video (dal più basso al 4K) per formato; frame HD = 2× automatico. */
+const REEL_VIDEO_RESOLUTIONS = {
+  '9:16': [
+    { tier: '360p', label: '360×640', w: 360, h: 640 },
+    { tier: '540p', label: '540×960', w: 540, h: 960 },
+    { tier: '720p', label: '720×1280', w: 720, h: 1280 },
+    { tier: '1080p', label: '1080×1920', w: 1080, h: 1920 },
+    { tier: '1440p', label: '1440×2560', w: 1440, h: 2560 },
+    { tier: '4K', label: '2160×3840', w: 2160, h: 3840 },
+  ],
+  '16:9': [
+    { tier: '360p', label: '640×360', w: 640, h: 360 },
+    { tier: '540p', label: '960×540', w: 960, h: 540 },
+    { tier: '720p', label: '1280×720', w: 1280, h: 720 },
+    { tier: '1080p', label: '1920×1080', w: 1920, h: 1080 },
+    { tier: '1440p', label: '2560×1440', w: 2560, h: 1440 },
+    { tier: '4K', label: '3840×2160', w: 3840, h: 2160 },
+  ],
+  '1:1': [
+    { tier: '480p', label: '480×480', w: 480, h: 480 },
+    { tier: '720p', label: '720×720', w: 720, h: 720 },
+    { tier: '1080p', label: '1080×1080', w: 1080, h: 1080 },
+    { tier: '1440p', label: '1440×1440', w: 1440, h: 1440 },
+    { tier: '2K', label: '2048×2048', w: 2048, h: 2048 },
+    { tier: '4K', label: '3840×3840', w: 3840, h: 3840 },
+  ],
+  '4:3': [
+    { tier: '480p', label: '640×480', w: 640, h: 480 },
+    { tier: '600p', label: '800×600', w: 800, h: 600 },
+    { tier: '768p', label: '1024×768', w: 1024, h: 768 },
+    { tier: '960p', label: '1280×960', w: 1280, h: 960 },
+    { tier: '1200p', label: '1600×1200', w: 1600, h: 1200 },
+    { tier: '4K', label: '3840×2880', w: 3840, h: 2880 },
+  ],
+  '21:9': [
+    { tier: '360p', label: '840×360', w: 840, h: 360 },
+    { tier: '540p', label: '1280×548', w: 1280, h: 548 },
+    { tier: '720p', label: '1680×720', w: 1680, h: 720 },
+    { tier: '1080p', label: '2560×1080', w: 2560, h: 1080 },
+    { tier: '1440p', label: '3440×1440', w: 3440, h: 1440 },
+    { tier: '4K', label: '3840×1646', w: 3840, h: 1646 },
+  ],
+}
+
+function reelVideoResolutions(aspectRatio) {
+  return REEL_VIDEO_RESOLUTIONS[aspectRatio] ?? REEL_VIDEO_RESOLUTIONS['9:16']
+}
+
+function reelHdDimensions(videoW, videoH) {
+  return { w: videoW * 2, h: videoH * 2 }
+}
+
+function reelDefaultVideoResolution(aspectRatio) {
+  const list = reelVideoResolutions(aspectRatio)
+  return list.find(r => r.tier === '1080p') ?? list[Math.floor(list.length / 2)] ?? list[0]
+}
+
+const REEL_FPS_OPTIONS = [24, 25, 30, 60]
+
+const REEL_STORYBOARD_SIZE_OPTS = [
+  { maxSide: 256, label: '256px', hint: 'Veloce' },
+  { maxSide: 320, label: '320px', hint: 'Default' },
+  { maxSide: 384, label: '384px', hint: 'Medio' },
+  { maxSide: 512, label: '512px', hint: 'Dettaglio' },
+  { maxSide: 640, label: '640px', hint: 'Alta anteprima' },
+]
+
+const REEL_STORYBOARD_STEPS_OPTS = [
+  { steps: 6, label: 'Bassa', hint: '6 step — rapido' },
+  { steps: 10, label: 'Media', hint: '10 step — bilanciato' },
+  { steps: 15, label: 'Alta', hint: '15 step — qualità' },
+  { steps: 20, label: 'Ultra', hint: '20 step — massima' },
+]
+
+const REEL_HD_FRAME_STEPS_OPTS = [
+  { steps: 15, label: '15', hint: 'Veloce' },
+  { steps: 20, label: '20', hint: 'Bilanciato' },
+  { steps: 25, label: '25', hint: 'Default HD' },
+  { steps: 30, label: '30', hint: 'Alta qualità' },
+  { steps: 40, label: '40', hint: 'Massima' },
+]
+
+const REEL_MAX_CLIP_OPTS = [3, 4, 5, 6, 8, 10]
+
+function reelStoryboardPixelSize(config) {
+  const maxSide = config.storyboard_max_side ?? 320
+  const w = config.width ?? 1080
+  const h = config.height ?? 1920
+  const scale = maxSide / Math.max(w, h, 1)
+  return {
+    w: Math.max(96, Math.round(w * scale)),
+    h: Math.max(96, Math.round(h * scale)),
+  }
+}
+
 const DEFAULT_CONFIG = {
   duration_sec: 30,
   aspect_ratio: '9:16',
   width: 1080,
   height: 1920,
+  fps: 30,
   style: 'cinematic, photorealistic, dramatic lighting',
   storyboard_max_side: 320,
   storyboard_steps: 10,
+  hd_frame_steps: 25,
   max_clip_sec: 5,
   concurrent_jobs: 1,
   clip_backend: 'auto',
   allow_ffmpeg_fallback: false,
   txt2img_workflow: 'z_image_txt2img',
   img2video_workflow: 'ltx_img2video',
+}
+
+function ReelStyleImprover({ title, description, currentStyle, onApply }) {
+  const [loading, setLoading] = useState(false)
+  const [suggestion, setSuggestion] = useState(null)
+  const [error, setError] = useState(null)
+
+  const canRun = Boolean(description?.trim() || currentStyle?.trim())
+
+  async function improve() {
+    if (!canRun) return
+    setLoading(true)
+    setError(null)
+    setSuggestion(null)
+    try {
+      const httpRes = await fetch(`${BACKEND_ORIGIN}/api/llm/improve-style`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title?.trim() || 'CreateReel',
+          description: description?.trim() || '',
+          current_style: currentStyle?.trim() || '',
+          genre: 'reel',
+        }),
+      })
+      const data = await httpRes.json().catch(() => ({}))
+      const styleStr = typeof data.style === 'string'
+        ? data.style.trim()
+        : (data.style && typeof data.style === 'object'
+          ? String(data.style.text || data.style.prompt || data.style.description || '').trim()
+          : '')
+      if (data.ok && styleStr) {
+        setSuggestion({
+          style: styleStr,
+          rationale: typeof data.rationale === 'string' ? data.rationale : '',
+        })
+      } else {
+        setError(data.error || (httpRes.ok ? 'Nessun suggerimento ricevuto' : `Errore server (${httpRes.status})`))
+      }
+    } catch (e) {
+      setError(e.message || 'Errore di rete')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      <GhostBtn onClick={improve} disabled={loading || !canRun}>
+        {loading ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+        {loading ? 'Analisi in corso…' : 'Analizza e migliora'}
+      </GhostBtn>
+      {!canRun && (
+        <p className="text-[9px] font-mono text-[#555568]">
+          Inserisci la descrizione del reel (e opzionalmente uno stile) per abilitare l&apos;analisi.
+        </p>
+      )}
+      {error && <p className="text-[10px] font-mono text-[#ef4444]">{error}</p>}
+      {suggestion && (
+        <div className="rounded-lg border border-[#c9a84c]/30 bg-[#c9a84c]/5 p-3">
+          <p className="text-[9px] font-mono text-[#9090a8] uppercase tracking-wider mb-1.5">
+            Stile adattato alla descrizione
+          </p>
+          <p className="text-xs text-[#e8e4dd] leading-relaxed mb-1">{suggestion.style}</p>
+          {suggestion.rationale && (
+            <p className="text-[10px] font-mono text-[#9090a8] italic">{suggestion.rationale}</p>
+          )}
+          <div className="flex gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => { onApply(suggestion.style); setSuggestion(null) }}
+              className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-mono rounded bg-[#c9a84c]/20 hover:bg-[#c9a84c]/30 text-[#c9a84c]"
+            >
+              <Check size={10} /> Applica
+            </button>
+            <button
+              type="button"
+              onClick={() => setSuggestion(null)}
+              className="text-[10px] font-mono text-[#555568] hover:text-[#9090a8]"
+            >
+              Ignora
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReelSettingsSection({ title, hint, children }) {
+  return (
+    <div className="rounded-xl border border-[#252533] bg-[#16161f] p-4">
+      <p className="text-[10px] font-mono text-[#c9a84c] uppercase tracking-wider mb-1">{title}</p>
+      {hint && (
+        <p className="text-[9px] font-mono text-[#555568] mb-3 leading-relaxed">{hint}</p>
+      )}
+      {children}
+    </div>
+  )
+}
+
+function ReelProjectSettings({ config, setConfig }) {
+  const sbSize = reelStoryboardPixelSize(config)
+  const estClips = Math.max(1, Math.ceil((config.duration_sec || 30) / (config.max_clip_sec || 5)))
+  const videoResList = reelVideoResolutions(config.aspect_ratio)
+  const hdDims = reelHdDimensions(config.width, config.height)
+  const selectedVideoKey = `${config.width}x${config.height}`
+
+  function setAspectRatio(ar) {
+    const def = reelDefaultVideoResolution(ar)
+    setConfig(c => ({ ...c, aspect_ratio: ar, width: def.w, height: def.h }))
+  }
+
+  function setVideoResolution(w, h) {
+    setConfig(c => ({ ...c, width: w, height: h }))
+  }
+
+  return (
+    <div className="space-y-4 mb-6">
+      <ReelSettingsSection
+        title="Anteprima storyboard"
+        hint="Risoluzione e step ComfyUI per le immagini di preview prima dell'approvazione."
+      >
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-[10px] font-mono text-[#9090a8]">Risoluzione anteprima</label>
+            <span className="text-[10px] font-mono text-[#c9a84c]">{sbSize.w}×{sbSize.h}px</span>
+          </div>
+          <div className="grid grid-cols-5 gap-1">
+            {REEL_STORYBOARD_SIZE_OPTS.map(opt => (
+              <button
+                key={opt.maxSide}
+                type="button"
+                title={opt.hint}
+                onClick={() => setConfig(c => ({ ...c, storyboard_max_side: opt.maxSide }))}
+                className={clsx(
+                  'py-1.5 rounded text-[9px] font-mono border transition-colors',
+                  (config.storyboard_max_side ?? 320) === opt.maxSide
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[9px] font-mono text-[#555568] mt-1">
+            Lato lungo max · proporzioni {config.aspect_ratio}
+          </p>
+        </div>
+        <div>
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1.5">Step anteprima</label>
+          <div className="grid grid-cols-4 gap-1">
+            {REEL_STORYBOARD_STEPS_OPTS.map(opt => (
+              <button
+                key={opt.steps}
+                type="button"
+                title={opt.hint}
+                onClick={() => setConfig(c => ({ ...c, storyboard_steps: opt.steps }))}
+                className={clsx(
+                  'py-1.5 rounded text-[9px] font-mono border transition-colors',
+                  (config.storyboard_steps ?? 10) === opt.steps
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </ReelSettingsSection>
+
+      <ReelSettingsSection
+        title="Video finale"
+        hint="Formato e risoluzione di uscita (da SD a 4K). I frame HD saranno sempre al doppio."
+      >
+        <div className="mb-4">
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1.5">Formato video</label>
+          <div className="grid grid-cols-5 gap-1">
+            {REEL_ASPECT_RATIO_OPTIONS.map(ar => (
+              <button
+                key={ar}
+                type="button"
+                onClick={() => setAspectRatio(ar)}
+                className={clsx(
+                  'py-1 rounded text-[9px] font-mono border transition-colors',
+                  config.aspect_ratio === ar
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {ar}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-4">
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1.5">
+            Risoluzione video
+          </label>
+          <div className="flex flex-col gap-1">
+            {videoResList.map(r => {
+              const hd = reelHdDimensions(r.w, r.h)
+              const key = `${r.w}x${r.h}`
+              const active = selectedVideoKey === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setVideoResolution(r.w, r.h)}
+                  className={clsx(
+                    'flex items-center justify-between gap-2 px-3 py-2 rounded border text-left transition-colors',
+                    active
+                      ? 'bg-[#c9a84c]/12 border-[#c9a84c]/50'
+                      : 'border-[#252533] hover:border-[#32324a]',
+                  )}
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className={clsx(
+                      'text-[8px] font-mono uppercase px-1 py-0.5 rounded shrink-0',
+                      active ? 'bg-[#c9a84c]/25 text-[#e6c46a]' : 'bg-[#1e1e2a] text-[#555568]',
+                    )}>
+                      {r.tier}
+                    </span>
+                    <span className={clsx('text-[11px] font-mono truncate', active ? 'text-[#e8e4dd]' : 'text-[#9090a8]')}>
+                      {r.label}
+                    </span>
+                  </span>
+                  <span className="text-[9px] font-mono text-[#555568] shrink-0">
+                    HD {hd.w}×{hd.h}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <p className="text-[9px] font-mono text-[#9090a8] mb-3">
+          Uscita {config.width}×{config.height}px · {config.fps} fps
+        </p>
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-[10px] font-mono text-[#9090a8]">Durata reel</label>
+            <span className="text-[10px] font-mono text-[#c9a84c]">{config.duration_sec}s</span>
+          </div>
+          <input
+            type="range"
+            min={8}
+            max={180}
+            step={1}
+            value={config.duration_sec}
+            onChange={e => setConfig(c => ({ ...c, duration_sec: Number(e.target.value) }))}
+            className="w-full accent-[#c9a84c]"
+          />
+          <div className="flex justify-between text-[9px] font-mono text-[#555568] mt-0.5">
+            <span>8s</span><span>180s</span>
+          </div>
+        </div>
+        <div className="mb-4">
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1.5">FPS video</label>
+          <div className="grid grid-cols-4 gap-1">
+            {REEL_FPS_OPTIONS.map(fps => (
+              <button
+                key={fps}
+                type="button"
+                onClick={() => setConfig(c => ({ ...c, fps }))}
+                className={clsx(
+                  'py-1 rounded text-[9px] font-mono border transition-colors',
+                  config.fps === fps
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {fps}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-[10px] font-mono text-[#9090a8]">Durata massima clip</label>
+            <span className="text-[10px] font-mono text-[#c9a84c]">{config.max_clip_sec}s</span>
+          </div>
+          <div className="grid grid-cols-6 gap-1">
+            {REEL_MAX_CLIP_OPTS.map(sec => (
+              <button
+                key={sec}
+                type="button"
+                onClick={() => setConfig(c => ({ ...c, max_clip_sec: sec }))}
+                className={clsx(
+                  'py-1.5 rounded text-[9px] font-mono border transition-colors',
+                  config.max_clip_sec === sec
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {sec}s
+              </button>
+            ))}
+          </div>
+          <p className="text-[9px] font-mono text-[#555568] mt-1">
+            ~{estClips} clip stimate per reel da {config.duration_sec}s
+          </p>
+        </div>
+        <div className="mt-4">
+          <ReelEstimatedClipStrip config={config} sbSize={sbSize} hdSize={hdDims} />
+        </div>
+      </ReelSettingsSection>
+
+      <ReelSettingsSection
+        title="Frame HD (first / last)"
+        hint="Risoluzione frame sempre 2× rispetto al video scelto sopra (generata automaticamente)."
+      >
+        <div className="mb-4 rounded-lg border border-[#32324a] bg-[#0f0f18] px-3 py-2.5">
+          <p className="text-[10px] font-mono text-[#9090a8] mb-1">Risoluzione frame HD (2× video)</p>
+          <p className="text-sm font-mono text-[#e6c46a]">
+            {hdDims.w}×{hdDims.h}px
+          </p>
+          <p className="text-[9px] font-mono text-[#555568] mt-1">
+            Video {config.width}×{config.height} → frame {hdDims.w}×{hdDims.h} · formato {config.aspect_ratio}
+          </p>
+        </div>
+        <div>
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1.5">Step frame HD</label>
+          <div className="grid grid-cols-5 gap-1">
+            {REEL_HD_FRAME_STEPS_OPTS.map(opt => (
+              <button
+                key={opt.steps}
+                type="button"
+                title={opt.hint}
+                onClick={() => setConfig(c => ({ ...c, hd_frame_steps: opt.steps }))}
+                className={clsx(
+                  'py-1.5 rounded text-[9px] font-mono border transition-colors',
+                  (config.hd_frame_steps ?? 25) === opt.steps
+                    ? 'bg-[#c9a84c]/15 border-[#c9a84c]/50 text-[#c9a84c]'
+                    : 'border-[#252533] text-[#555568] hover:border-[#32324a] hover:text-[#9090a8]',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </ReelSettingsSection>
+    </div>
+  )
 }
 
 const PHASES = [
@@ -130,31 +869,16 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
   const [failed, setFailed] = useState(false)
   const [retry, setRetry] = useState(0)
   const isPlaceholder = clip?.storyboard_placeholder || clip?.storyboard_ok === false
-  const preferHd = clip?.status === 'generating' || clip?.status === 'done' || clip?.hd_frame_ready
+  const preferHd = clip?.hd_frame_ready || clip?.clip_phase === 'frame_gen' || clip?.clip_phase === 'video_gen' || clip?.status === 'done'
+  const awaitingAsset = clip?.status === 'waiting'
+    || (clip?.status === 'generating' && clip?.clip_phase === 'storyboard')
+    || (clip?.status === 'generating' && !preferHd && !clip?.storyboard_path)
 
   useEffect(() => {
     let cancelled = false
     setFailed(false)
 
     async function load() {
-      const mediaIds = [projectId, jobId && `reel_${jobId}`, 'reel_standalone'].filter(Boolean)
-      const seen = new Set()
-      const urls = []
-      for (const pid of mediaIds) {
-        if (seen.has(pid)) continue
-        seen.add(pid)
-        if (preferHd) {
-          const hd = clipReelFramePreviewUrl(clip, pid)
-          if (hd) urls.push(hd)
-        }
-        const sb = clipReelStoryboardPreviewUrl(clip, pid)
-        if (sb) urls.push(sb)
-      }
-      if (clip?.frame_url) {
-        const resolved = resolveBackendUrl(clip.frame_url) || clip.frame_url
-        if (resolved && !urls.includes(resolved)) urls.unshift(resolved)
-      }
-
       const localPath = clip?.first_frame_path || clip?.storyboard_path
       if (localPath && window.studio?.reel?.readImageLocal) {
         const r = await window.studio.reel.readImageLocal(localPath)
@@ -163,6 +887,44 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
           setSrc(r.dataUrl)
           return
         }
+      }
+
+      if (awaitingAsset && !localPath) {
+        if (!cancelled) {
+          setFailed(false)
+          setSrc(null)
+        }
+        return
+      }
+
+      const mediaIds = [projectId, jobId && `reel_${jobId}`, 'reel_standalone'].filter(Boolean)
+      const seen = new Set()
+      const urls = []
+      for (const pid of mediaIds) {
+        if (seen.has(pid)) continue
+        seen.add(pid)
+        const sb = clipReelStoryboardPreviewUrl(clip, pid)
+        if (sb) urls.push(sb)
+        if (preferHd) {
+          const hd = clipReelFramePreviewUrl(clip, pid)
+          if (hd) urls.unshift(hd)
+        }
+      }
+      if (clip?.frame_url) {
+        const resolved = resolveBackendUrl(clip.frame_url) || clip.frame_url
+        if (resolved && !urls.includes(resolved)) urls.unshift(resolved)
+      }
+      if (clip?.preview_url) {
+        const resolved = resolveBackendUrl(clip.preview_url)
+        if (resolved && !urls.includes(resolved)) urls.unshift(resolved)
+      }
+
+      if (!urls.length) {
+        if (!cancelled) {
+          setFailed(false)
+          setSrc(null)
+        }
+        return
       }
 
       if (window.studio?.reel?.fetchImageUrl) {
@@ -175,13 +937,11 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
             return
           }
         }
+        if (!cancelled && clip?.status === 'storyboard_failed') {
+          setFailed(true)
+        }
       }
-      if (!cancelled && urls[0]) {
-        const sep = urls[0].includes('?') ? '&' : '?'
-        setSrc(`${urls[0]}${sep}v=${retry}`)
-      } else if (!cancelled) {
-        setSrc(null)
-      }
+      if (!cancelled) setSrc(null)
     }
 
     load()
@@ -196,6 +956,7 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
     jobId,
     retry,
     preferHd,
+    awaitingAsset,
   ])
 
   useEffect(() => {
@@ -221,15 +982,29 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
   }
 
   const loading = !src && !failed && (
-    clip?.status === 'waiting' || clip?.status === 'generating' || clip?.status === 'storyboard'
+    awaitingAsset
+    || clip?.status === 'storyboard'
+    || (clip?.status === 'generating' && !preferHd)
   )
 
   if (loading) {
+    const phaseLabel = clip?.clip_phase === 'video_gen' ? 'Generando video…'
+      : clip?.clip_phase === 'frame_gen' ? 'Generando frame…'
+      : null
+    const isActive = clip?.status === 'generating' && clip?.comfyuiPct > 0
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center gap-1 bg-[#0f0f18]">
+      <div className={clsx(
+        'w-full h-full flex flex-col items-center justify-center gap-1 bg-[#0f0f18] relative',
+        isActive && 'ring-1 ring-[#c9a84c]/60',
+      )}>
         <Loader2 size={14} className="text-[#c9a84c] animate-spin" />
+        {phaseLabel && (
+          <span className="text-[7px] font-mono text-[#9090a8] px-1 text-center leading-tight">{phaseLabel}</span>
+        )}
         {clip?.comfyuiPct > 0 && (
-          <span className="text-[8px] font-mono text-[#c9a84c]">{clip.comfyuiPct}%</span>
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1e1e2a]">
+            <div className="h-full bg-[var(--gold)] transition-all" style={{ width: `${clip.comfyuiPct || 0}%` }} />
+          </div>
         )}
       </div>
     )
@@ -262,7 +1037,6 @@ function ClipPreviewGrid({ clips, projectId, jobId, aspectRatio }) {
   const withImage = clips.filter(c =>
     c.storyboard_ok !== false && !c.storyboard_placeholder && (c.frame_url || c.storyboard_path),
   ).length
-
   if (!clips.length) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-[#555568] gap-2">
@@ -271,31 +1045,163 @@ function ClipPreviewGrid({ clips, projectId, jobId, aspectRatio }) {
       </div>
     )
   }
-
   return (
     <div className="space-y-2">
-      <p className="text-[9px] font-mono text-[#9090a8]">
-        Anteprime {withImage}/{clips.length}
-      </p>
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))' }}>
+      <p className="text-[9px] font-mono text-[#9090a8]">Anteprime {withImage}/{clips.length}</p>
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
         {sorted.map(clip => (
-          <div
-            key={clip.clip_id}
-            className={clsx(
-              'rounded-lg overflow-hidden border bg-[#16161f]',
-              clip.status === 'done' && 'border-[#22c55e]/50',
-              clip.status === 'storyboard' && 'border-[#3b82f6]/40',
-              clip.status === 'storyboard_failed' && 'border-[#f59e0b]/50',
-              clip.status === 'generating' && 'border-[#c9a84c]/50',
-              clip.status === 'waiting' && 'border-[#252533]',
-            )}
-          >
+          <div key={clip.clip_id} className={clsx(
+            'rounded-lg overflow-hidden border bg-[#16161f]',
+            clip.status === 'done' && 'border-[#22c55e]/50',
+            clip.status === 'storyboard' && 'border-[#3b82f6]/40',
+            clip.status === 'storyboard_failed' && 'border-[#f59e0b]/50',
+            clip.status === 'generating' && 'border-[#c9a84c]/50',
+            clip.status === 'waiting' && 'border-[#252533]',
+          )}>
             <div style={{ aspectRatio: isPortrait ? '9/16' : '16/9' }}>
               <ClipPreviewCell clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} />
             </div>
             <p className="text-[7px] font-mono text-[#c9a84c] px-1 py-0.5 truncate">{clip.clip_id}</p>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function ClipDetailCard({ clip, projectId, jobId, aspectRatio, onSave, onRegen, regenning = false }) {
+  const isPortrait = aspectRatio === '9:16'
+  const [framePrompt, setFramePrompt]   = useState(clip.first_frame_prompt || '')
+  const [motionPrompt, setMotionPrompt] = useState(clip.motion_prompt || '')
+  const [saving, setSaving]             = useState(false)
+  const [saved, setSaved]               = useState(false)
+  const [expanded, setExpanded]         = useState(false)
+
+  // Sync when clip updates externally (prompt changes from pipeline)
+  useEffect(() => { setFramePrompt(clip.first_frame_prompt || '') }, [clip.first_frame_prompt])
+  useEffect(() => { setMotionPrompt(clip.motion_prompt || '')     }, [clip.motion_prompt])
+
+  const isDirty = framePrompt !== (clip.first_frame_prompt || '') ||
+                  motionPrompt !== (clip.motion_prompt || '')
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await onSave(clip.clip_id, { first_frame_prompt: framePrompt, motion_prompt: motionPrompt })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const statusColor = {
+    done: 'border-[#22c55e]/60',
+    storyboard: 'border-[#3b82f6]/40',
+    storyboard_failed: 'border-[#f59e0b]/50',
+    generating: 'border-[#c9a84c]/60',
+    waiting: 'border-[#252533]',
+  }[clip.status] || 'border-[#252533]'
+
+  return (
+    <div className={clsx('rounded-xl border bg-[#16161f] flex flex-col overflow-hidden transition-colors', statusColor)}>
+      {/* Image preview */}
+      <div className="relative shrink-0" style={{ aspectRatio: isPortrait ? '9/16' : '16/9', maxHeight: isPortrait ? 220 : 140 }}>
+        <ClipPreviewCell clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} />
+        {/* Status overlay badge */}
+        <div className="absolute top-1.5 left-1.5">
+          {clip.status === 'done'       && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#22c55e]/80 text-black">Completato</span>}
+          {clip.status === 'generating' && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#c9a84c]/80 text-black flex items-center gap-1"><Loader2 size={7} className="animate-spin" />Gen…</span>}
+          {clip.status === 'storyboard' && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#3b82f6]/80 text-white">Storyboard</span>}
+        </div>
+        {/* ComfyUI progress bar */}
+        {clip.comfyuiPct > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0f0f18]/60">
+            <div className="h-full bg-[#c9a84c] transition-all" style={{ width: `${clip.comfyuiPct}%` }} />
+          </div>
+        )}
+      </div>
+
+      {/* Clip name + shot info */}
+      <div className="px-3 py-2 border-b border-[#252533]">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[10px] font-mono text-[#c9a84c] truncate">{clip.clip_id}</p>
+            {clip.slot_id && clip.slot_id !== clip.clip_id && (
+              <p className="text-[8px] font-mono text-[#555568] truncate">{clip.slot_id}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setExpanded(e => !e)}
+            className="shrink-0 p-0.5 rounded text-[#555568] hover:text-[#9090a8]"
+            title={expanded ? 'Comprimi' : 'Espandi prompt'}
+          >
+            {expanded ? <ChevronUp size={11} /> : <Edit3 size={11} />}
+          </button>
+        </div>
+        {clip.scene_prompt && (
+          <p className="mt-1 text-[9px] text-[#9090a8] leading-relaxed line-clamp-2">{clip.scene_prompt}</p>
+        )}
+      </div>
+
+      {/* Prompt editors — collapsible */}
+      {expanded && (
+        <div className="px-3 py-2 space-y-2 border-b border-[#252533] bg-[#0f0f18]">
+          <div>
+            <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Frame prompt (txt2img)</p>
+            <textarea
+              value={framePrompt}
+              onChange={e => setFramePrompt(e.target.value)}
+              rows={4}
+              className="w-full text-[10px] bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-[#e8e4dd] resize-y font-mono leading-relaxed focus:border-[#c9a84c]/50 outline-none"
+              placeholder="Prompt immagine…"
+            />
+          </div>
+          <div>
+            <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Motion prompt (img2video)</p>
+            <textarea
+              value={motionPrompt}
+              onChange={e => setMotionPrompt(e.target.value)}
+              rows={3}
+              className="w-full text-[10px] bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-[#e8e4dd] resize-y font-mono leading-relaxed focus:border-[#c9a84c]/50 outline-none"
+              placeholder="Motion prompt…"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="px-3 py-2 flex gap-1.5 mt-auto">
+        {expanded && (
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || !isDirty}
+            className={clsx(
+              'flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-[9px] font-mono border transition-colors',
+              saved
+                ? 'border-[#22c55e]/50 text-[#22c55e] bg-[#22c55e]/10'
+                : isDirty
+                  ? 'border-[#c9a84c]/50 text-[#c9a84c] hover:bg-[#c9a84c]/10'
+                  : 'border-[#252533] text-[#555568]',
+            )}
+          >
+            {saving ? <Loader2 size={9} className="animate-spin" /> : <Save size={9} />}
+            {saved ? 'Salvato' : 'Salva'}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onRegen(clip.clip_id)}
+          disabled={regenning}
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-[9px] font-mono border border-[#32324a] text-[#9090a8] hover:text-[#e8e4dd] hover:border-[#c9a84c]/40 disabled:opacity-40 transition-colors"
+        >
+          {regenning
+            ? <Loader2 size={9} className="animate-spin text-[#c9a84c]" />
+            : <RotateCcw size={9} />}
+          Rigenera
+        </button>
       </div>
     </div>
   )
@@ -430,10 +1336,38 @@ function JobsListView({ projectId, refreshKey, onNew, onViewDetail }) {
   )
 }
 
-function JobDetailView({ job, projectId, onBack, onRestart, onDelete }) {
+function JobDetailView({ job, projectId, onBack, onOpenReview, onRestartFromScratch, onDelete }) {
   const [deleting, setDeleting] = useState(false)
-  const videoSrc = reelVideoUrl(job)
-  const storageId = job.storage_project_id || job.project_id
+  const [fullJob, setFullJob] = useState(job)
+  const [loadingJob, setLoadingJob] = useState(false)
+  const videoSrc = reelVideoUrl(fullJob)
+  const storageId = fullJob.storage_project_id || fullJob.project_id
+  const canReview = jobHasStoryboard(fullJob) || fullJob.status === 'awaiting_storyboard' || jobHasFinalVideo(fullJob)
+  const isLive = fullJob.status === 'running' || fullJob.status === 'awaiting_storyboard'
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingJob(true)
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(projectId)}/${encodeURIComponent(job.job_id)}`,
+        )
+        if (res.ok && !cancelled) setFullJob(await res.json())
+      } catch { /* keep list snapshot */ }
+      finally {
+        if (!cancelled) setLoadingJob(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [projectId, job.job_id])
+  const reviewLabel = fullJob.status === 'awaiting_storyboard'
+    ? 'Revisione storyboard'
+    : isLive
+      ? 'Riprendi monitoraggio pipeline'
+      : jobHasFinalVideo(fullJob)
+        ? 'Anteprime e reel'
+        : 'Anteprime e vision'
 
   async function handleDelete() {
     setDeleting(true)
@@ -456,10 +1390,22 @@ function JobDetailView({ job, projectId, onBack, onRestart, onDelete }) {
           Lista
         </button>
         <div className="flex gap-2">
-          <GoldBtn onClick={() => onRestart(job)}>
-            {job.status === 'awaiting_storyboard' ? <Check size={13} /> : <RefreshCw size={13} />}
-            {job.status === 'awaiting_storyboard' ? 'Approva storyboard' : 'Riapri / riprendi'}
-          </GoldBtn>
+          {canReview && (
+            <GoldBtn onClick={() => onOpenReview(fullJob)} disabled={loadingJob}>
+              <LayoutGrid size={13} />
+              {reviewLabel}
+            </GoldBtn>
+          )}
+          {isLive && (
+            <GhostBtn onClick={() => onOpenReview(fullJob)}>
+              <Loader2 size={12} className={loadingJob ? 'animate-spin' : ''} />
+              Stato live
+            </GhostBtn>
+          )}
+          <GhostBtn onClick={() => onRestartFromScratch(job)}>
+            <RefreshCw size={12} />
+            Rigenera da zero
+          </GhostBtn>
           <GhostBtn onClick={handleDelete} disabled={deleting}>
             {deleting ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
             Elimina
@@ -468,21 +1414,26 @@ function JobDetailView({ job, projectId, onBack, onRestart, onDelete }) {
       </div>
       <div className="flex-1 overflow-y-auto p-6 space-y-4 max-w-2xl">
         <div className="flex items-center gap-2">
-          <StatusBadge status={job.status} />
-          <code className="text-[10px] text-[#c9a84c]">{job.job_id}</code>
+          <StatusBadge status={fullJob.status} />
+          <code className="text-[10px] text-[#c9a84c]">{fullJob.job_id}</code>
+          {fullJob.progress_pct != null && (
+            <span className="text-[10px] font-mono text-[#c9a84c]">{Math.round(fullJob.progress_pct)}%</span>
+          )}
         </div>
-        <p className="text-sm text-[#e8e4dd]">{job.description || '—'}</p>
+        <p className="text-sm text-[#e8e4dd]">{fullJob.description || '—'}</p>
         <p className="text-[10px] font-mono text-[#555568]">Cartella: {storageId}</p>
         {videoSrc && (
           <video src={videoSrc} controls className="w-full max-w-sm rounded-lg border border-[#252533]" />
         )}
-        {job.result?.storyboard?.length > 0 && (
+        {(fullJob.result?.clips?.length || fullJob.result?.storyboard?.length) > 0 && (
           <p className="text-[10px] font-mono text-[#9090a8]">
-            {job.result.storyboard.length} frame storyboard salvati
+            {fullJob.result?.clips?.length
+              ? `${fullJob.result.clips.length} clip in checkpoint`
+              : `${fullJob.result.storyboard.length} frame storyboard`}
           </p>
         )}
-        {job.error && (
-          <p className="text-xs text-[#ef4444] font-mono">{job.error}</p>
+        {fullJob.error && (
+          <p className="text-xs text-[#ef4444] font-mono">{fullJob.error}</p>
         )}
       </div>
     </div>
@@ -725,6 +1676,236 @@ function ReferenceDropZone({ refs, onAddPaths, onRemove, onPick, onPickFromLibra
   )
 }
 
+
+const BACKEND_ORIGIN_REEL = BACKEND_ORIGIN
+const LS_REEL_OVERRIDES_KEY = (wfId) => `cinematic_model_overrides_${wfId}`
+
+function loadWorkflowOverrides(wfId) {
+  if (!wfId) return null
+  try { return JSON.parse(localStorage.getItem(LS_REEL_OVERRIDES_KEY(wfId)) || 'null') }
+  catch { return null }
+}
+
+function ModelOverridesSection({ config, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [nodeModels, setNodeModels] = useState(null)
+  const [wfModelNodes, setWfModelNodes] = useState({})
+  const [loadingModels, setLoadingModels] = useState(false)
+
+  // Per-reel overrides state: {txt2img: {...}, video: {...}}
+  const [overrides, setOverrides] = useState(() => {
+    const t2i = loadWorkflowOverrides(config.txt2img_workflow) || {}
+    const vid = loadWorkflowOverrides(config.img2video_workflow) || {}
+    return { txt2img: t2i, video: vid }
+  })
+
+  // Reset when workflow IDs change
+  useEffect(() => {
+    setOverrides({
+      txt2img: loadWorkflowOverrides(config.txt2img_workflow) || {},
+      video:   loadWorkflowOverrides(config.img2video_workflow) || {},
+    })
+  }, [config.txt2img_workflow, config.img2video_workflow])
+
+  // Bubble up to parent
+  useEffect(() => {
+    const merged = {}
+    if (overrides.txt2img?.checkpoint)  merged.checkpoint  = overrides.txt2img.checkpoint
+    if (overrides.video?.video_model)   merged.video_model = overrides.video.video_model
+    const loras = overrides.video?.loras || overrides.txt2img?.loras || []
+    if (loras.length > 0) merged.loras = loras
+    onChange(Object.keys(merged).length > 0 ? merged : null)
+  }, [overrides])
+
+  async function fetchModels() {
+    if (nodeModels) return
+    setLoadingModels(true)
+    try {
+      const res = await fetch(`${BACKEND_ORIGIN_REEL}/api/comfyui/nodes/0/models`)
+      const data = await res.json()
+      setNodeModels(data)
+      // Also fetch model nodes for both workflow IDs
+      const wfIds = [config.txt2img_workflow, config.img2video_workflow].filter(Boolean)
+      const results = {}
+      await Promise.all(wfIds.map(async (id) => {
+        try {
+          const r = await fetch(`${BACKEND_ORIGIN_REEL}/api/comfyui/workflow/${id}/model-nodes`)
+          results[id] = await r.json()
+        } catch {}
+      }))
+      setWfModelNodes(results)
+    } catch {}
+    setLoadingModels(false)
+  }
+
+  function handleToggle() {
+    if (!open) fetchModels()
+    setOpen(o => !o)
+  }
+
+  const checkpoints  = nodeModels?.checkpoints  || []
+  const videoModels  = nodeModels?.video_models || []
+  const loras        = nodeModels?.loras        || []
+
+  const t2iNodes  = wfModelNodes[config.txt2img_workflow]
+  const vidNodes  = wfModelNodes[config.img2video_workflow]
+  const cpNodes   = t2iNodes?.checkpoint_nodes  || []
+  const vmNodes   = vidNodes?.video_model_nodes || []
+  const loraNodes = vidNodes?.lora_nodes        || []
+
+  const hasOverrides = !!(overrides.txt2img?.checkpoint || overrides.video?.video_model ||
+    (overrides.video?.loras || []).some(l => l?.lora_name))
+
+  return (
+    <div className="mb-6 rounded-lg border border-[#252533] overflow-hidden">
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="w-full flex items-center gap-2 px-4 py-3 bg-[#16161f] hover:bg-[#1e1e2a] transition-colors"
+      >
+        <Settings2 size={13} className="text-[#9090a8] shrink-0" />
+        <span className="text-[11px] font-mono text-[#9090a8] flex-1 text-left">
+          Modelli & LoRA (override opzionale)
+        </span>
+        {hasOverrides && (
+          <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 text-[#c9a84c]">
+            override attivo
+          </span>
+        )}
+        <ChevronDown size={13} className={"text-[#555568] transition-transform " + (open ? "rotate-180" : "")} />
+      </button>
+
+      {open && (
+        <div className="border-t border-[#252533] bg-[#0f0f18] p-4 space-y-4">
+          {loadingModels && (
+            <div className="flex items-center gap-2 text-[#555568]">
+              <Loader2 size={13} className="animate-spin" />
+              <span className="text-[10px] font-mono">Caricamento modelli dal nodo...</span>
+            </div>
+          )}
+
+          {!loadingModels && nodeModels && (
+            <>
+              {/* Checkpoint (txt2img) */}
+              {(cpNodes.length > 0 || checkpoints.length > 0) && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] shrink-0" />
+                    <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-wider">Checkpoint (txt2img)</span>
+                    {cpNodes[0]?.current_value && (
+                      <span className="ml-auto text-[8px] font-mono text-[#555568] truncate max-w-[160px]">{cpNodes[0].current_value}</span>
+                    )}
+                  </div>
+                  <select
+                    value={overrides.txt2img?.checkpoint || ''}
+                    onChange={e => setOverrides(o => ({ ...o, txt2img: { ...o.txt2img, checkpoint: e.target.value || undefined } }))}
+                    className="w-full text-[11px] bg-[#16161f] text-[#e8e4dd] rounded px-2.5 py-2 border border-[#252533] font-mono"
+                  >
+                    <option value="">(dal workflow JSON)</option>
+                    {checkpoints.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* Video Model (img2video) */}
+              {(vmNodes.length > 0 || videoModels.length > 0) && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#a78bfa] shrink-0" />
+                    <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-wider">Video Model (img2video)</span>
+                    {vmNodes[0]?.current_value && (
+                      <span className="ml-auto text-[8px] font-mono text-[#555568] truncate max-w-[160px]">{vmNodes[0].current_value}</span>
+                    )}
+                  </div>
+                  <select
+                    value={overrides.video?.video_model || ''}
+                    onChange={e => setOverrides(o => ({ ...o, video: { ...o.video, video_model: e.target.value || undefined } }))}
+                    className="w-full text-[11px] bg-[#16161f] text-[#e8e4dd] rounded px-2.5 py-2 border border-[#252533] font-mono"
+                  >
+                    <option value="">(dal workflow JSON)</option>
+                    {videoModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* LoRAs */}
+              {loraNodes.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#f59e0b] shrink-0" />
+                    <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-wider">
+                      LoRA ({loraNodes.length} slot nel workflow)
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {loraNodes.map((loraNode, idx) => {
+                      const ov = (overrides.video?.loras || [])[idx] || {}
+                      const smVal = ov.strength_model ?? loraNode.strength_model ?? 1.0
+                      const scVal = ov.strength_clip  ?? loraNode.strength_clip  ?? 1.0
+                      return (
+                        <div key={loraNode.node_id} className="rounded border border-[#252533] bg-[#16161f] p-3 space-y-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/20">Slot {idx + 1}</span>
+                            {loraNode.current_value && <span className="text-[8px] font-mono text-[#555568] truncate">{loraNode.current_value}</span>}
+                          </div>
+                          <select
+                            value={ov.lora_name || ''}
+                            onChange={e => {
+                              setOverrides(o => {
+                                const ls = [...(o.video?.loras || [])]
+                                if (!ls[idx]) ls[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+                                ls[idx] = { ...ls[idx], lora_name: e.target.value }
+                                return { ...o, video: { ...o.video, loras: ls } }
+                              })
+                            }}
+                            className="w-full text-[11px] bg-[#0f0f18] text-[#e8e4dd] rounded px-2 py-1.5 border border-[#252533] font-mono"
+                          >
+                            <option value="">(dal workflow JSON)</option>
+                            {loras.map(l => <option key={l} value={l}>{l}</option>)}
+                          </select>
+                          <div className="grid grid-cols-2 gap-3">
+                            {[['strength_model', smVal], ['strength_clip', scVal]].map(([field, val]) => (
+                              <div key={field}>
+                                <div className="flex justify-between mb-1">
+                                  <span className="text-[8px] font-mono text-[#555568]">{field}</span>
+                                  <span className="text-[8px] font-mono text-[#c9a84c]">{parseFloat(val).toFixed(2)}</span>
+                                </div>
+                                <input
+                                  type="range" min={0} max={1.5} step={0.05}
+                                  value={parseFloat(val)}
+                                  onChange={e => {
+                                    setOverrides(o => {
+                                      const ls = [...(o.video?.loras || [])]
+                                      if (!ls[idx]) ls[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+                                      ls[idx] = { ...ls[idx], [field]: parseFloat(e.target.value) }
+                                      return { ...o, video: { ...o.video, loras: ls } }
+                                    })
+                                  }}
+                                  className="w-full h-1.5 accent-[#c9a84c] cursor-pointer"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {cpNodes.length === 0 && vmNodes.length === 0 && loraNodes.length === 0 && checkpoints.length === 0 && videoModels.length === 0 && (
+                <p className="text-[10px] font-mono text-[#555568] italic text-center py-2">
+                  Nessun modello trovato. Assicurati che un nodo ComfyUI sia online.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Director narrative card (shown in storyboard header + generating view) ──
 
 function DirectorNarrativeCard({ narrative }) {
@@ -789,42 +1970,426 @@ function EnergyDot({ energy }) {
   )
 }
 
-function ClipPromptCard({ clip, index }) {
-  const [open, setOpen] = useState(false)
+function ClipPromptCard({ clip, index, onSave }) {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [draft, setDraft] = useState({
+    scene_prompt: clip.scene_prompt || '',
+    first_frame_prompt: clip.first_frame_prompt || '',
+    last_frame_prompt: clip.last_frame_prompt || '',
+    motion_prompt: clip.motion_prompt || '',
+    ltx_video_prompt: clip.ltx_video_prompt || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const rows = [
+    clip.first_frame_prompt && { label: 'First', value: clip.first_frame_prompt },
+    clip.motion_prompt && { label: 'Motion', value: clip.motion_prompt, accent: true },
+    clip.scene_prompt && { label: 'Scena', value: clip.scene_prompt },
+  ].filter(Boolean)
+
+  const isDirty = Object.keys(draft).some(k => (draft[k] || '') !== (clip[k] || ''))
+
+  async function handleSave() {
+    if (!onSave) return
+    setSaving(true)
+    try {
+      const payload = {}
+      Object.keys(draft).forEach(k => {
+        if ((draft[k] || '') !== (clip[k] || '')) payload[k] = draft[k] || ''
+      })
+      await onSave(clip.clip_id, payload)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      setModalOpen(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div className="rounded bg-[#0f0f18] border border-[#252533] overflow-hidden">
-      <button
-        className="w-full flex items-center justify-between px-2 py-1.5 text-left"
-        onClick={() => setOpen(o => !o)}
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[9px] font-mono text-[#c9a84c] shrink-0">#{String(index + 1).padStart(2, '0')}</span>
-          <span className="text-[9px] font-mono text-[#555568] truncate">{clip.clip_id}</span>
-        </div>
-        <ChevronRight size={10} className={clsx('text-[#555568] transition-transform shrink-0', open && 'rotate-90')} />
-      </button>
+    <div className="rounded bg-[#0f0f18] border border-[#252533] px-2 py-1.5">
+      <div className="flex items-center gap-2 min-w-0 mb-1">
+        <span className="text-[9px] font-mono text-[#c9a84c] shrink-0">#{String(index + 1).padStart(2, '0')}</span>
+        <span className="text-[9px] font-mono text-[#555568] truncate">{clip.clip_id}</span>
+      </div>
+      <div className="space-y-1 mb-1.5">
+        {rows.map(r => (
+          <PromptPreviewRow key={r.label} label={r.label} value={r.value} accent={r.accent} />
+        ))}
+      </div>
+      {onSave && (
+        <button
+          type="button"
+          onClick={() => { setDraft({
+            scene_prompt: clip.scene_prompt || '',
+            first_frame_prompt: clip.first_frame_prompt || '',
+            last_frame_prompt: clip.last_frame_prompt || '',
+            motion_prompt: clip.motion_prompt || '',
+            ltx_video_prompt: clip.ltx_video_prompt || '',
+          }); setModalOpen(true) }}
+          className="w-full text-[8px] font-mono text-[#9090a8] hover:text-[#c9a84c] py-0.5"
+        >
+          Apri prompt…
+        </button>
+      )}
+      <ReelPromptEditorModal
+        open={modalOpen}
+        clipId={clip.clip_id}
+        draft={draft}
+        setDraft={setDraft}
+        hasLastFrame={Boolean((clip.last_frame_prompt || '').trim())}
+        saving={saving}
+        saved={saved}
+        isDirty={isDirty}
+        onClose={() => setModalOpen(false)}
+        onSave={handleSave}
+      />
+    </div>
+  )
+}
+
+// ── Generating/Done view (full-body layout) ──────────────────────────────────
+
+function InfoPanel({ visionData, directorData, directorNarrative, dopPlans, logs, infoTab, setInfoTab }) {
+  const [open, setOpen] = useState(true)
+
+  return (
+    <div className="shrink-0 border-b border-[#252533] bg-[#0f0f18]">
+      {/* Tab bar + collapse toggle */}
+      <div className="flex items-center border-b border-[#252533]">
+        {[
+          { id: 'vision',   label: 'Vision',  dot: !!visionData },
+          { id: 'director', label: 'Regia',   dot: !!directorData },
+          { id: 'log',      label: 'Log',     dot: false },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => { setInfoTab(tab.id); setOpen(true) }}
+            className={clsx(
+              'px-4 py-2 text-[9px] font-mono uppercase tracking-wide transition-colors relative',
+              infoTab === tab.id && open
+                ? 'text-[#c9a84c] border-b-2 border-[#c9a84c]'
+                : 'text-[#555568] hover:text-[#9090a8]',
+            )}
+          >
+            {tab.label}
+            {tab.dot && !(infoTab === tab.id && open) && (
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#c9a84c]" />
+            )}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          className="ml-auto px-3 py-2 text-[#555568] hover:text-[#9090a8]"
+          title={open ? 'Comprimi pannello' : 'Espandi pannello'}
+        >
+          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+      </div>
+
       {open && (
-        <div className="px-2 pb-2 space-y-2 border-t border-[#252533]">
-          {clip.scene_prompt && (
-            <div className="pt-2">
-              <p className="text-[8px] font-mono text-[#555568] uppercase mb-0.5">Scena</p>
-              <p className="text-[10px] text-[#e8e4dd] leading-relaxed">{clip.scene_prompt}</p>
-            </div>
+        <div className="max-h-56 overflow-y-auto p-4">
+          {/* Vision */}
+          {infoTab === 'vision' && (
+            visionData ? (
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Stile visivo</p>
+                  <p className="text-[10px] text-[#e8e4dd] leading-relaxed">{visionData.combined_style || '—'}</p>
+                </div>
+                {visionData.palette_hex?.length > 0 && (
+                  <div>
+                    <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Palette</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {visionData.palette_hex.map((hex, i) => (
+                        <div key={i} className="flex items-center gap-1">
+                          <div className="w-4 h-4 rounded border border-[#252533]" style={{ background: hex }} />
+                          <span className="text-[8px] font-mono text-[#9090a8]">{hex}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {visionData.character_anchors?.length > 0 && (
+                  <div>
+                    <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Personaggi</p>
+                    {visionData.character_anchors.map((a, i) => (
+                      <p key={i} className="text-[9px] text-[#9090a8]">• {typeof a === 'string' ? a : JSON.stringify(a)}</p>
+                    ))}
+                  </div>
+                )}
+                {visionData.continuity_rules?.length > 0 && (
+                  <div>
+                    <p className="text-[8px] font-mono text-[#555568] uppercase mb-1">Continuità</p>
+                    {visionData.continuity_rules.slice(0,4).map((r, i) => (
+                      <p key={i} className="text-[9px] text-[#9090a8]">• {typeof r === 'string' ? r : JSON.stringify(r)}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-[10px] font-mono text-[#555568] italic">In attesa dell'analisi vision…</p>
+            )
           )}
-          {clip.first_frame_prompt && (
-            <div>
-              <p className="text-[8px] font-mono text-[#555568] uppercase mb-0.5">Frame immagine (txt2img)</p>
-              <p className="text-[10px] text-[#9090a8] leading-relaxed font-mono">{clip.first_frame_prompt}</p>
-            </div>
+
+          {/* Regia */}
+          {infoTab === 'director' && (
+            directorData ? (
+              <div className="space-y-3">
+                <DirectorNarrativeCard narrative={directorNarrative} />
+                {directorData.slot_details?.length > 0 && (
+                  <div>
+                    <p className="text-[8px] font-mono text-[#555568] uppercase mb-2">Slot ({directorData.slot_details.length})</p>
+                    <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+                      {directorData.slot_details.map((s, i) => (
+                        <div key={i} className="rounded bg-[#16161f] border border-[#252533] p-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[9px] font-mono text-[#c9a84c]">{s.slot_id}</span>
+                            <div className="flex items-center gap-1.5">
+                              <EnergyDot energy={s.energy} />
+                              <span className="text-[8px] font-mono text-[#555568]">{s.duration_sec}s</span>
+                            </div>
+                          </div>
+                          <p className="text-[9px] font-mono text-[#555568] mb-0.5">{s.emotion}</p>
+                          <p className="text-[9px] text-[#9090a8] leading-relaxed line-clamp-2">{s.visual_hint}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-[10px] font-mono text-[#555568] italic">In attesa della regia…</p>
+            )
           )}
-          {clip.motion_prompt && (
-            <div>
-              <p className="text-[8px] font-mono text-[#555568] uppercase mb-0.5">Motion prompt (img2video)</p>
-              <p className="text-[10px] text-[#c9a84c]/80 leading-relaxed font-mono">{clip.motion_prompt}</p>
+
+          {/* Log */}
+          {infoTab === 'log' && (
+            <div className="font-mono text-[10px] text-[#9090a8] space-y-0.5">
+              {logs.length === 0
+                ? <p className="italic text-[#555568]">Nessun log ancora.</p>
+                : [...logs].reverse().map((l, i) => <div key={i}>{l.msg}</div>)
+              }
             </div>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function buildReelEnhanceContext(description, config, directorNarrative, projectId = '') {
+  const dn = directorNarrative || {}
+  return {
+    project_id: projectId || '',
+    brief: (description || '').trim(),
+    style: config?.style,
+    director_narrative: dn.narrative_arc || dn.logline || '',
+    visual_theme: dn.visual_theme || '',
+    logline: dn.logline || '',
+    mood: dn.mood || '',
+  }
+}
+
+function GeneratingView({
+  view, clips, setClips, globalPct, error, logs,
+  phaseStatus, directorNarrative, visionData, directorData, dopPlans,
+  infoTab, setInfoTab, result, storageProjectId, projectDir,
+  activeJobId, mediaProjectId, config, onStop, onPause, onResumePause, onContinue,
+  jobPaused, staleRunning, canContinue, onGoList, onNew,
+  catalogProjectId, systemActivity, agentsStatus, reelEnhanceContext,
+}) {
+  const [regenningId, setRegenningId] = useState(null)
+  const isPortrait = config.aspect_ratio === '9:16'
+  const sbSize = reelStoryboardPixelSize(config)
+  const hdSize = reelHdDimensions(config.width, config.height)
+
+  async function handleSavePrompt(clipId, prompts) {
+    const res = await fetch(
+      `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prompts),
+      },
+    )
+    if (!res.ok) throw new Error(await res.text())
+    setClips(prev => prev.map(c => (c.clip_id === clipId ? { ...c, ...prompts } : c)))
+  }
+
+  async function handleRegen(clipId) {
+    if (regenningId) return
+    setRegenningId(clipId)
+    setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, status: 'generating', comfyuiPct: 0 } : c))
+    try {
+      const url = `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}/regen`
+      const es = new EventSource(url)
+      await new Promise((resolve, reject) => {
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data)
+            if (data.done || data.error) {
+              es.close()
+              if (data.error) reject(new Error(data.error))
+              else resolve()
+              return
+            }
+            if (data.event === 'storyboard_frame') {
+              const sbOk = data.storyboard_ok !== false
+              setClips(prev => prev.map(c =>
+                c.clip_id === clipId ? {
+                  ...c,
+                  status: sbOk ? 'storyboard' : 'storyboard_failed',
+                  storyboard_ok: sbOk,
+                  storyboard_path: data.path || c.storyboard_path,
+                  storyboard_filename: data.storyboard_filename || c.storyboard_filename,
+                  preview_url: data.preview_url || data.url || c.preview_url,
+                } : c,
+              ))
+            }
+            if (data.event === 'clip_comfyui_progress' && data.comfyui_max > 1) {
+              const pct = Math.round((data.comfyui_value / data.comfyui_max) * 100)
+              setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, comfyuiPct: pct } : c))
+            }
+          } catch {}
+        }
+        es.onerror = () => { es.close(); resolve() }
+      })
+    } catch {}
+    setRegenningId(null)
+    setClips(prev => prev.map(c => c.clip_id === clipId
+      ? { ...c, comfyuiPct: 0, status: c.status === 'generating' ? 'storyboard' : c.status }
+      : c,
+    ))
+  }
+
+  const withImage = clips.filter(c => c.storyboard_ok !== false && !c.storyboard_placeholder && (c.frame_url || c.storyboard_path)).length
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+
+      {/* ── Header ── */}
+      <div className="px-6 py-4 border-b border-[#252533] bg-[#07070d] shrink-0">
+        <div className="flex items-center gap-3 mb-3">
+          <Clapperboard className="text-[#c9a84c]" size={20} />
+          <h1 className="font-['Playfair_Display'] text-lg">
+            {view === 'done' ? 'Reel completato' : 'Generazione in corso…'}
+          </h1>
+          {view === 'generating' && <Loader2 size={16} className="animate-spin text-[#c9a84c]" />}
+          <span className="text-[10px] font-mono text-[#c9a84c] ml-auto">{globalPct}%</span>
+          {view === 'generating' && (
+            <div className="flex items-center gap-2">
+              {staleRunning && canContinue && onContinue && (
+                <GoldBtn onClick={onContinue}>
+                  <RotateCcw size={12} /> Riprendi pipeline
+                </GoldBtn>
+              )}
+              {!staleRunning && jobPaused && onResumePause && (
+                <GhostBtn onClick={onResumePause} className="border-[#c9a84c]/40 text-[#c9a84c]">
+                  Riprendi
+                </GhostBtn>
+              )}
+              {!staleRunning && !jobPaused && onPause && (
+                <GhostBtn onClick={onPause} className="border-[#3b82f6]/40 text-[#3b82f6]">
+                  Pausa
+                </GhostBtn>
+              )}
+              <GhostBtn onClick={onStop} className="border-red-500/40 text-red-400 hover:text-red-300">
+                <Square size={12} /> Ferma
+              </GhostBtn>
+            </div>
+          )}
+          {view === 'done' && (
+            <>
+              <GhostBtn onClick={onGoList}>Torna alla lista</GhostBtn>
+              <GoldBtn onClick={onNew}><Sparkles size={13} />Nuovo reel</GoldBtn>
+            </>
+          )}
+        </div>
+
+        <div className="h-1.5 bg-[#16161f] rounded-full mb-3">
+          <div className="h-full bg-[#c9a84c] rounded-full transition-all" style={{ width: `${globalPct}%` }} />
+        </div>
+
+        {(storageProjectId || projectDir) && (
+          <ProjectDirBanner storageProjectId={storageProjectId} jobId={activeJobId} projectDir={projectDir} storageApi="reel" />
+        )}
+
+        <div className="flex flex-wrap gap-2 mt-3">
+          {PHASES.map(p => (
+            <span key={p.id} className={clsx(
+              'text-[9px] font-mono px-2 py-0.5 rounded',
+              phaseStatus[p.id] === 'done'   ? 'bg-[#22c55e]/20 text-[#22c55e]'
+              : phaseStatus[p.id] === 'active' ? 'bg-[#c9a84c]/20 text-[#c9a84c]'
+              : 'bg-[#16161f] text-[#555568]',
+            )}>
+              {p.label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="mx-6 mt-3 p-3 rounded border border-[#ef4444]/40 text-[#ef4444] text-xs font-mono shrink-0">
+          {error}
+        </div>
+      )}
+
+      {/* ── Video result (done) ── */}
+      {view === 'done' && (result?.filename || result?.video_path) && (
+        <div className="px-6 py-4 border-b border-[#252533] shrink-0">
+          <video
+            src={
+              result.video_url?.replace('/api/trailer/', '/api/reel/')
+              || `${BACKEND_ORIGIN}/api/reel/output/${encodeURIComponent(mediaProjectId)}/${encodeURIComponent(result.filename || String(result.video_path).split(/[/\\]/).pop())}`
+            }
+            controls
+            className="max-h-64 rounded border border-[#252533]"
+          />
+        </div>
+      )}
+
+      {/* ── Info panel (full width, collapsible) ── */}
+      <InfoPanel
+        visionData={visionData}
+        directorData={directorData}
+        directorNarrative={directorNarrative}
+        dopPlans={dopPlans}
+        logs={logs}
+        infoTab={infoTab}
+        setInfoTab={setInfoTab}
+      />
+
+      {/* ── Clip cards grid ── */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {view === 'generating' && (
+          <ReelSystemActivityPanel
+            activity={systemActivity}
+            agentsStatus={agentsStatus}
+            phaseStatus={phaseStatus}
+          />
+        )}
+        <ReelClipPlanGrid
+          clips={clips}
+          projectId={mediaProjectId}
+          jobId={activeJobId}
+          aspectRatio={config.aspect_ratio}
+          config={config}
+          sbSize={sbSize}
+          hdSize={hdSize}
+          dopPlans={dopPlans}
+          onSave={view !== 'done' ? handleSavePrompt : undefined}
+          onRegen={view !== 'done' ? handleRegen : undefined}
+          regenningId={regenningId}
+          projectContext={reelEnhanceContext}
+          title={clips.length > 0
+            ? `${withImage}/${clips.length} clip con anteprima · prompt e parametri di regia`
+            : undefined}
+          emptyHint="Le clip appariranno qui man mano che gli agenti completano l'analisi e i prompt"
+        />
+      </div>
     </div>
   )
 }
@@ -840,6 +2405,10 @@ export default function CreateReelScreen() {
   const [title, setTitle] = useState('')
   const [refs, setRefs] = useState([])
   const [config, setConfig] = useState(DEFAULT_CONFIG)
+  const [audioFile, setAudioFile] = useState(null)
+  const [audioStartSec, setAudioStartSec] = useState(0)
+  const [lyrics, setLyrics] = useState('')
+  const [audioAnalysis, setAudioAnalysis] = useState(null)
   const [activeJobId, setActiveJobId] = useState(null)
   const [storageProjectId, setStorageProjectId] = useState(null)
   const [clips, setClips] = useState([])
@@ -854,17 +2423,69 @@ export default function CreateReelScreen() {
   const [infoTab, setInfoTab] = useState('vision')
   const [directorNarrative, setDirectorNarrative] = useState(null)
   const [phaseStatus, setPhaseStatus] = useState({})
+  const [jobControl, setJobControl] = useState({
+    staleRunning: false,
+    paused: false,
+    canContinue: false,
+    taskRunning: false,
+  })
   const [projectDir, setProjectDir] = useState(null)
   const [refUploadError, setRefUploadError] = useState(null)
   const [showMediaPicker, setShowMediaPicker] = useState(false)
+  const [modelOverrides, setModelOverrides] = useState(null)
+  const [systemActivity, setSystemActivity] = useState(null)
+  const [agentsStatus, setAgentsStatus] = useState({})
   const cancelRef = useRef(false)
   const pendingClipsRef = useRef([])
+  const clipsRef = useRef([])
+  useEffect(() => { clipsRef.current = clips }, [clips])
 
   const mediaProjectId = resolveReelMediaProjectId(storageProjectId, activeJobId, catalogProjectId)
 
   const addLog = useCallback((msg) => {
     setLogs(prev => [...prev.slice(-80), { t: Date.now(), msg }])
   }, [])
+
+  const stuckClipsKey = clips
+    .filter(clipNeedsMediaRecovery)
+    .map(c => c.clip_id)
+    .sort()
+    .join(',')
+
+  useEffect(() => {
+    if (!activeJobId || !catalogProjectId || !stuckClipsKey) return undefined
+
+    let cancelled = false
+    async function runReconcile() {
+      try {
+        const res = await fetch(
+          `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}/reconcile?storyboard=true&hd_frames=true`,
+          { method: 'POST' },
+        )
+        const data = await res.json().catch(() => ({}))
+        if (cancelled || !data.ok || !data.recovered?.length) return
+        setClips(prev => prev.map(c => {
+          let next = c
+          for (const ev of data.recovered) {
+            if (ev.clip_id === c.clip_id) {
+              next = mergeReelClipRecoveryEvent(next, ev, mediaProjectId)
+            }
+          }
+          return next
+        }))
+        addLog(`Recuperate ${data.count} anteprime (ComfyUI/disco)`)
+      } catch {
+        /* retry on next interval */
+      }
+    }
+
+    runReconcile()
+    const iv = setInterval(runReconcile, 8000)
+    return () => {
+      cancelled = true
+      clearInterval(iv)
+    }
+  }, [activeJobId, catalogProjectId, mediaProjectId, stuckClipsKey, addLog])
 
   const loadPreview = useCallback(async (path) => {
     const r = await window.studio?.reel?.readImageLocal?.(path)
@@ -911,13 +2532,19 @@ export default function CreateReelScreen() {
     description: description.trim(),
     title: title.trim() || 'CreateReel',
     reference_image_paths: refs.map(r => r.path),
+    audio_path: audioFile?.path || null,
+    audio_name: audioFile?.name || '',
+    audio_start_sec: audioStartSec,
+    lyrics: lyrics.trim() || null,
     duration_sec: config.duration_sec,
     style: config.style,
     aspect_ratio: config.aspect_ratio,
     width: config.width,
     height: config.height,
+    fps: config.fps,
     storyboard_max_side: config.storyboard_max_side,
     storyboard_steps: config.storyboard_steps,
+    hd_frame_steps: config.hd_frame_steps,
     max_clip_sec: config.max_clip_sec,
     concurrent_jobs: config.concurrent_jobs,
     clip_backend: config.clip_backend,
@@ -926,6 +2553,7 @@ export default function CreateReelScreen() {
     img2video_workflow: config.img2video_workflow,
     phase,
     resume_job_id: resumeJobId,
+    model_overrides: modelOverrides || undefined,
   })
 
   const handleProgress = useCallback((data) => {
@@ -938,6 +2566,85 @@ export default function CreateReelScreen() {
     if (data.job_id) setActiveJobId(data.job_id)
     if (data.storage_project_id) setStorageProjectId(data.storage_project_id)
     if (data.project_dir) setProjectDir(data.project_dir)
+
+    if (data.event === 'agent_progress') {
+      const isDone = data.agent_status === 'done'
+      setSystemActivity({
+        msg: data.msg,
+        status: isDone ? 'done' : 'working',
+        agent_role: data.agent_role,
+        agent_label: data.agent_label,
+        model: data.model,
+        clip_id: data.clip_id,
+        clip_index: data.clip_index,
+        clip_total: data.clip_total,
+      })
+      setAgentsStatus(prev => reelAdvanceAgents(prev, data.agent_role, {
+        status: data.agent_status,
+        model: data.model,
+        label: data.agent_label,
+      }))
+      if (data.agent_status === 'working') {
+        if (data.agent_role === 'vision_analyst') {
+          setPhaseStatus(s => (
+            s.vision_analysis === 'done' ? s : { ...s, vision_analysis: 'active' }
+          ))
+        } else if (data.agent_role === 'story_analyst') {
+          setPhaseStatus(s => ({ ...s, vision_analysis: 'done', reel_director: 'active' }))
+        } else if (data.agent_role === 'narrative_director') {
+          setPhaseStatus(s => ({ ...s, reel_director: 'active' }))
+        } else if (data.agent_role === 'cinematographer' || data.agent_role === 'prompt_engineer') {
+          setPhaseStatus(s => ({ ...s, reel_director: 'done', prompt_generator: 'active' }))
+        } else if (data.agent_role === 'comfyui') {
+          setPhaseStatus(s => ({
+            ...s,
+            reel_director: 'done',
+            prompt_generator: 'done',
+            storyboard: 'active',
+          }))
+        }
+      }
+      if (data.agent_status === 'done') {
+        if (data.agent_role === 'vision_analyst') {
+          setPhaseStatus(s => ({ ...s, vision_analysis: 'done' }))
+        } else if (data.agent_role === 'story_analyst') {
+          setPhaseStatus(s => ({ ...s, vision_analysis: 'done', reel_director: 'active' }))
+        } else if (data.agent_role === 'narrative_director') {
+          setPhaseStatus(s => ({ ...s, reel_director: 'done' }))
+        } else if (data.agent_role === 'cinematographer') {
+          setPhaseStatus(s => ({ ...s, reel_director: 'done', prompt_generator: 'active' }))
+        } else if (data.agent_role === 'prompt_engineer') {
+          setPhaseStatus(s => ({ ...s, reel_director: 'done', prompt_generator: 'done' }))
+        } else if (data.agent_role === 'comfyui') {
+          setPhaseStatus(s => ({
+            ...s,
+            reel_director: 'done',
+            prompt_generator: 'done',
+            storyboard: 'done',
+          }))
+        }
+      }
+      if (data.msg) addLog(`[${data.agent_label || data.agent_role}] ${data.msg}`)
+    }
+
+    if (data.event === 'phase' && data.phase === 'audio_analysis') {
+      setPhaseStatus(s => ({ ...s, vision_analysis: 'done', reel_director: 'active' }))
+    }
+    if (data.event === 'audio_analysis_done') {
+      setPhaseStatus(s => ({ ...s, vision_analysis: 'done', reel_director: 'active' }))
+    }
+    if (data.event === 'paused') {
+      setJobControl(s => ({ ...s, paused: true }))
+      addLog(data.msg || 'In pausa')
+    }
+    if (data.event === 'resumed') {
+      setJobControl(s => ({ ...s, paused: false }))
+      addLog(data.msg || 'Ripresa')
+    }
+    if (data.cancelled) {
+      setJobControl({ staleRunning: false, paused: false, canContinue: true, taskRunning: false })
+      addLog('Pipeline annullata')
+    }
     if (data.event === 'vision_analysis_done') {
       setVisionSummary(data.combined_style || '')
       setVisionData(data)
@@ -956,37 +2663,48 @@ export default function CreateReelScreen() {
           visual_motifs: data.visual_motifs || [],
         })
       }
+      if (data.slot_details?.length) {
+        setClips(data.slot_details.map((s, i) => ({
+          clip_id: s.slot_id || `slot_${String(i + 1).padStart(3, '0')}`,
+          slot_id: s.slot_id,
+          duration_sec: s.duration_sec,
+          status: 'planned',
+          emotion: s.emotion,
+          scene_prompt: s.visual_hint || '',
+          narrative_role: s.narrative_role,
+          energy: s.energy,
+        })))
+      }
       setPhaseStatus(s => ({ ...s, reel_director: 'done' }))
+      setAgentsStatus(prev => reelAgentDone(prev, 'narrative_director'))
       setInfoTab('director')
       addLog(`Regia: ${data.slots} slot — ${data.logline || ''}`)
     }
     if (data.event === 'dop_plan_ready') {
       setDopPlans(data.plans || [])
-    }
-    if (data.event === 'awaiting_storyboard_approval') {
-      if (data.director_narrative) setDirectorNarrative(data.director_narrative)
+      setAgentsStatus(prev => reelAgentDone(prev, 'cinematographer'))
+      setPhaseStatus(s => ({ ...s, reel_director: 'done', prompt_generator: 'active' }))
     }
     if (data.event === 'clip_prompt_ready' || data.event === 'clip_queued') {
-      const promptEntry = {
-        clip_id: data.clip_id,
-        slot_id: data.slot_id ?? data.slot,
-        scene_prompt: data.scene_prompt,
-        first_frame_prompt: data.first_frame_prompt,
-        motion_prompt: data.motion_prompt,
-      }
+      const promptEntry = mergeReelClipFromSse({ clip_id: data.clip_id, status: 'waiting' }, data)
       if (data.event === 'clip_prompt_ready') pendingClipsRef.current.push(promptEntry)
       setClips(prev => {
         const exists = prev.some(c => c.clip_id === data.clip_id)
         const entry = { ...promptEntry, status: 'waiting', frame_url: null }
         if (exists) {
-          return prev.map(c => c.clip_id === data.clip_id ? { ...c, ...entry, status: 'waiting' } : c)
+          return prev.map(c => c.clip_id === data.clip_id ? { ...c, ...entry } : c)
         }
         return [...prev, entry]
       })
     }
 
     if (data.event === 'prompts_ready') {
-      setPhaseStatus(s => ({ ...s, prompt_generator: 'done' }))
+      setPhaseStatus(s => ({ ...s, reel_director: 'done', prompt_generator: 'done' }))
+      setAgentsStatus(prev => {
+        let next = reelAgentDone(prev, 'narrative_director')
+        next = reelAgentDone(next, 'cinematographer')
+        return reelAgentDone(next, 'prompt_engineer')
+      })
       setInfoTab('prompts')
       addLog(`Prompt pronti: ${data.clip_count ?? 0} clip`)
       const payloads = Array.isArray(data.clips) ? data.clips : pendingClipsRef.current
@@ -995,13 +2713,7 @@ export default function CreateReelScreen() {
         for (const p of payloads) {
           if (!p?.clip_id) continue
           const existing = byId.get(p.clip_id) ?? { clip_id: p.clip_id, status: 'waiting' }
-          byId.set(p.clip_id, {
-            ...existing,
-            slot_id: p.slot ?? p.slot_id ?? existing.slot_id,
-            scene_prompt: p.scene_prompt,
-            first_frame_prompt: p.first_frame_prompt,
-            motion_prompt: p.motion_prompt,
-          })
+          byId.set(p.clip_id, mergeReelClipFromSse(existing, p))
         }
         return [...byId.values()]
       })
@@ -1014,13 +2726,9 @@ export default function CreateReelScreen() {
         storyboard_url: data.url,
         storyboard_path: data.path,
         storyboard_filename: data.storyboard_filename,
-        preview_url: data.preview_url,
+        preview_url: data.preview_url || data.url,
         storyboard_clip_url: data.storyboard_clip_url,
       } : {}
-      const sbUrl = sbOk ? clipReelStoryboardPreviewUrl(
-        { clip_id: data.clip_id, ...framePayload },
-        mediaProjectId,
-      ) : null
       setClips(prev => {
         const sbName = data.storyboard_filename || `${data.clip_id}_sb.png`
         const entry = {
@@ -1031,7 +2739,6 @@ export default function CreateReelScreen() {
           storyboard_placeholder: !sbOk,
           ...framePayload,
           storyboard_filename: sbOk ? sbName : undefined,
-          frame_url: sbUrl,
         }
         const exists = prev.some(c => c.clip_id === data.clip_id)
         return exists
@@ -1039,6 +2746,32 @@ export default function CreateReelScreen() {
           : [...prev, entry]
       })
       if (sbOk) addLog(`Storyboard ${data.clip_id}`)
+    }
+
+    if (data.event === 'storyboard_ready' || (data.event === 'phase_done' && data.phase === 'storyboard')) {
+      if (data.pct != null) setGlobalPct(Math.round(data.pct * 100))
+      setPhaseStatus(s => ({
+        ...s,
+        reel_director: 'done',
+        prompt_generator: 'done',
+        storyboard: 'done',
+      }))
+      setAgentsStatus(prev => {
+        let next = reelAgentDone(prev, 'vision_analyst')
+        next = reelAgentDone(next, 'narrative_director')
+        next = reelAgentDone(next, 'cinematographer')
+        next = reelAgentDone(next, 'prompt_engineer')
+        return reelAgentDone(next, 'comfyui')
+      })
+      const frames = data.frames || data.storyboard
+      if (frames?.length) {
+        setClips(mapStoryboardFramesToClips(frames, mediaProjectId))
+      }
+      setSystemActivity({
+        status: 'done',
+        msg: 'Storyboard LD completato — in attesa di approvazione',
+        agent_label: 'ComfyUI',
+      })
     }
 
     if (data.event === 'frame_done' || data.event === 'frames_ready') {
@@ -1052,7 +2785,11 @@ export default function CreateReelScreen() {
                 ...c,
                 frame_url: frameUrl,
                 first_frame_path: data.path || data.first_path || c.first_frame_path,
-                hd_frame_ready: !data.placeholder,
+                hd_frame_ready: Boolean(data.hd_frame_ready)
+                  || (!data.placeholder && !data.from_storyboard && data.cached !== true),
+                clip_phase: data.hd_frame_ready || (!data.placeholder && !data.from_storyboard)
+                  ? 'frame_gen'
+                  : c.clip_phase,
                 status: data.placeholder ? c.status : 'generating',
               }
             : c,
@@ -1064,61 +2801,220 @@ export default function CreateReelScreen() {
       const clipPct = data.comfyui_max > 1
         ? Math.round((data.comfyui_value / data.comfyui_max) * 100)
         : 0
+      const phase = data.kind === 'storyboard' ? 'storyboard'
+        : data.kind === 'frame' ? 'frame_gen'
+        : data.kind === 'video' ? 'video_gen'
+        : undefined
+      const liveMsg = liveProductionMsg({ ...data, event: 'clip_comfyui_progress' }, clipsRef.current)
+      const ord = reelClipOrdinal(data.clip_id, clipsRef.current)
+      setSystemActivity({
+        status: 'working',
+        msg: liveMsg,
+        agent_label: 'ComfyUI / Produzione',
+        agent_role: 'comfyui',
+        clip_id: data.clip_id,
+        clip_index: ord.n,
+        clip_total: ord.total || data.clip_total,
+      })
+      setAgentsStatus(prev => reelAdvanceAgents(prev, 'comfyui', {
+        status: 'working',
+        label: REEL_AGENT_LABELS.comfyui,
+      }))
+      setPhaseStatus(s => ({ ...s, production: 'active' }))
       setClips(prev => prev.map(c =>
-        c.clip_id === data.clip_id ? { ...c, comfyuiPct: clipPct, status: 'generating' } : c,
+        c.clip_id === data.clip_id
+          ? {
+              ...c,
+              comfyuiPct: clipPct,
+              comfyuiMsg: data.msg || liveMsg,
+              status: 'generating',
+              ...(phase ? { clip_phase: phase } : {}),
+            }
+          : c,
+      ))
+    }
+
+    if (data.event === 'generation_progress') {
+      if (data.pct != null) setGlobalPct(Math.round(data.pct * 100))
+      const ord = reelClipOrdinal(data.clip_id, clipsRef.current)
+      setSystemActivity({
+        status: 'working',
+        msg: `Clip completate ${data.completed ?? 0}/${data.total ?? clipsRef.current.length}`,
+        agent_label: 'ComfyUI / Produzione',
+        clip_index: data.completed,
+        clip_total: data.total,
+      })
+    }
+
+    if (data.event === 'progress' && data.msg) {
+      const liveMsg = liveProductionMsg(data, clipsRef.current)
+      const ord = reelClipOrdinal(data.clip_id, clipsRef.current)
+      setSystemActivity({
+        status: 'working',
+        msg: liveMsg,
+        agent_label: 'ComfyUI / Produzione',
+        agent_role: 'comfyui',
+        clip_id: data.clip_id,
+        clip_index: data.clip_index ?? ord.n,
+        clip_total: data.clip_total ?? ord.total,
+      })
+      if (data.clip_id && data.clip_phase) {
+        setClips(prev => prev.map(c =>
+          c.clip_id === data.clip_id
+            ? { ...c, status: 'generating', clip_phase: data.clip_phase, comfyuiMsg: liveMsg }
+            : c,
+        ))
+      }
+    }
+
+    if (data.event === 'resume' && data.phase === 'production') {
+      setPhaseStatus(s => ({ ...s, production: 'active', storyboard: 'done' }))
+      setSystemActivity({
+        status: 'working',
+        msg: 'Ripresa produzione HD + video…',
+        agent_label: 'ComfyUI / Produzione',
+      })
+      setAgentsStatus(prev => reelAdvanceAgents(prev, 'comfyui', {
+        status: 'working',
+        label: REEL_AGENT_LABELS.comfyui,
+      }))
+    }
+    if (data.event === 'phase' && data.clip_id) {
+      setClips(prev => prev.map(c =>
+        c.clip_id === data.clip_id ? { ...c, clip_phase: data.phase } : c,
       ))
     }
     if (data.event === 'awaiting_storyboard_approval') {
-      setPhaseStatus(s => ({ ...s, storyboard: 'done' }))
+      if (data.director_narrative) setDirectorNarrative(data.director_narrative)
+      setPhaseStatus(s => ({
+        ...s,
+        vision_analysis: 'done',
+        reel_director: 'done',
+        prompt_generator: 'done',
+        storyboard: 'done',
+      }))
+      setAgentsStatus(prev => {
+        let next = reelAgentDone(prev, 'vision_analyst')
+        next = reelAgentDone(next, 'narrative_director')
+        next = reelAgentDone(next, 'cinematographer')
+        next = reelAgentDone(next, 'prompt_engineer')
+        return reelAgentDone(next, 'comfyui')
+      })
       if (data.storyboard?.length) {
-        setClips(data.storyboard.map(f => {
-          const sbOk = f.storyboard_ok !== false && !f.storyboard_placeholder
-          const row = {
-            ...f,
-            clip_id: f.clip_id,
-            status: sbOk ? 'storyboard' : 'storyboard_failed',
-            storyboard_ok: sbOk,
-            storyboard_url: f.url,
-            storyboard_path: f.path,
-            storyboard_filename: f.storyboard_filename || `${f.clip_id}_sb.png`,
-          }
-          return { ...row, frame_url: clipReelStoryboardPreviewUrl(row, mediaProjectId) }
-        }))
+        setClips(mapStoryboardFramesToClips(data.storyboard, mediaProjectId))
       }
       if (data.vision_summary) setVisionSummary(data.vision_summary)
+      if (data.pct != null) setGlobalPct(Math.round(data.pct * 100))
+      setSystemActivity({
+        status: 'done',
+        msg: 'Storyboard pronto — revisione e approvazione',
+        agent_label: 'ComfyUI',
+      })
       setView('storyboard')
       setListRefreshKey(k => k + 1)
       addLog('Storyboard pronto — in attesa di approvazione')
     }
     if (data.event === 'clip_done') {
       const clipUrl = resolveBackendUrl(data.url) || data.url
+      const ord = reelClipOrdinal(data.clip_id, clipsRef.current)
+      setSystemActivity({
+        status: 'working',
+        msg: `Clip video completata — ${ord.label}`,
+        agent_label: 'ComfyUI / Produzione',
+        clip_id: data.clip_id,
+        clip_index: ord.n,
+        clip_total: ord.total,
+      })
       setClips(prev => prev.map(c =>
-        c.clip_id === data.clip_id ? { ...c, status: 'done', clip_url: clipUrl } : c,
+        c.clip_id === data.clip_id
+          ? { ...c, status: 'done', clip_url: clipUrl, clip_phase: 'video_gen', comfyuiPct: 100, comfyuiMsg: 'Completata' }
+          : c,
       ))
     }
     if (data.event === 'assembly_done' || data.done || data.video_path) {
+      setPhaseStatus(s => ({ ...s, production: 'done' }))
+      setAgentsStatus(prev => reelAgentDone(prev, 'comfyui'))
+      setSystemActivity({
+        status: 'done',
+        msg: 'Reel completato',
+        agent_label: 'ComfyUI / Produzione',
+      })
       setResult(data)
       setView('done')
       setListRefreshKey(k => k + 1)
       addLog('Reel completato')
     }
-    if (data.msg) addLog(data.msg)
-    if (data.event) {
-      setPhaseStatus(s => ({ ...s, [data.phase || data.event]: 'active' }))
+    if (data.event === 'phase' && data.phase) {
+      const phaseMsgs = {
+        comfyui: 'Verifica nodi ComfyUI e avvio produzione…',
+        video_clips: data.msg || 'Generazione clip video dai frame HD…',
+        assembly: 'Assemblaggio reel finale…',
+        production: 'Produzione HD + video',
+      }
+      if (['comfyui', 'video_clips', 'assembly', 'production'].includes(data.phase)) {
+        setPhaseStatus(s => ({ ...s, production: 'active' }))
+        setSystemActivity({
+          status: 'working',
+          msg: phaseMsgs[data.phase] || data.msg || data.phase,
+          agent_label: 'ComfyUI / Produzione',
+        })
+      } else {
+        setPhaseStatus(s => ({ ...s, [data.phase]: 'active' }))
+      }
     }
+
+    if (data.event === 'generation_complete') {
+      setSystemActivity({
+        status: 'working',
+        msg: 'Assemblaggio reel finale…',
+        agent_label: 'ComfyUI / Produzione',
+      })
+    }
+
+    if (data.msg && data.event !== 'agent_progress') addLog(data.msg)
   }, [addLog, mediaProjectId])
 
   const runPipeline = async (phase, resumeId = null) => {
     setError(null)
     cancelRef.current = false
+    const isResume = Boolean(resumeId)
     if (phase === 'full' || phase === 'storyboard') {
       setView('generating')
-      if (phase === 'full') {
+      if (phase === 'full' && !isResume) {
         setClips([])
         pendingClipsRef.current = []
+        setSystemActivity(null)
+        setAgentsStatus({})
+        setPhaseStatus({})
+        setGlobalPct(0)
+      } else if (phase === 'storyboard') {
+        setPhaseStatus({})
       }
-      setPhaseStatus({})
-      if (phase !== 'storyboard') setGlobalPct(0)
+      if (phase === 'full' && isResume) {
+        setJobControl(s => ({ ...s, staleRunning: false, taskRunning: true, canContinue: false }))
+      }
+    }
+    if (phase === 'production') {
+      setView('generating')
+      setPhaseStatus(s => ({
+        ...s,
+        storyboard: 'done',
+        production: 'active',
+      }))
+      setSystemActivity({
+        status: 'working',
+        msg: 'Avvio produzione HD + video…',
+        agent_label: 'ComfyUI / Produzione',
+      })
+      setAgentsStatus(prev => reelAdvanceAgents(prev, 'comfyui', {
+        status: 'working',
+        label: REEL_AGENT_LABELS.comfyui,
+      }))
+      setClips(prev => prev.map(c => (
+        c.status === 'storyboard' || c.storyboard_ok
+          ? { ...c, status: 'generating', comfyuiPct: 0, comfyuiMsg: 'In coda…' }
+          : c
+      )))
     }
     await window.studio?.reel?.generate?.(buildParams(phase, resumeId || activeJobId), handleProgress)
   }
@@ -1141,9 +3037,81 @@ export default function CreateReelScreen() {
     runPipeline('storyboard', activeJobId)
   }
 
+  const handleStopJob = async () => {
+    if (!activeJobId || !confirm('Fermare la generazione in corso?')) return
+    try {
+      const res = await fetch(
+        `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}/stop`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setError(err.detail || err.error || `Stop fallito (${res.status})`)
+        return
+      }
+      const data = await res.json()
+      addLog(data.cancelled ? 'Pipeline fermata' : 'Job segnato come interrotto (nessun task attivo)')
+      setJobControl({ staleRunning: false, paused: false, canContinue: true, taskRunning: false })
+      setError(null)
+    } catch (e) {
+      setError(e.message || 'Errore stop pipeline')
+    }
+  }
+
+  const handlePauseJob = async () => {
+    if (!activeJobId) return
+    try {
+      const res = await fetch(
+        `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}/pause`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setError(err.detail || 'Impossibile mettere in pausa')
+        return
+      }
+      setJobControl(s => ({ ...s, paused: true }))
+      addLog('Pipeline in pausa')
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleResumePauseJob = async () => {
+    if (!activeJobId) return
+    try {
+      const res = await fetch(
+        `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}/resume-pause`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setError(err.detail || 'Impossibile riprendere')
+        return
+      }
+      setJobControl(s => ({ ...s, paused: false }))
+      addLog('Pipeline ripresa')
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleContinuePipeline = () => {
+    if (!activeJobId) return
+    setError(null)
+    setJobControl(s => ({ ...s, staleRunning: false, canContinue: false, taskRunning: true }))
+    runPipeline('full', activeJobId)
+  }
+
   function handleGoList() {
-    setActiveJobId(null)
-    setStorageProjectId(null)
+    if (activeJobId && ['generating', 'storyboard'].includes(view)) {
+      try {
+        sessionStorage.setItem(
+          reelSessionStorageKey(catalogProjectId),
+          JSON.stringify({ job_id: activeJobId, view }),
+        )
+      } catch { /* ignore */ }
+    }
     setSelectedJob(null)
     setListRefreshKey(k => k + 1)
     setView('list')
@@ -1153,70 +3121,227 @@ export default function CreateReelScreen() {
     setDescription('')
     setTitle('')
     setRefs([])
+    setAudioFile(null)
+    setAudioStartSec(0)
+    setLyrics('')
+    setAudioAnalysis(null)
     setError(null)
     setActiveJobId(null)
     setView('setup')
   }
 
-  function handleViewDetail(job) {
-    if (job.status === 'running') {
-      setActiveJobId(job.job_id)
-      setStorageProjectId(job.storage_project_id || null)
-      setDescription(job.description || '')
-      setTitle(job.title || '')
-      setConfig({ ...DEFAULT_CONFIG, ...job.config })
-      setVisionSummary(job.result?.vision?.combined_style || '')
-      if (job.result?.director_narrative) setDirectorNarrative(job.result.director_narrative)
-      const pid = job.storage_project_id || catalogProjectId
-      const storyboardClips = (job.result?.storyboard ?? []).map(f => ({
-        clip_id: f.clip_id,
-        slot_id: f.slot_id,
-        status: f.storyboard_ok === false ? 'storyboard_failed' : 'generating',
-        storyboard_ok: f.storyboard_ok !== false,
-        storyboard_path: f.path,
-        storyboard_filename: f.storyboard_filename,
-        frame_url: clipReelStoryboardPreviewUrl(f, pid),
-        scene_prompt: f.scene_prompt,
+  async function openJobReview(job) {
+    let hydrated = job
+    try {
+      const res = await fetch(
+        `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(job.job_id)}`,
+      )
+      if (res.ok) hydrated = await res.json()
+    } catch {
+      /* usa record lista */
+    }
+
+    const mediaPid = resolveReelMediaProjectId(
+      hydrated.storage_project_id,
+      hydrated.job_id,
+      catalogProjectId,
+    )
+    let targetView = resolveReelJobView(hydrated)
+    const clipStatus = targetView === 'generating' ? 'generating' : 'storyboard'
+
+    setActiveJobId(hydrated.job_id)
+    setStorageProjectId(hydrated.storage_project_id || null)
+    setDescription(hydrated.description || '')
+    setTitle(hydrated.title || '')
+    const cfg = { ...DEFAULT_CONFIG, ...(hydrated.config || {}) }
+    setConfig(cfg)
+    if (cfg.audio_path) {
+      setAudioFile({ path: cfg.audio_path, name: cfg.audio_name || 'audio' })
+      setAudioStartSec(Number(cfg.audio_start_sec) || 0)
+      setLyrics(cfg.lyrics || '')
+    } else {
+      setAudioFile(null)
+      setAudioStartSec(0)
+      setLyrics('')
+    }
+    setSelectedJob(null)
+    setError(hydrated.error || null)
+    setResult(hydrated.result || null)
+    if (hydrated.project_dir) setProjectDir(hydrated.project_dir)
+
+    const clipsApi = hydrated.result?.clips
+    const frames = hydrated.result?.storyboard ?? []
+    if (clipsApi?.length) {
+      setClips(normalizeHydratedClips(clipsApi, mediaPid, clipStatus))
+    } else if (frames.length) {
+      setClips(mapStoryboardFramesToClips(frames, mediaPid, clipStatus))
+    } else {
+      setClips([])
+    }
+
+    const dop = hydrated.result?.visual_plans
+    setDopPlans(Array.isArray(dop) ? dop : [])
+    setGlobalPct(
+      targetView === 'done' ? 100
+        : targetView === 'storyboard' ? (hydrated.progress_pct ?? 45)
+          : (hydrated.progress_pct ?? 0),
+    )
+    setPhaseStatus(buildPhaseStatusFromJob(hydrated))
+    setJobControl({
+      staleRunning: Boolean(hydrated.stale_running),
+      paused: Boolean(hydrated.paused),
+      canContinue: Boolean(hydrated.can_continue),
+      taskRunning: Boolean(hydrated.task_running),
+    })
+    if (hydrated.status === 'running' && hydrated.pipeline_ui_phase === 'production') {
+      setPhaseStatus(s => ({
+        ...s,
+        vision_analysis: 'done',
+        reel_director: 'done',
+        prompt_generator: 'done',
+        storyboard: 'done',
+        production: 'active',
       }))
-      if (storyboardClips.length) setClips(storyboardClips)
-      setGlobalPct(job.progress_pct ?? 0)
-      setView('generating')
+    }
+    setDirectorData(buildDirectorDataFromJob(hydrated))
+
+    const vision = hydrated.result?.vision
+    if (vision) {
+      setVisionData(vision)
+      setVisionSummary(vision.combined_style || '')
+    } else {
+      setVisionData(null)
+      setVisionSummary('')
+    }
+
+    const dn = hydrated.result?.director_narrative
+    setDirectorNarrative(dn || null)
+
+    if (targetView === 'detail') {
+      targetView = jobHasFinalVideo(hydrated) ? 'done' : (clipsApi?.length || frames.length ? 'storyboard' : 'generating')
+    }
+    setView(targetView)
+
+    try {
+      sessionStorage.removeItem(reelSessionStorageKey(catalogProjectId))
+    } catch { /* ignore */ }
+  }
+
+  function handleViewDetail(job) {
+    if (['running', 'awaiting_storyboard'].includes(job.status) || job.has_checkpoint) {
+      openJobReview(job)
       return
     }
     setSelectedJob(job)
     setView('detail')
   }
 
-  function handleRestartJob(job) {
-    if (job.status === 'awaiting_storyboard') {
-      setActiveJobId(job.job_id)
-      setStorageProjectId(job.storage_project_id || null)
-      setDescription(job.description || '')
-      setTitle(job.title || '')
-      setConfig({ ...DEFAULT_CONFIG, ...job.config })
-      setVisionSummary(job.result?.vision?.combined_style || '')
-      if (job.result?.director_narrative) setDirectorNarrative(job.result.director_narrative)
-      const pid = job.storage_project_id || catalogProjectId
-      setClips((job.result?.storyboard ?? []).map(f => ({
-        clip_id: f.clip_id,
-        slot_id: f.slot_id,
-        status: f.storyboard_ok === false ? 'storyboard_failed' : 'storyboard',
-        storyboard_ok: f.storyboard_ok !== false,
-        storyboard_path: f.path,
-        storyboard_filename: f.storyboard_filename,
-        frame_url: clipReelStoryboardPreviewUrl(f, pid),
-        scene_prompt: f.scene_prompt,
-      })))
-      setView('storyboard')
+  const openJobFromQueryRef = useRef(openJobReview)
+  openJobFromQueryRef.current = openJobReview
+  useJobQueryDeepLink({
+    catalogProjectId,
+    apiPrefix: 'reel',
+    onOpenJob: (job) => openJobFromQueryRef.current(job),
+  })
+
+  useEffect(() => {
+    if (view !== 'list') return
+    let raw
+    try {
+      raw = sessionStorage.getItem(reelSessionStorageKey(catalogProjectId))
+    } catch {
       return
     }
+    if (!raw) return
+    try {
+      const { job_id: jid } = JSON.parse(raw)
+      if (!jid) return
+      fetch(
+        `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(jid)}`,
+      )
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => { if (j) openJobReview(j) })
+        .catch(() => {})
+    } catch { /* ignore */ }
+  }, [catalogProjectId, view, listRefreshKey])
+
+  useEffect(() => {
+    if (!activeJobId || !['generating', 'storyboard'].includes(view)) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${encodeURIComponent(activeJobId)}`,
+        )
+        if (!res.ok || cancelled) return
+        const hydrated = await res.json()
+        if (!['running', 'awaiting_storyboard'].includes(hydrated.status)) return
+        const mediaPid = resolveReelMediaProjectId(
+          hydrated.storage_project_id,
+          hydrated.job_id,
+          catalogProjectId,
+        )
+        const clipsApi = hydrated.result?.clips
+        if (clipsApi?.length) {
+          const clipStatus = view === 'generating' ? 'generating' : 'storyboard'
+          setClips(normalizeHydratedClips(clipsApi, mediaPid, clipStatus))
+        }
+        if (hydrated.progress_pct != null) setGlobalPct(Math.round(hydrated.progress_pct))
+        if (hydrated.result?.vision) {
+          setVisionData(hydrated.result.vision)
+          setVisionSummary(hydrated.result.vision.combined_style || '')
+        }
+        if (hydrated.result?.director_narrative) {
+          setDirectorNarrative(hydrated.result.director_narrative)
+        }
+        setPhaseStatus(buildPhaseStatusFromJob(hydrated))
+        setJobControl({
+          staleRunning: Boolean(hydrated.stale_running),
+          paused: Boolean(hydrated.paused),
+          canContinue: Boolean(hydrated.can_continue),
+          taskRunning: Boolean(hydrated.task_running),
+        })
+        if (hydrated.pipeline_ui_phase === 'production') {
+          setPhaseStatus(s => ({
+            ...s,
+            production: 'active',
+            storyboard: 'done',
+            prompt_generator: 'done',
+            reel_director: 'done',
+            vision_analysis: 'done',
+          }))
+        }
+      } catch { /* ignore */ }
+    }
+    poll()
+    const id = setInterval(poll, 4000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [activeJobId, view, catalogProjectId])
+
+  function handleRestartFromScratch(job) {
     setDescription(job.description || '')
     setTitle(job.title || '')
     setConfig({ ...DEFAULT_CONFIG, ...job.config })
+    setRefs([])
+    setClips([])
+    setResult(null)
+    setVisionData(null)
+    setVisionSummary('')
+    setDirectorNarrative(null)
+    setDirectorData(null)
+    setPhaseStatus({})
+    setError(null)
     if (['failed', 'interrupted'].includes(job.status)) {
       setActiveJobId(job.job_id)
       setStorageProjectId(job.storage_project_id || null)
+    } else {
+      setActiveJobId(null)
+      setStorageProjectId(null)
     }
+    setSelectedJob(null)
     setView('setup')
   }
 
@@ -1240,7 +3365,8 @@ export default function CreateReelScreen() {
           job={selectedJob}
           projectId={catalogProjectId}
           onBack={() => setView('list')}
-          onRestart={handleRestartJob}
+          onOpenReview={openJobReview}
+          onRestartFromScratch={handleRestartFromScratch}
           onDelete={handleGoList}
         />
       </div>
@@ -1262,9 +3388,12 @@ export default function CreateReelScreen() {
             <GhostBtn onClick={handleRegenerateStoryboard}>
               <RefreshCw size={12} /> Rigenera storyboard
             </GhostBtn>
-            <GoldBtn onClick={handleApprove}>
-              <Check size={14} /> Approva e genera HD + Video
-            </GoldBtn>
+            <div className="flex items-center gap-2">
+              <GoldBtn onClick={handleApprove}>
+                <Check size={14} /> Approva e genera HD + Video
+              </GoldBtn>
+              <GenQueueBadge kind="video" workflow={config.img2video_workflow || 'ltx_img2video'} />
+            </div>
           </div>
         </header>
         <div className="px-6 py-2 border-b border-[#252533]/50 shrink-0 space-y-2">
@@ -1280,11 +3409,29 @@ export default function CreateReelScreen() {
           <DirectorNarrativeCard narrative={directorNarrative} />
         </div>
         <div className="flex-1 overflow-y-auto p-6">
-          <ClipPreviewGrid
+          <ReelClipPlanGrid
             clips={clips}
             projectId={mediaProjectId}
             jobId={activeJobId}
             aspectRatio={config.aspect_ratio}
+            config={config}
+            sbSize={reelStoryboardPixelSize(config)}
+            hdSize={reelHdDimensions(config.width, config.height)}
+            dopPlans={dopPlans}
+            onSave={async (clipId, prompts) => {
+              const res = await fetch(
+                `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(prompts),
+                },
+              )
+              if (!res.ok) throw new Error(await res.text())
+              setClips(prev => prev.map(c => (c.clip_id === clipId ? { ...c, ...prompts } : c)))
+            }}
+            projectContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
+            title="Revisione storyboard — anteprima, prompt e regia per ogni clip"
           />
         </div>
       </div>
@@ -1293,250 +3440,45 @@ export default function CreateReelScreen() {
 
   if (view === 'generating' || view === 'done') {
     return (
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-6 py-4 border-b border-[#252533] shrink-0">
-          <div className="flex items-center gap-3 mb-3">
-            <Clapperboard className="text-[#c9a84c]" size={20} />
-            <h1 className="font-['Playfair_Display'] text-lg">
-              {view === 'done' ? 'Reel completato' : 'Generazione in corso…'}
-            </h1>
-            {view === 'generating' && <Loader2 size={16} className="animate-spin text-[#c9a84c]" />}
-            <span className="text-[10px] font-mono text-[#c9a84c] ml-auto">{globalPct}%</span>
-          </div>
-          <div className="h-1.5 bg-[#16161f] rounded-full">
-            <div className="h-full bg-[#c9a84c] rounded-full transition-all" style={{ width: `${globalPct}%` }} />
-          </div>
-          {(storageProjectId || projectDir) && (
-            <div className="mt-3">
-              <ProjectDirBanner
-                storageProjectId={storageProjectId}
-                jobId={activeJobId}
-                projectDir={projectDir}
-                storageApi="reel"
-              />
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2 mt-3">
-            {PHASES.map(p => (
-              <span
-                key={p.id}
-                className={clsx(
-                  'text-[9px] font-mono px-2 py-0.5 rounded',
-                  phaseStatus[p.id] === 'done' ? 'bg-[#22c55e]/20 text-[#22c55e]'
-                    : phaseStatus[p.id] === 'active' ? 'bg-[#c9a84c]/20 text-[#c9a84c]'
-                      : 'bg-[#16161f] text-[#555568]',
-                )}
-              >
-                {p.label}
-              </span>
-            ))}
-          </div>
-          {directorNarrative && (
-            <div className="mt-3">
-              <DirectorNarrativeCard narrative={directorNarrative} />
-            </div>
-          )}
-        </div>
-
-        {error && (
-          <div className="mx-6 mt-3 p-3 rounded border border-[#ef4444]/40 text-[#ef4444] text-xs font-mono shrink-0">
-            {error}
-          </div>
-        )}
-
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          <div className="flex-1 flex flex-col min-w-0 border-r border-[#252533] p-4 overflow-hidden">
-            <p className="text-[9px] font-mono text-[#9090a8] uppercase mb-2 shrink-0">Anteprime clip</p>
-            <div className="flex-1 overflow-y-auto pr-1">
-              <ClipPreviewGrid
-                clips={clips}
-                projectId={mediaProjectId}
-                jobId={activeJobId}
-                aspectRatio={config.aspect_ratio}
-              />
-            </div>
-          </div>
-          <div className="w-80 shrink-0 flex flex-col overflow-hidden border-l border-[#252533]">
-            {view === 'done' && (result?.filename || result?.video_path) && (
-              <div className="p-3 border-b border-[#252533] shrink-0">
-                <video
-                  src={
-                    result.video_url?.replace('/api/trailer/', '/api/reel/')
-                    || `http://127.0.0.1:8765/api/reel/output/${encodeURIComponent(mediaProjectId)}/${encodeURIComponent(result.filename || String(result.video_path).split(/[/\\]/).pop())}`
-                  }
-                  controls
-                  className="w-full rounded border border-[#252533]"
-                />
-              </div>
-            )}
-
-            {/* Tab bar */}
-            <div className="flex border-b border-[#252533] shrink-0">
-              {[
-                { id: 'vision',   label: 'Vision',  dot: !!visionData },
-                { id: 'director', label: 'Regia',   dot: !!directorData },
-                { id: 'prompts',  label: 'Prompt',  dot: clips.length > 0 },
-                { id: 'log',      label: 'Log',     dot: false },
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setInfoTab(tab.id)}
-                  className={clsx(
-                    'flex-1 py-2 text-[9px] font-mono uppercase tracking-wide transition-colors relative',
-                    infoTab === tab.id
-                      ? 'text-[#c9a84c] border-b-2 border-[#c9a84c]'
-                      : 'text-[#555568] hover:text-[#9090a8]',
-                  )}
-                >
-                  {tab.label}
-                  {tab.dot && infoTab !== tab.id && (
-                    <span className="absolute top-1.5 right-1.5 w-1 h-1 rounded-full bg-[#c9a84c]" />
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* Tab content */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-
-              {/* ── Vision ── */}
-              {infoTab === 'vision' && (
-                visionData ? (
-                  <div className="space-y-3">
-                    <Section label="Stile visivo">
-                      <p className="text-[10px] text-[#e8e4dd] leading-relaxed">{visionData.combined_style || '—'}</p>
-                    </Section>
-                    {visionData.palette_hex?.length > 0 && (
-                      <Section label="Palette colori">
-                        <div className="flex flex-wrap gap-1.5">
-                          {visionData.palette_hex.map((hex, i) => (
-                            <div key={i} className="flex items-center gap-1">
-                              <div className="w-4 h-4 rounded" style={{ background: hex }} />
-                              <span className="text-[9px] font-mono text-[#9090a8]">{hex}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </Section>
-                    )}
-                    {visionData.character_anchors?.length > 0 && (
-                      <Section label={`Personaggi (${visionData.character_anchors.length})`}>
-                        <ul className="space-y-1">
-                          {visionData.character_anchors.map((a, i) => (
-                            <li key={i} className="text-[10px] text-[#9090a8] leading-relaxed">• {typeof a === 'string' ? a : JSON.stringify(a)}</li>
-                          ))}
-                        </ul>
-                      </Section>
-                    )}
-                    {visionData.environment_anchors?.length > 0 && (
-                      <Section label="Ambiente">
-                        <ul className="space-y-1">
-                          {visionData.environment_anchors.map((a, i) => (
-                            <li key={i} className="text-[10px] text-[#9090a8] leading-relaxed">• {typeof a === 'string' ? a : JSON.stringify(a)}</li>
-                          ))}
-                        </ul>
-                      </Section>
-                    )}
-                    {visionData.wardrobe_notes && (
-                      <Section label="Wardrobe / costume">
-                        <p className="text-[10px] text-[#9090a8] leading-relaxed">{visionData.wardrobe_notes}</p>
-                      </Section>
-                    )}
-                    {visionData.continuity_rules?.length > 0 && (
-                      <Section label="Regole continuità">
-                        <ul className="space-y-1">
-                          {visionData.continuity_rules.map((r, i) => (
-                            <li key={i} className="text-[10px] text-[#9090a8] leading-relaxed">• {typeof r === 'string' ? r : JSON.stringify(r)}</li>
-                          ))}
-                        </ul>
-                      </Section>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-[10px] font-mono text-[#555568] italic">In attesa dell'analisi vision…</p>
-                )
-              )}
-
-              {/* ── Regia ── */}
-              {infoTab === 'director' && (
-                directorData ? (
-                  <div className="space-y-3">
-                    <DirectorNarrativeCard narrative={directorNarrative} />
-                    {directorData.slot_details?.length > 0 && (
-                      <Section label={`Slot (${directorData.slot_details.length})`}>
-                        <div className="space-y-2">
-                          {directorData.slot_details.map((s, i) => (
-                            <div key={i} className="rounded bg-[#0f0f18] border border-[#252533] p-2">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-[9px] font-mono text-[#c9a84c]">{s.slot_id}</span>
-                                <div className="flex items-center gap-1.5">
-                                  <EnergyDot energy={s.energy} />
-                                  <span className="text-[9px] font-mono text-[#555568]">{s.duration_sec}s</span>
-                                </div>
-                              </div>
-                              <p className="text-[9px] font-mono text-[#9090a8] mb-0.5">{s.emotion}</p>
-                              <p className="text-[10px] text-[#e8e4dd] leading-relaxed">{s.visual_hint}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </Section>
-                    )}
-                    {dopPlans.length > 0 && (
-                      <Section label={`Cinematographer (${dopPlans.length} piani)`}>
-                        <div className="space-y-2">
-                          {dopPlans.map((p, i) => (
-                            <div key={i} className="rounded bg-[#0f0f18] border border-[#252533] p-2">
-                              <span className="text-[9px] font-mono text-[#c9a84c]">{p.slot_id || `piano ${i+1}`}</span>
-                              {p.shot_type && <p className="text-[9px] font-mono text-[#555568] mt-0.5">{p.shot_type} · {p.camera_movement}</p>}
-                              {p.visual_description && <p className="text-[10px] text-[#9090a8] mt-1 leading-relaxed">{p.visual_description}</p>}
-                            </div>
-                          ))}
-                        </div>
-                      </Section>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-[10px] font-mono text-[#555568] italic">In attesa della regia…</p>
-                )
-              )}
-
-              {/* ── Prompt ── */}
-              {infoTab === 'prompts' && (
-                clips.length > 0 ? (
-                  <div className="space-y-2">
-                    {clips.map((c, i) => (
-                      <ClipPromptCard key={c.clip_id || i} clip={c} index={i} />
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-[10px] font-mono text-[#555568] italic">In attesa dei prompt…</p>
-                )
-              )}
-
-              {/* ── Log ── */}
-              {infoTab === 'log' && (
-                <div className="font-mono text-[10px] text-[#9090a8] space-y-0.5">
-                  {logs.length === 0
-                    ? <p className="italic text-[#555568]">Nessun log ancora.</p>
-                    : logs.map((l, i) => <div key={i}>{l.msg}</div>)
-                  }
-                </div>
-              )}
-            </div>
-
-            {view === 'done' && (
-              <div className="flex flex-col gap-2 p-3 border-t border-[#252533] shrink-0">
-                <GhostBtn onClick={handleGoList}>Torna alla lista</GhostBtn>
-                <GoldBtn onClick={handleNew}>Nuovo reel</GoldBtn>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <GeneratingView
+        view={view}
+        clips={clips}
+        setClips={setClips}
+        globalPct={globalPct}
+        error={error}
+        logs={logs}
+        phaseStatus={phaseStatus}
+        directorNarrative={directorNarrative}
+        visionData={visionData}
+        directorData={directorData}
+        dopPlans={dopPlans}
+        infoTab={infoTab}
+        setInfoTab={setInfoTab}
+        result={result}
+        storageProjectId={storageProjectId}
+        projectDir={projectDir}
+        activeJobId={activeJobId}
+        mediaProjectId={mediaProjectId}
+        config={config}
+        onStop={handleStopJob}
+        onPause={jobControl.taskRunning && !jobControl.paused ? handlePauseJob : null}
+        onResumePause={jobControl.taskRunning && jobControl.paused ? handleResumePauseJob : null}
+        onContinue={jobControl.canContinue || jobControl.staleRunning ? handleContinuePipeline : null}
+        jobPaused={jobControl.paused}
+        staleRunning={jobControl.staleRunning}
+        canContinue={jobControl.canContinue || jobControl.staleRunning}
+        onGoList={handleGoList}
+        onNew={handleNew}
+        catalogProjectId={catalogProjectId}
+        systemActivity={systemActivity}
+        agentsStatus={agentsStatus}
+        reelEnhanceContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
+      />
     )
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 max-w-3xl mx-auto">
+    <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <Film className="text-[#c9a84c]" size={24} />
@@ -1585,6 +3527,32 @@ export default function CreateReelScreen() {
         uploadError={refUploadError}
       />
 
+      <ReelAudioSection
+        audioFile={audioFile}
+        setAudioFile={(f) => {
+          setAudioFile(f)
+          if (f) {
+            setConfig(c => (
+              c.img2video_workflow === 'ltx_img2video' || !c.img2video_workflow
+                ? { ...c, img2video_workflow: 'ltx_img_audio2video' }
+                : c
+            ))
+          } else {
+            setConfig(c => (
+              c.img2video_workflow === 'ltx_img_audio2video'
+                ? { ...c, img2video_workflow: 'ltx_img2video' }
+                : c
+            ))
+          }
+        }}
+        audioStartSec={audioStartSec}
+        setAudioStartSec={setAudioStartSec}
+        reelDurationSec={config.duration_sec}
+        lyrics={lyrics}
+        setLyrics={setLyrics}
+        onAnalysis={setAudioAnalysis}
+      />
+
       {showMediaPicker && (
         <MediaLibraryPicker
           onConfirm={async (paths) => {
@@ -1595,74 +3563,47 @@ export default function CreateReelScreen() {
         />
       )}
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <label>
-          <span className="text-[10px] font-mono text-[#9090a8]">Durata (sec)</span>
-          <input
-            type="number"
-            min={8}
-            max={180}
-            value={config.duration_sec}
-            onChange={e => setConfig(c => ({ ...c, duration_sec: Number(e.target.value) }))}
-            className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-sm"
-          />
-        </label>
-        <label>
-          <span className="text-[10px] font-mono text-[#9090a8]">Aspect ratio</span>
-          <select
-            value={config.aspect_ratio}
-            onChange={e => setConfig(c => ({ ...c, aspect_ratio: e.target.value }))}
-            className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-sm"
-          >
-            {['9:16', '16:9', '1:1', '4:3'].map(ar => (
-              <option key={ar} value={ar}>{ar}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span className="text-[10px] font-mono text-[#9090a8]">Storyboard max side</span>
-          <input
-            type="number"
-            min={96}
-            max={768}
-            value={config.storyboard_max_side}
-            onChange={e => setConfig(c => ({ ...c, storyboard_max_side: Number(e.target.value) }))}
-            className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-sm"
-          />
-        </label>
-        <label>
-          <span className="text-[10px] font-mono text-[#9090a8]">Storyboard steps</span>
-          <input
-            type="number"
-            min={4}
-            max={40}
-            value={config.storyboard_steps}
-            onChange={e => setConfig(c => ({ ...c, storyboard_steps: Number(e.target.value) }))}
-            className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-2 py-1.5 text-sm"
-          />
-        </label>
-      </div>
+      <ReelProjectSettings config={config} setConfig={setConfig} />
 
       <label className="block mb-6">
-        <span className="text-[10px] font-mono text-[#9090a8]">Stile visivo</span>
-        <input
+        <span className="text-[10px] font-mono text-[#9090a8] uppercase tracking-wider">
+          Stile visivo
+        </span>
+        <p className="text-[9px] font-mono text-[#555568] mt-0.5 mb-1">
+          Inviato alla pipeline insieme alla descrizione; usa l&apos;AI per allinearlo al brief.
+        </p>
+        <textarea
           value={config.style}
           onChange={e => setConfig(c => ({ ...c, style: e.target.value }))}
-          className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-3 py-2 text-sm"
+          rows={3}
+          placeholder="cinematic, photorealistic, teal-orange grade, soft rim light, 35mm grain…"
+          className="w-full bg-[#16161f] border border-[#252533] rounded px-3 py-2 text-sm text-[#e8e4dd] resize-y"
+        />
+        <ReelStyleImprover
+          title={title}
+          description={description}
+          currentStyle={config.style}
+          onApply={style => setConfig(c => ({ ...c, style }))}
         />
       </label>
+
+      <ModelOverridesSection config={config} onChange={setModelOverrides} />
 
       {error && (
         <p className="mb-4 text-xs text-[#ef4444] font-mono">{error}</p>
       )}
 
-      <GoldBtn onClick={handleGenerate} disabled={!description.trim()}>
-        <Sparkles size={14} />
-        Genera storyboard
-      </GoldBtn>
+      <div className="flex items-center gap-3">
+        <GoldBtn onClick={handleGenerate} disabled={!description.trim()}>
+          <Sparkles size={14} />
+          Genera storyboard
+        </GoldBtn>
+        <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
+      </div>
 
       <p className="mt-4 text-[9px] font-mono text-[#555568] leading-relaxed">
-        Fase 1: analisi vision delle immagini. Fase 2–3: regia e prompt allineati ai riferimenti.
+        Con audio: analisi traccia e timing lirica (manuale se incolli il testo). Fase 1: vision.
+        Fase 2–3: regia e prompt sincronizzati a musica e lirica.
         Fase 4: anteprime ComfyUI a bassa risoluzione — dovrai approvare prima di HD e clip LTX.
         Configura il ruolo LLM <strong>vision_analyst</strong> in Servizi (es. gpt-4o o claude-sonnet).
       </p>

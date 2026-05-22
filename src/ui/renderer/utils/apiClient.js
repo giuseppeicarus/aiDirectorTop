@@ -1,7 +1,9 @@
 /**
  * Fetch API con retry — utile quando uvicorn --reload resetta la connessione.
  */
-const API_BASE = 'http://127.0.0.1:8765/api'
+export const BACKEND_PORT = 8123
+export const BACKEND_ROOT = `http://127.0.0.1:${BACKEND_PORT}`
+const API_BASE = `${BACKEND_ROOT}/api`
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -22,7 +24,7 @@ export async function waitForBackend(maxWaitMs = 15000) {
   const deadline = Date.now() + maxWaitMs
   while (Date.now() < deadline) {
     try {
-      const r = await fetch('http://127.0.0.1:8765/health', { cache: 'no-store' })
+      const r = await fetch(`${BACKEND_ROOT}/health`, { cache: 'no-store' })
       if (r.ok) return true
     } catch {
       /* backend starting or reloading */
@@ -32,12 +34,15 @@ export async function waitForBackend(maxWaitMs = 15000) {
   return false
 }
 
-export async function apiGet(path, { retries = 4, retryDelayMs = 500 } = {}) {
+export async function apiGet(path, { retries = 4, retryDelayMs = 500, timeoutMs = 12000 } = {}) {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`
   let lastErr
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const res = await fetch(url, { cache: 'no-store' })
+      const res = await fetch(url, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(timeoutMs),
+      })
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`)
       }

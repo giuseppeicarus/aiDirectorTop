@@ -72,6 +72,50 @@ def job_storage_project_id(record: ReelJobRecord) -> str:
     )
 
 
+def set_job_status(
+    project_id: str,
+    job_id: str,
+    status: str,
+    *,
+    error: Optional[str] = None,
+) -> bool:
+    """Aggiorna status/error di un job nel catalogo."""
+    jobs = load_jobs(project_id)
+    idx = next((i for i, j in enumerate(jobs) if j.job_id == job_id), None)
+    if idx is None:
+        return False
+    rec = jobs[idx]
+    jobs[idx] = rec.model_copy(
+        update={
+            "status": status,
+            "error": error,
+            "updated_at": now_iso(),
+        },
+    )
+    _jobs_file(project_id).write_text(
+        json.dumps([j.model_dump() for j in jobs], indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return True
+
+
+def interrupt_job_everywhere(job_id: str, error: str = "Pipeline interrotta") -> bool:
+    """Marca interrupted in tutti i cataloghi che contengono il job."""
+    cfg = get_config()
+    projects_dir = cfg.app.data_path / "projects"
+    updated = False
+    if projects_dir.exists():
+        for cat_dir in projects_dir.iterdir():
+            if not cat_dir.is_dir():
+                continue
+            jf = cat_dir / "reel_jobs.json"
+            if not jf.exists():
+                continue
+            if set_job_status(cat_dir.name, job_id, "interrupted", error=error):
+                updated = True
+    return updated
+
+
 def remove_job(project_id: str, job_id: str, cleanup_files: bool = False) -> bool:
     jobs = load_jobs(project_id)
     target = next((j for j in jobs if j.job_id == job_id), None)

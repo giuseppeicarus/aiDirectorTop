@@ -51,3 +51,291 @@ body {
 /* Drag region for frameless window */
 .drag-region { -webkit-app-region: drag; }
 .no-drag      { -webkit-app-region: no-drag; }
+
+/* ── Splash screen ─────────────────────────────────────────────────────────── */
+
+.app-main {
+  opacity: 0;
+  transform: scale(1.03) translateY(12px);
+  filter: blur(6px);
+  transition:
+    opacity 0.85s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.75s ease;
+  pointer-events: none;
+}
+
+.app-main--visible {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+  pointer-events: auto;
+}
+
+.splash-root {
+  background: radial-gradient(ellipse 80% 60% at 50% 40%, #12121f 0%, var(--bg0) 55%, #030308 100%);
+  transition: opacity 0.75s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.splash-root--exit {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-grain {
+  position: absolute;
+  inset: -50%;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: splash-grain-drift 8s steps(6) infinite;
+  pointer-events: none;
+}
+
+.splash-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(0, 0, 0, 0.65) 100%);
+  pointer-events: none;
+}
+
+.splash-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-dim), var(--gold), var(--gold-dim), transparent);
+  opacity: 0.35;
+  animation: splash-scan 4.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.splash-perf {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 10px,
+    rgba(201, 168, 76, 0.08) 10px,
+    rgba(201, 168, 76, 0.08) 18px
+  );
+  opacity: 0.5;
+}
+
+.splash-perf--left { left: 0; border-right: 1px solid var(--border); }
+.splash-perf--right { right: 0; border-left: 1px solid var(--border); }
+
+.splash-panel {
+  position: relative;
+  z-index: 2;
+  width: min(440px, 92vw);
+  padding: 2.5rem 2rem 2rem;
+  border: 1px solid var(--border2);
+  background: linear-gradient(165deg, rgba(22, 22, 31, 0.92) 0%, rgba(10, 10, 15, 0.96) 100%);
+  box-shadow:
+    0 0 0 1px rgba(201, 168, 76, 0.06),
+    0 24px 80px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  animation: splash-panel-in 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    transform 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.7s ease;
+}
+
+.splash-panel--exit {
+  transform: scale(0.96) translateY(-8px);
+  opacity: 0;
+}
+
+.splash-logo-ring {
+  position: absolute;
+  top: -36px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 1px solid var(--gold-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.splash-logo-orbit {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px dashed rgba(201, 168, 76, 0.35);
+  animation: splash-orbit 12s linear infinite;
+}
+
+.splash-header {
+  margin-top: 1.5rem;
+  margin-bottom: 1.75rem;
+  text-align: center;
+}
+
+.splash-progress-block {
+  margin-bottom: 1.25rem;
+}
+
+.splash-progress-track {
+  position: relative;
+  height: 3px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.splash-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), var(--gold2));
+  border-radius: 2px;
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 0 12px var(--gold-dim);
+}
+
+.splash-progress-glow {
+  position: absolute;
+  top: -4px;
+  width: 24px;
+  height: 11px;
+  background: var(--gold2);
+  border-radius: 50%;
+  filter: blur(6px);
+  opacity: 0.7;
+  transition: left 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.splash-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 220px;
+  overflow: hidden;
+}
+
+.splash-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 3px;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease,
+    background 0.25s ease;
+}
+
+.splash-step--visible {
+  animation: splash-step-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.splash-step--pending {
+  opacity: 0.45;
+}
+
+.splash-step--active {
+  background: var(--gold-dim);
+  border-left: 2px solid var(--gold);
+  padding-left: calc(0.5rem - 2px);
+}
+
+.splash-step--done {
+  opacity: 0.72;
+}
+
+.splash-error {
+  margin-top: 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 3px;
+  text-align: center;
+}
+
+.splash-enter-btn {
+  font-size: 11px;
+  color: var(--gold);
+  border: 1px solid var(--border2);
+  padding: 0.35rem 0.75rem;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.splash-enter-btn:hover {
+  background: var(--gold-dim);
+  border-color: var(--gold);
+}
+
+.splash-footer {
+  margin-top: 1.5rem;
+  text-align: center;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.splash-footer-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: splash-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes splash-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes splash-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes splash-scan {
+  0%, 100% { top: 8%; opacity: 0; }
+  15% { opacity: 0.4; }
+  50% { top: 88%; opacity: 0.25; }
+  85% { opacity: 0; }
+}
+
+@keyframes splash-grain-drift {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(-4%, -3%); }
+}
+
+@keyframes splash-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes splash-step-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

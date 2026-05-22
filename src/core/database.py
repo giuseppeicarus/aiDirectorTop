@@ -33,6 +33,7 @@ async def init_db() -> None:
     # Import modelli per registrarli in Base.metadata
     from src.core.models import project  # noqa: F401
     from src.core.models import media    # noqa: F401
+    from src.core.models import llm_registry  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

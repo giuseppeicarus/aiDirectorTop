@@ -8,7 +8,9 @@
       "category": "text_to_image",
       "description": "Text to image con modello Z-Image / AuraFlow. Ideale per frame cinematografici ad alta qualità.",
       "models": [
-        "Z-Image / AuraFlow checkpoint"
+        "z_image_bf16.safetensors (models/unet)",
+        "qwen_3_4b.safetensors (models/clip)",
+        "ae.safetensors ufficiale Z-Image (models/vae) — NON usare VAE SD generici"
       ],
       "inject": {
         "prompt": {

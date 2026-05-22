@@ -57,9 +57,12 @@ CINEMATIC_NEGATIVE_PROMPT = (
     "cartoon, anime, illustration, painting, CGI, 3d render, plastic skin, oversaturated"
 )
 
-_VISUAL_QUALITY_SUFFIX = (
-    ", photorealistic, professional photography, sharp focus, "
-    "no visible text, no words on screen, no captions, no logos, no watermarks"
+_VISUAL_QUALITY_SUFFIX = ", photorealistic cinematic realism, natural skin texture"
+
+# Negative-only phrases that must NOT appear in positive prompts
+_NEGATIVE_PHRASES_IN_POSITIVE = re.compile(
+    r",?\s*no\s+(?:visible\s+)?(?:text|words?|captions?|logos?|watermarks?|brands?|UI|overlay|letters?)[^,]*",
+    re.IGNORECASE,
 )
 
 _GIBBERISH_RE = re.compile(
@@ -73,6 +76,15 @@ def _trim_to_visual_start(text: str) -> str:
     """Taglia prefissi di ragionamento prima della descrizione visiva."""
     m = _VISUAL_START_RE.search(text)
     if m and m.start() > 0:
+        prefix = text[: m.start()].strip()
+        # Prosa strutturata reel: la scena inizia prima della keyword camera
+        if re.match(
+            r"^(?:Inside|In a|At a|On a|A |The |Steel |Dark |Background|"
+            r"[\w\s]{12,}(?:\.|,))",
+            prefix,
+            re.I,
+        ):
+            return text
         return text[m.start() :].strip()
     return text
 
@@ -176,12 +188,24 @@ def looks_like_gibberish_or_instruction(text: str) -> bool:
 
 
 def finalize_positive_prompt(text: str) -> str:
-    """Aggiunge vincoli anti-testo e qualità fotografica al prompt positivo."""
+    """Aggiunge qualità fotografica al prompt positivo e rimuove frasi negative errate."""
     if not text:
         return text
-    t = text.rstrip("., ")
+    # Strip any "no X" negative phrases that may have leaked into positive prompt
+    t = _NEGATIVE_PHRASES_IN_POSITIVE.sub("", text)
+    t = re.sub(r"\b8k\b", "", t, flags=re.I)
+    t = t.rstrip("., ")
+    # Re-collapse double commas/spaces left by removal
+    t = re.sub(r",\s*,", ",", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    if not t:
+        return text.rstrip("., ")
     low = t.lower()
-    if "no visible text" not in low and "no words" not in low:
+    if "shallow depth of field" in low or "shallow dof" in low:
+        t = re.sub(r",?\s*sharp focus(?:\s+on\s+everything)?", "", t, flags=re.I)
+        if "bokeh" not in low and "background blur" not in low and "soft background" not in low:
+            t += ", subject in focus with soft bokeh background"
+    if "photorealistic" not in low:
         t += _VISUAL_QUALITY_SUFFIX
     return t
 
@@ -208,6 +232,27 @@ def looks_like_meta_or_schema(text: str) -> bool:
     if len(t) > 80 and sum(1 for h in visual_hints if h in lower) < 2:
         return True
     return False
+
+
+def sanitize_motion_prompt(
+    value: Any,
+    *,
+    fallback: str = "",
+    max_len: int = 120,
+) -> str:
+    """Motion/img2video: breve, senza suffisso qualità frame né euristica meta da still."""
+    text = coerce_prompt_string(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r",?\s*photorealistic cinematic realism[^,]*", "", text, flags=re.I)
+    text = re.sub(r",?\s*natural skin texture", "", text, flags=re.I)
+    text = text.strip(" ,.")
+    if len(text) < 10:
+        text = coerce_prompt_string(fallback)
+        text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        cut = text[: max_len - 3].rsplit(",", 1)[0]
+        text = cut.strip() if len(cut) >= 10 else text[:max_len].strip()
+    return text
 
 
 def sanitize_generation_prompt(
@@ -264,19 +309,110 @@ def ensure_detailed_frame_prompt(
     """
     state = frame_state or scene_prompt
     fb = (
-        f"cinematic film still, {shot_type}, {state}, {style}, "
-        f"detailed environment, subject in sharp focus, "
-        f"35mm lens, shallow depth of field, photorealistic, dramatic lighting, 8k"
+        f"Cinematic film still. {state}. {style}. "
+        f"Single coherent {shot_type} framing, 35mm lens, shallow depth of field with soft background bokeh. "
+        f"Photorealistic skin texture, dramatic lighting, subtle film grain."
     )
     if role == "last":
         fb += ", end frame, subtle change in pose and light"
 
-    text = sanitize_generation_prompt(raw, fallback=fb, min_len=40)
+    coerced = coerce_prompt_string(raw)
+    coerced = re.sub(r"\s+", " ", coerced).strip()
+    if looks_like_meta_or_schema(coerced) or len(coerced) < 40:
+        text = sanitize_generation_prompt(coerced, fallback=fb, min_len=40)
+    else:
+        text = coerced
+
     if len(text) < min_chars:
         scene = sanitize_generation_prompt(scene_prompt, min_len=24) if scene_prompt else ""
-        merged = f"{text}, {scene}" if scene else text
-        text = sanitize_generation_prompt(merged, fallback=fb, min_len=min_chars)
+        merged = f"{text} {scene}".strip() if scene else text
+        if looks_like_meta_or_schema(merged):
+            text = sanitize_generation_prompt(merged, fallback=fb, min_len=min_chars)
+        else:
+            text = merged
     return finalize_positive_prompt(text)
+
+
+def build_ltx_video_prompt_fallback(
+    dop: dict,
+    *,
+    style: str,
+    slot_emotion: str = "",
+    duration_sec: float = 5.0,
+    brief: str = "",
+) -> str:
+    """
+    Build a LTX 2.3-compliant img2video prompt from DP visual plan.
+    Used as fallback when the LLM doesn't return ltx_video_prompt.
+    """
+    shot = dop.get("shot_type") or "medium"
+    move = dop.get("camera_movement") or "slowly pushes forward"
+    first_state = dop.get("first_frame_state") or dop.get("scene_description") or ""
+    motion = dop.get("motion_intent") or f"{move}, subject turns toward horizon"
+    lens = dop.get("lens_mm") or 50
+    lighting_info = dop.get("lighting") or {}
+    if isinstance(lighting_info, dict):
+        time_of_day = lighting_info.get("time_of_day", "")
+        light_mood = lighting_info.get("mood", "")
+        light_str = f"{time_of_day} {light_mood}".strip() if (time_of_day or light_mood) else "cinematic lighting"
+    else:
+        light_str = str(lighting_info) or "cinematic lighting"
+
+    # Map camera movement to natural language
+    _move_verb = {
+        "dolly_in": "The camera slowly dollies forward",
+        "dolly_out": "The camera slowly pulls back",
+        "pan": "The camera pans across the scene",
+        "orbit": "The camera arcs around the subject",
+        "handheld": "A handheld camera follows the subject",
+        "tracking": "The camera tracks alongside the subject",
+        "floating": "The camera drifts gently forward",
+        "drone_push": "The camera pushes forward from above",
+        "static": "The camera holds still on the scene",
+        "tilt": "The camera tilts upward slowly",
+    }
+    move_low = (dop.get("camera_movement") or "").lower()
+    camera_sentence = _move_verb.get(move_low.replace(" ", "_"), "")
+    if not camera_sentence:
+        for key, sentence in _move_verb.items():
+            if key.replace("_", " ") in move_low or key in move_low.replace(" ", "_"):
+                camera_sentence = sentence
+                break
+    if not camera_sentence:
+        camera_sentence = f"The camera {move}"
+
+    def _cut_at_sentence(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text.rstrip(".,")
+        cut = text[:max_chars].rfind(".")
+        if cut > max_chars // 2:
+            return text[:cut].rstrip(".,")
+        cut = text[:max_chars].rfind(",")
+        return text[:cut].rstrip(".,") if cut > max_chars // 2 else text[:max_chars].rstrip(".,")
+
+    parts = []
+    # 1. Camera + shot framing
+    parts.append(f"{camera_sentence} in a {shot} framing, {lens}mm lens.")
+    # 2. Subject action from first frame state
+    if first_state:
+        parts.append(_cut_at_sentence(first_state, 200) + ".")
+    # 3. Motion details
+    if motion and motion != move:
+        parts.append(_cut_at_sentence(motion, 150) + ".")
+    # 4. Lighting
+    parts.append(f"The light is {light_str}.")
+    # 5. Style atmosphere
+    if style:
+        parts.append(f"{style.split(',')[0].strip()} aesthetic.")
+    # 6. Audio fallback
+    try:
+        from src.core.llm.reel_slot_variety import ltx_audio_line
+        parts.append(ltx_audio_line(brief))
+    except ImportError:
+        parts.append("Ambient sound fills the scene.")
+
+    result = " ".join(parts)
+    return result[:600]
 
 
 def sanitize_trailer_clip_prompts(
@@ -306,6 +442,7 @@ def sanitize_trailer_clip_prompts(
 
     neg_default = CINEMATIC_NEGATIVE_PROMPT
 
+    ltx_fb = build_ltx_video_prompt_fallback(dop, style=style, slot_emotion=slot_emotion)
     return {
         "scene_prompt": sanitize_generation_prompt(
             pdata.get("scene_prompt"), fallback=scene_fb,
@@ -326,10 +463,9 @@ def sanitize_trailer_clip_prompts(
             frame_state=dop.get("last_frame_state") or "",
             role="last",
         ),
-        "motion_prompt": sanitize_generation_prompt(
+        "motion_prompt": sanitize_motion_prompt(
             pdata.get("motion_prompt"),
             fallback=motion_fb,
-            min_len=8,
             max_len=120,
         ),
         "negative_prompt": sanitize_generation_prompt(
@@ -338,6 +474,12 @@ def sanitize_trailer_clip_prompts(
             min_len=20,
             max_len=400,
         ) or neg_default,
+        "ltx_video_prompt": sanitize_generation_prompt(
+            pdata.get("ltx_video_prompt"),
+            fallback=ltx_fb,
+            min_len=60,
+            max_len=900,
+        ) or ltx_fb,
     }
 
 

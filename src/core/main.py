@@ -33,6 +33,8 @@ from src.core.api.tools_routes import router as tools_router
 from src.core.api.director_routes import router as director_router
 from src.core.api.trailer_routes import router as trailer_router
 from src.core.api.reel_routes import router as reel_router
+from src.core.api.obsidian_routes import router as obsidian_router
+from src.core.api.admin_routes import router as admin_router
 
 log = structlog.get_logger()
 
@@ -45,11 +47,28 @@ async def lifespan(app: FastAPI):
     await init_db()
     await migrate_db()
     await migrate_media_db()
+    from src.core.llm.model_registry import refresh_blacklist_cache
+    await refresh_blacklist_cache()
     from src.core.comfyui.workflow_builder import sync_workflows_from_base
     n = sync_workflows_from_base()
     if n:
         log.info("workflows_synced_from_base", count=n)
     log.info("database_ready")
+    obs_cfg = config.obsidian
+    if obs_cfg.enabled:
+        from src.core.obsidian.vault_manager import get_vault_manager
+        mgr = get_vault_manager()
+        log.info("obsidian_vault_ready", path=str(mgr.vault_path))
+        if obs_cfg.start_docker_on_app_boot:
+            from src.core.obsidian.docker_service import docker_available, start_container
+
+            async def _boot_obsidian_docker() -> None:
+                await asyncio.to_thread(start_container)
+
+            if docker_available():
+                asyncio.create_task(_boot_obsidian_docker())
+            else:
+                log.warning("obsidian_docker_skip", reason="docker CLI not in PATH")
     yield
     log.info("cinematic_studio_shutdown")
 
@@ -82,6 +101,8 @@ app.include_router(tools_router,    prefix="/api/tools",     tags=["tools"])
 app.include_router(director_router, prefix="/api/director",  tags=["director"])
 app.include_router(trailer_router,  prefix="/api/trailer",   tags=["trailer"])
 app.include_router(reel_router,     prefix="/api/reel",      tags=["reel"])
+app.include_router(obsidian_router, prefix="/api/obsidian",  tags=["obsidian"])
+app.include_router(admin_router,    tags=["admin"])
 
 
 @app.get("/health")

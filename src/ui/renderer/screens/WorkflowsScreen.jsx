@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Workflow, Plus, Save, Trash2, ChevronDown, ChevronUp,
   Eye, Code2, Settings2, Copy, AlertCircle, CheckCircle,
-  Loader2, X, FileJson, RotateCcw, Download,
+  Loader2, X, FileJson, RotateCcw, Download, Cpu, ChevronRight,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -461,6 +461,342 @@ function InjectEditor({ inject, onChange }) {
   )
 }
 
+
+const BACKEND_ORIGIN_WF = 'http://127.0.0.1:8765'
+const LS_OVERRIDES_KEY = (wfId) => `cinematic_model_overrides_${wfId}`
+
+// ── Models & LoRA Tab ─────────────────────────────────────────────────────────
+
+function ModelsLoraTab({ workflowId }) {
+  const [nodeModels, setNodeModels]     = useState(null)
+  const [wfNodes, setWfNodes]           = useState(null)
+  const [loading, setLoading]           = useState(false)
+  const [error, setError]               = useState(null)
+  const [saved, setSaved]               = useState(false)
+
+  // Overrides: { checkpoint?, video_model?, loras?: [{lora_name, strength_model, strength_clip}] }
+  const [overrides, setOverrides] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LS_OVERRIDES_KEY(workflowId)) || 'null') || {} }
+    catch { return {} }
+  })
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(LS_OVERRIDES_KEY(workflowId)) || 'null') || {}
+      setOverrides(stored)
+    } catch { setOverrides({}) }
+    setSaved(false)
+  }, [workflowId])
+
+  useEffect(() => {
+    async function fetchData() {
+      setLoading(true)
+      setError(null)
+      try {
+        const [mRes, nRes] = await Promise.all([
+          fetch(`${BACKEND_ORIGIN_WF}/api/comfyui/nodes/0/models`).then(r => r.json()),
+          fetch(`${BACKEND_ORIGIN_WF}/api/comfyui/workflow/${workflowId}/model-nodes`).then(r => r.json()),
+        ])
+        setNodeModels(mRes)
+        setWfNodes(nRes)
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+  }, [workflowId])
+
+  function saveDefaults() {
+    localStorage.setItem(LS_OVERRIDES_KEY(workflowId), JSON.stringify(overrides))
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  function clearDefaults() {
+    localStorage.removeItem(LS_OVERRIDES_KEY(workflowId))
+    setOverrides({})
+    setSaved(false)
+  }
+
+  function setCheckpoint(val) {
+    setOverrides(o => ({ ...o, checkpoint: val || undefined }))
+    setSaved(false)
+  }
+
+  function setVideoModel(val) {
+    setOverrides(o => ({ ...o, video_model: val || undefined }))
+    setSaved(false)
+  }
+
+  function setLoraName(idx, val) {
+    setOverrides(o => {
+      const loras = [...(o.loras || [])]
+      if (!loras[idx]) loras[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+      loras[idx] = { ...loras[idx], lora_name: val }
+      return { ...o, loras }
+    })
+    setSaved(false)
+  }
+
+  function setLoraStrength(idx, field, val) {
+    setOverrides(o => {
+      const loras = [...(o.loras || [])]
+      if (!loras[idx]) loras[idx] = { lora_name: '', strength_model: 1.0, strength_clip: 1.0 }
+      loras[idx] = { ...loras[idx], [field]: parseFloat(val) }
+      return { ...o, loras }
+    })
+    setSaved(false)
+  }
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center gap-2 text-[var(--text3)]">
+        <Loader2 size={18} className="animate-spin" />
+        <span className="text-xs font-mono">Caricamento modelli dal nodo...</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 p-4">
+        <div className="flex items-start gap-2 p-3 rounded border border-[#ef4444]/30 bg-[#ef4444]/5 text-[#ef4444]">
+          <AlertCircle size={14} className="shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-semibold mb-0.5">Nodo non raggiungibile</p>
+            <p className="text-[10px] font-mono opacity-80">{error}</p>
+            <p className="text-[10px] text-[var(--text3)] mt-1">Assicurati che un nodo ComfyUI sia online e configurato.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const checkpoints = nodeModels?.checkpoints || []
+  const videoModels = nodeModels?.video_models || []
+  const loras       = nodeModels?.loras || []
+
+  const cpNodes   = wfNodes?.checkpoint_nodes || []
+  const vmNodes   = wfNodes?.video_model_nodes || []
+  const loraNodes = wfNodes?.lora_nodes || []
+
+  const hasOverrides = !!(
+    overrides.checkpoint ||
+    overrides.video_model ||
+    (overrides.loras || []).some(l => l?.lora_name)
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold text-[var(--text)]">Override modelli per questo workflow</p>
+          <p className="text-[10px] text-[var(--text3)] mt-0.5">
+            Seleziona checkpoint, video model o LoRA da applicare al posto dei valori nel JSON.
+            Vengono salvati per questo workflow e passati automaticamente alla pipeline.
+          </p>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {hasOverrides && (
+            <button
+              onClick={clearDefaults}
+              className="px-2.5 py-1.5 text-[10px] rounded border border-[#252533] text-[var(--text3)] hover:text-[#ef4444] hover:border-[#ef4444]/40 font-mono"
+            >
+              Reset
+            </button>
+          )}
+          <button
+            onClick={saveDefaults}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] rounded font-mono transition-colors"
+            style={{ background: saved ? 'var(--green)' : 'var(--gold)', color: 'var(--bg0)' }}
+          >
+            {saved ? <CheckCircle size={11} /> : <Save size={11} />}
+            {saved ? 'Salvato' : 'Salva come default'}
+          </button>
+        </div>
+      </div>
+
+      {/* Active override pill */}
+      {hasOverrides && (
+        <div className="flex flex-wrap gap-1.5">
+          {overrides.checkpoint && (
+            <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-[#3b82f6]/10 border border-[#3b82f6]/30 text-[#3b82f6] truncate max-w-[200px]">
+              ckpt: {overrides.checkpoint}
+            </span>
+          )}
+          {overrides.video_model && (
+            <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-[#a78bfa]/10 border border-[#a78bfa]/30 text-[#a78bfa] truncate max-w-[200px]">
+              video: {overrides.video_model}
+            </span>
+          )}
+          {(overrides.loras || []).map((l, i) => l?.lora_name && (
+            <span key={i} className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[#f59e0b] truncate max-w-[200px]">
+              lora{i+1}: {l.lora_name}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Checkpoint */}
+      {(cpNodes.length > 0 || checkpoints.length > 0) && (
+        <section className="rounded-lg border border-[#252533] bg-[#16161f] overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[#252533] bg-[#1e1e2a]">
+            <div className="w-2 h-2 rounded-full bg-[#3b82f6] shrink-0" />
+            <span className="text-[10px] font-semibold text-[var(--text)]">Checkpoint</span>
+            {cpNodes[0]?.current_value && (
+              <span className="ml-auto text-[9px] font-mono text-[var(--text3)] truncate max-w-[180px]" title={cpNodes[0].current_value}>
+                attuale: {cpNodes[0].current_value}
+              </span>
+            )}
+          </div>
+          <div className="p-3">
+            {checkpoints.length === 0 ? (
+              <p className="text-[10px] text-[var(--text3)] italic">Nessun checkpoint sul nodo ComfyUI.</p>
+            ) : (
+              <select
+                value={overrides.checkpoint || ''}
+                onChange={e => setCheckpoint(e.target.value)}
+                className="w-full text-[11px] bg-[#0f0f18] text-[var(--text)] rounded px-2.5 py-2 border border-[#252533] font-mono"
+              >
+                <option value="">(usa il valore del workflow JSON)</option>
+                {checkpoints.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Video Model */}
+      {(vmNodes.length > 0 || videoModels.length > 0) && (
+        <section className="rounded-lg border border-[#252533] bg-[#16161f] overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[#252533] bg-[#1e1e2a]">
+            <div className="w-2 h-2 rounded-full bg-[#a78bfa] shrink-0" />
+            <span className="text-[10px] font-semibold text-[var(--text)]">Video Model</span>
+            {vmNodes[0]?.current_value && (
+              <span className="ml-auto text-[9px] font-mono text-[var(--text3)] truncate max-w-[180px]" title={vmNodes[0].current_value}>
+                attuale: {vmNodes[0].current_value}
+              </span>
+            )}
+          </div>
+          <div className="p-3">
+            {videoModels.length === 0 ? (
+              <p className="text-[10px] text-[var(--text3)] italic">Nessun video model sul nodo ComfyUI.</p>
+            ) : (
+              <select
+                value={overrides.video_model || ''}
+                onChange={e => setVideoModel(e.target.value)}
+                className="w-full text-[11px] bg-[#0f0f18] text-[var(--text)] rounded px-2.5 py-2 border border-[#252533] font-mono"
+              >
+                <option value="">(usa il valore del workflow JSON)</option>
+                {videoModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* LoRAs */}
+      {loraNodes.length > 0 && (
+        <section className="rounded-lg border border-[#252533] bg-[#16161f] overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[#252533] bg-[#1e1e2a]">
+            <div className="w-2 h-2 rounded-full bg-[#f59e0b] shrink-0" />
+            <span className="text-[10px] font-semibold text-[var(--text)]">
+              LoRA — {loraNodes.length} {loraNodes.length === 1 ? 'nodo' : 'nodi'} nel workflow
+            </span>
+          </div>
+          <div className="divide-y divide-[#252533]">
+            {loraNodes.map((loraNode, idx) => {
+              const ov = (overrides.loras || [])[idx] || {}
+              const smVal = ov.strength_model ?? loraNode.strength_model ?? 1.0
+              const scVal = ov.strength_clip  ?? loraNode.strength_clip  ?? 1.0
+              return (
+                <div key={loraNode.node_id} className="p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/20">
+                      Slot {idx + 1}
+                    </span>
+                    <span className="text-[8px] text-[var(--text3)] font-mono">
+                      {loraNode.class_type} · ID {loraNode.node_id}
+                    </span>
+                    {loraNode.current_value && (
+                      <span className="ml-auto text-[8px] font-mono text-[var(--text3)] truncate max-w-[130px]" title={loraNode.current_value}>
+                        {loraNode.current_value}
+                      </span>
+                    )}
+                  </div>
+
+                  {loras.length === 0 ? (
+                    <p className="text-[10px] text-[var(--text3)] italic">Nessuna LoRA sul nodo ComfyUI.</p>
+                  ) : (
+                    <select
+                      value={ov.lora_name || ''}
+                      onChange={e => setLoraName(idx, e.target.value)}
+                      className="w-full text-[11px] bg-[#0f0f18] text-[var(--text)] rounded px-2.5 py-2 border border-[#252533] font-mono"
+                    >
+                      <option value="">(usa il valore del workflow JSON)</option>
+                      {loras.map(l => (
+                        <option key={l} value={l}>{l}</option>
+                      ))}
+                    </select>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="flex justify-between mb-1.5">
+                        <span className="text-[9px] font-mono text-[var(--text3)]">strength_model</span>
+                        <span className="text-[9px] font-mono text-[var(--gold)]">{parseFloat(smVal).toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0} max={1.5} step={0.05}
+                        value={parseFloat(smVal)}
+                        onChange={e => setLoraStrength(idx, 'strength_model', e.target.value)}
+                        className="w-full h-1.5 accent-[var(--gold)] cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between mb-1.5">
+                        <span className="text-[9px] font-mono text-[var(--text3)]">strength_clip</span>
+                        <span className="text-[9px] font-mono text-[var(--gold)]">{parseFloat(scVal).toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0} max={1.5} step={0.05}
+                        value={parseFloat(scVal)}
+                        onChange={e => setLoraStrength(idx, 'strength_clip', e.target.value)}
+                        className="w-full h-1.5 accent-[var(--gold)] cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Empty state */}
+      {cpNodes.length === 0 && vmNodes.length === 0 && loraNodes.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 gap-3 text-[var(--text3)]">
+          <Cpu size={32} className="opacity-15" />
+          <p className="text-xs font-mono">Nessun nodo model/LoRA trovato in questo workflow.</p>
+          <p className="text-[10px] text-center max-w-xs leading-relaxed">
+            Il workflow non contiene CheckpointLoaderSimple, LTXVModelLoader, LoraLoader o nodi simili.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Workflow Editor ───────────────────────────────────────────────────────────
 
 function WorkflowEditor({ initialData, onSave, onDelete }) {
@@ -556,6 +892,7 @@ function WorkflowEditor({ initialData, onSave, onDelete }) {
             { key: 'visual', icon: Eye,      label: 'Visuale' },
             { key: 'json',   icon: Code2,    label: 'JSON' },
             { key: 'inject', icon: Settings2, label: 'Inject' },
+            { key: 'models', icon: Cpu,      label: 'Modelli' },
           ].map(({ key, icon: Icon, label }) => (
             <button
               key={key}
@@ -714,6 +1051,10 @@ function WorkflowEditor({ initialData, onSave, onDelete }) {
             </div>
           </div>
         </div>
+      )}
+
+      {tab === 'models' && (
+        <ModelsLoraTab workflowId={meta.id} />
       )}
     </div>
   )

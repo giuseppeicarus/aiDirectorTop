@@ -21,7 +21,7 @@ class AppConfig(BaseModel):
     version: str = "1.0.0"
     data_dir: str = "~/.cinematic-studio"
     log_level: str = "INFO"
-    backend_port: int = 8765
+    backend_port: int = 8123
 
     @property
     def data_path(self) -> Path:
@@ -38,6 +38,13 @@ class LLMConfig(BaseModel):
     timeout_sec: int = 120
     retry_attempts: int = 3
     retry_delay_sec: float = 2.0
+
+    @field_validator("api_key", "base_url", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class ComfyUINodeConfig(BaseModel):
@@ -192,6 +199,24 @@ class LanguageConfig(BaseModel):
     llm_language: str = "Italian"    # Full name injected into every LLM system prompt
 
 
+class ObsidianConfig(BaseModel):
+    """Vault Markdown + container Docker (LinuxServer Obsidian)."""
+    enabled: bool = True
+    vault_dir: str = "obsidian-vault"   # relativo a data_dir se non assoluto
+    auto_sync_on_checkpoint: bool = True
+    start_docker_on_app_boot: bool = True
+    compose_file: str = ""              # vuoto = docker/obsidian/docker-compose.yml nel repo
+    web_port: int = 3000
+    web_https_port: int = 3001
+
+    @field_validator("compose_file", mode="before")
+    @classmethod
+    def _compose_file_none(cls, v: object) -> str:
+        if v is None:
+            return ""
+        return str(v)
+
+
 class AppSettings(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -200,6 +225,7 @@ class AppSettings(BaseModel):
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     ltx_director: LTXDirectorSettings = Field(default_factory=LTXDirectorSettings)
+    obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
     language: LanguageConfig = Field(default_factory=LanguageConfig)
 
     def get_llm_for_role(self, role: str) -> LLMConfig:
@@ -213,10 +239,13 @@ class AppSettings(BaseModel):
             return self.llm
         # No api_key means env var was not set — fall back to global credentials
         if not role_cfg.api_key:
-            return self.llm.model_copy(update={
+            updates: dict = {
                 "temperature": role_cfg.temperature,
-                "max_tokens":  role_cfg.max_tokens,
-            })
+                "max_tokens": role_cfg.max_tokens,
+            }
+            if role_cfg.model:
+                updates["model"] = role_cfg.model
+            return self.llm.model_copy(update=updates)
         return role_cfg
 
 

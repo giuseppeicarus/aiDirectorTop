@@ -100,7 +100,9 @@ class ToolRunRequest(BaseModel):
 class EnhanceRequest(BaseModel):
     prompt: str
     tool: str = "txt2img"
+    context: Optional[str] = None
     negative_prompt: str = ""
+    project_context: Optional[dict] = None
 
 
 # ── Minimal shot shim for workflow_builder ─────────────────────────────────────
@@ -282,77 +284,21 @@ async def run_tool(req: ToolRunRequest):
 
 @router.post("/enhance-prompt")
 async def enhance_prompt(req: EnhanceRequest):
-    """Usa LLM per migliorare il prompt."""
-    from src.core.llm.factory import get_llm_adapter
+    """Migliora prompt con il modello LLM della regia più adatto al tool/contesto."""
+    from src.core.llm.prompt_enhance_service import run_prompt_enhance
 
-    cfg = get_config()
     try:
-        role_cfg = cfg.get_llm_for_role("prompt_engineer")
-    except Exception:
-        raise HTTPException(500, "Nessun LLM configurato")
-
-    adapter = get_llm_adapter(role_cfg)
-    tool_desc = {
-        "txt2img":          "AI image generation (Stable Diffusion / FLUX style)",
-        "txt2video":        "AI video generation (LTX Video / CogVideoX)",
-        "img2video":        "img-to-video motion prompt (camera + subject movement, max 20 words)",
-        "img_audio2video":  "img+audio-to-video motion prompt",
-    }.get(req.tool, "AI generation")
-
-    from src.core.llm.prompt_enhance import (
-        NEGATIVE_BLOCK_MARKER,
-        needs_negative_prompt,
-        parse_enhance_llm_result,
-        split_positive_and_negative,
-    )
-
-    wants_neg = needs_negative_prompt(req.tool)
-    orig_pos, orig_neg = split_positive_and_negative(req.prompt, req.negative_prompt)
-
-    if wants_neg:
-        marker = NEGATIVE_BLOCK_MARKER
-        schema = (
-            f'{{"enhanced": "<positive prompt>\\n\\n{marker}\\n<negative tags in English>"}}'
+        return await run_prompt_enhance(
+            prompt=req.prompt,
+            context=req.context or req.tool,
+            tool=req.tool,
+            negative_prompt=req.negative_prompt,
+            project_context=req.project_context,
         )
-        neg_hint = (
-            f"Original text may include a negative section after '{marker}'.\n"
-            f"Original negative to improve: {orig_neg or '(use standard quality exclusions)'}\n"
-            "Return ONE string in 'enhanced': improved positive, then a blank line, "
-            f"then exactly '{marker}', then comma-separated negative tags (English). "
-            "Do NOT use separate JSON keys for negative — everything inside 'enhanced'."
-        )
-    else:
-        schema = '{"enhanced": "<improved prompt>"}'
-        neg_hint = ""
-
-    result = await adapter.generate_json(
-        system=(
-            "You are an expert AI prompt engineer for image/video generation. "
-            f"Respond with EXACTLY one JSON object: {schema}. "
-            "The 'enhanced' value is ONE plain-text string (never nested JSON). "
-            "No markdown, no thinking tags, no explanation."
-        ),
-        user=(
-            f"Improve this prompt for {tool_desc}.\n"
-            f"Make it more detailed, cinematic, specific. Keep the same creative intent.\n"
-            f"Original:\n{orig_pos}\n"
-            f"{neg_hint}\n\n"
-            f"Return only: {schema}"
-        ),
-        temperature=0.75,
-        max_tokens=700,
-    )
-    parsed = parse_enhance_llm_result(
-        result,
-        orig_pos,
-        original_negative=orig_neg,
-        tool=req.tool,
-    )
-    return {
-        "enhanced": parsed["enhanced"],
-        "positive": parsed.get("positive"),
-        "negative_prompt": parsed.get("negative_prompt"),
-    }
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.post("/upload")

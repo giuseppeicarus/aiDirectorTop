@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+import structlog
 from pathlib import Path
+
+_log = structlog.get_logger("comfyui.outputs")
 
 # Placeholder FFmpeg (gradiente) ~800–900 byte; immagini ComfyUI reali sono molto più grandi
 COMFY_REAL_IMAGE_MIN_BYTES = 5000
@@ -53,14 +57,25 @@ def validate_downloaded_bytes(data: bytes, *, expect: str = "image") -> None:
         )
 
     if expect == "video":
-        if b"ftyp" in data[:32] or data.startswith(b"\x00\x00\x00"):
+        # MP4/MOV: ftyp box typically at byte 4 or near start
+        if b"ftyp" in data[:32]:
             return
+        # MP4 starting with 00 00 00 XX ftyp
+        if len(data) > 8 and data[4:8] == b"ftyp":
+            return
+        # WebM/MKV magic
+        if data[:4] == b"\x1a\x45\xdf\xa3":
+            return
+        # RIFF WebM
         if data.startswith(b"RIFF") and b"WEBM" in data[:16]:
             return
-        # Alcuni mp4 iniziano diversamente — accetta se non è HTML
-        if not _looks_like_html_or_json(data) and len(data) > 10_000:
+        # MPEG-TS / partial MP4 without ftyp — accept if large enough and not HTML
+        if not _looks_like_html_or_json(data) and len(data) > 50_000:
             return
-        raise ValueError("File scaricato non riconosciuto come video.")
+        raise ValueError(
+            f"File scaricato non riconosciuto come video ({len(data)} bytes, "
+            f"header: {data[:16].hex()!r})"
+        )
 
 
 def ensure_parent_dir(path: Path) -> None:
@@ -100,16 +115,31 @@ async def download_comfyui_file(
             )
             if not dest.exists():
                 raise ValueError(f"File non scritto su disco: {dest}")
-            data = dest.read_bytes()
-            validate_downloaded_bytes(data, expect=expect)
-            if expect == "image" and min_image_bytes is not None and len(data) < min_image_bytes:
+            size = dest.stat().st_size
+            if size == 0:
+                raise ValueError(f"File vuoto su disco dopo download: {dest}")
+            if expect == "image" and min_image_bytes is not None and size < min_image_bytes:
                 raise ValueError(
-                    f"Immagine ComfyUI troppo piccola ({len(data)} bytes) — "
+                    f"Immagine ComfyUI troppo piccola ({size} bytes) — "
                     "probabile placeholder o download incompleto."
                 )
+            _log.info("download_ok", filename=filename, dest=str(dest), size=size, attempt=attempt)
             return dest
         except Exception as exc:
             last_err = exc
+            _log.warning(
+                "download_attempt_failed",
+                filename=filename,
+                dest=str(dest),
+                attempt=attempt,
+                error=str(exc),
+            )
+            # Remove corrupted partial file before retry
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
             if attempt < download_retries - 1:
                 await asyncio.sleep(1.5 * (attempt + 1))
     if last_err:
@@ -175,6 +205,104 @@ async def download_best_comfyui_image(
     )
 
 
+async def download_image_by_prefix_probe(
+    client,
+    prefix: str,
+    dest: Path,
+    *,
+    min_image_bytes: int = STORYBOARD_IMAGE_MIN_BYTES,
+    max_index: int = 32,
+) -> Path:
+    """
+    Scarica un'immagine ComfyUI via /view quando la history proxy non elenca i file
+    (es. clip_001_slot_002_sb_0005_.png presente sul server ma assente in history).
+    """
+    if not prefix:
+        raise ValueError("prefix vuoto per probe ComfyUI")
+
+    subfolders = ("", "output")
+    types = ("output", "temp")
+    seen_names: set[str] = set()
+    candidates: list[str] = []
+
+    def _add(name: str) -> None:
+        if name not in seen_names:
+            seen_names.add(name)
+            candidates.append(name)
+
+    _add(f"{prefix}.png")
+    for i in range(max_index, 0, -1):
+        _add(f"{prefix}_{i:05d}_.png")
+        _add(f"{prefix}_{i:04d}_.png")
+        _add(f"{prefix}_{i:03d}_.png")
+        _add(f"{prefix}_{i}_.png")
+
+    errors: list[str] = []
+    for filename in candidates:
+        for subfolder in subfolders:
+            for ftype in types:
+                target = dest.parent / Path(filename).name
+                try:
+                    return await download_comfyui_file(
+                        client,
+                        {"filename": filename, "subfolder": subfolder, "type": ftype},
+                        target,
+                        expect="image",
+                        min_image_bytes=min_image_bytes,
+                        download_retries=2,
+                    )
+                except Exception as exc:
+                    errors.append(f"{filename}@{subfolder}/{ftype}: {exc}")
+                    if target.exists():
+                        try:
+                            target.unlink()
+                        except OSError:
+                            pass
+
+    raise RuntimeError(
+        f"Nessun file ComfyUI trovato con prefisso {prefix!r} "
+        f"({len(errors)} tentativi /view)"
+    )
+
+
+async def download_comfyui_image_resilient(
+    client,
+    history: dict,
+    *,
+    output_prefix: str,
+    dest: Path,
+    prompt_id: str = "",
+    min_image_bytes: int = STORYBOARD_IMAGE_MIN_BYTES,
+) -> Path:
+    """
+    Scarica output immagine: history → refresh → probe per prefisso filename_prefix.
+    """
+    from src.core.comfyui.workflow_builder import extract_output_files
+
+    files = extract_output_files(history)
+    if not files and prompt_id:
+        history = await client.refresh_history_until_outputs(prompt_id, timeout=90.0)
+        files = extract_output_files(history)
+
+    if files:
+        try:
+            best = pick_best_image_output(files)
+            target = dest.parent / (Path(best.get("filename") or dest.name).name)
+            return await download_best_comfyui_image(
+                client, files, target, min_image_bytes=min_image_bytes,
+            )
+        except Exception as hist_err:
+            _log.warning(
+                "history_download_failed_try_prefix",
+                prefix=output_prefix,
+                error=str(hist_err),
+            )
+
+    return await download_image_by_prefix_probe(
+        client, output_prefix, dest, min_image_bytes=min_image_bytes,
+    )
+
+
 def pick_best_image_output(files: list[dict]) -> dict:
     """
     Sceglie l'output immagine finale (evita anteprime/latent spesso tinta blu/vuota).
@@ -201,6 +329,39 @@ def pick_best_image_output(files: list[dict]) -> dict:
     return max(enumerate(files), key=lambda pair: score(pair[1], pair[0]))[1]
 
 
+_VIDEO_EXTS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+
+
+def pick_best_video_output(files: list[dict]) -> dict:
+    """Sceglie il miglior output video da history ComfyUI (evita thumbnail/preview)."""
+    if not files:
+        raise ValueError("Nessun output video in history ComfyUI")
+
+    video_files = [
+        f for f in files
+        if Path(f.get("filename") or "").suffix.lower() in _VIDEO_EXTS
+    ]
+    if not video_files:
+        return files[0]
+    if len(video_files) == 1:
+        return video_files[0]
+
+    def score(entry: dict, index: int) -> tuple:
+        name = (entry.get("filename") or "").lower()
+        s = index
+        for bad in ("preview", "thumb", "temp", "mask"):
+            if bad in name:
+                s -= 80
+        for good in (".mp4", "clip_", "output", "video"):
+            if good in name:
+                s += 8
+        if entry.get("type") == "output":
+            s += 5
+        return (s, index)
+
+    return max(enumerate(video_files), key=lambda pair: score(pair[1], pair[0]))[1]
+
+
 def is_ffmpeg_placeholder_image(path: Path) -> bool:
     """True se il file è un PNG/JPEG valido ma troppo piccolo per essere un frame ComfyUI."""
     if not path or not path.exists():
@@ -225,6 +386,75 @@ def pick_largest_real_image(paths: list[Path], *, min_bytes: int = STORYBOARD_IM
         return None
     real.sort(key=lambda p: p.stat().st_size, reverse=True)
     return real[0]
+
+
+# ComfyUI SaveImage: filename_prefix + _00004_.png accanto a clip_XXX_sb.png canonico
+_STORYBOARD_CANON_RE = re.compile(
+    r"^(?P<base>clip_\d+_slot_\S+_sb)\.(png|jpe?g|webp)$",
+    re.IGNORECASE,
+)
+_STORYBOARD_SIDECAR_RE = re.compile(
+    r"^(?P<base>clip_\d+_slot_\S+_sb)_\d+_\.(png|jpe?g|webp)$",
+    re.IGNORECASE,
+)
+
+
+def prune_storyboard_folder(folder: Path) -> list[str]:
+    """
+    Rimuove duplicati ComfyUI (es. clip_000_slot_001_sb_00004_.png) se esiste
+    il file canonico clip_000_slot_001_sb.png nella stessa cartella.
+    """
+    if not folder.is_dir():
+        return []
+    canon_bases: set[str] = set()
+    sidecars: list[tuple[str, Path]] = []
+    for p in folder.iterdir():
+        if not p.is_file():
+            continue
+        m_canon = _STORYBOARD_CANON_RE.match(p.name)
+        if m_canon:
+            canon_bases.add(m_canon.group("base"))
+            continue
+        m_side = _STORYBOARD_SIDECAR_RE.match(p.name)
+        if m_side:
+            sidecars.append((m_side.group("base"), p))
+    removed: list[str] = []
+    for base, path in sidecars:
+        if base not in canon_bases:
+            continue
+        try:
+            path.unlink()
+            removed.append(path.name)
+            _log.info("storyboard_sidecar_removed", file=path.name, canonical=f"{base}.png")
+        except OSError as exc:
+            _log.warning("storyboard_sidecar_remove_failed", file=path.name, error=str(exc))
+    return removed
+
+
+def prune_storyboard_sidecars_for_stem(folder: Path, stem: str) -> list[str]:
+    """Elimina sidecar ComfyUI per un singolo stem (es. clip_000_slot_001_sb)."""
+    if not folder.is_dir() or not stem:
+        return []
+    canon = folder / f"{stem}.png"
+    if not canon.is_file():
+        canon = next(
+            (folder / f"{stem}.{ext}" for ext in ("png", "jpg", "jpeg", "webp") if (folder / f"{stem}.{ext}").is_file()),
+            None,
+        )
+    if canon is None:
+        return []
+    removed: list[str] = []
+    for p in folder.iterdir():
+        if not p.is_file():
+            continue
+        m = _STORYBOARD_SIDECAR_RE.match(p.name)
+        if m and m.group("base") == stem:
+            try:
+                p.unlink()
+                removed.append(p.name)
+            except OSError:
+                pass
+    return removed
 
 
 def is_real_comfy_image(path: Path, *, min_bytes: int = COMFY_REAL_IMAGE_MIN_BYTES) -> bool:

@@ -147,29 +147,58 @@ async def nodes_status():
 
 @router.get("/nodes/{node_index}/models")
 async def node_models(node_index: int):
-    """Elenco checkpoint e modelli disponibili su un nodo specifico."""
+    """Elenco checkpoint, video model e LoRA disponibili su un nodo specifico."""
     try:
         pool = ComfyUINodePool()
         if node_index >= len(pool._nodes):
             raise HTTPException(status_code=404, detail="Nodo non trovato")
         entry = pool._nodes[node_index]
         info = await entry.client.get_object_info()
+
         checkpoints = list(
             info.get("CheckpointLoaderSimple", {})
             .get("input", {})
             .get("required", {})
             .get("ckpt_name", [[]])[0]
         )
-        video_models = list(
-            info.get("WanVideoModelLoader", {})
-            .get("input", {})
-            .get("required", {})
-            .get("model", [[]])[0]
-        )
+
+        # Video models — try multiple known loader class types
+        video_models: list[str] = []
+        for loader_cls in ("LTXVModelLoader", "LTXVideoModelLoader", "WanVideoModelLoader",
+                           "UnetLoader", "UNETLoader"):
+            cls_info = info.get(loader_cls, {})
+            if not cls_info:
+                continue
+            required = cls_info.get("input", {}).get("required", {})
+            # field is "model" for most, "unet_name" for UnetLoader
+            for field in ("model", "unet_name"):
+                raw = required.get(field, [[]])[0]
+                if isinstance(raw, list) and raw:
+                    for m in raw:
+                        if m not in video_models:
+                            video_models.append(m)
+                    break
+
+        # LoRAs — LoraLoader and LtxvLoraLoader share the same loras folder
+        loras: list[str] = []
+        for lora_cls in ("LoraLoader", "LoRALoader", "LtxvLoraLoader"):
+            cls_info = info.get(lora_cls, {})
+            if not cls_info:
+                continue
+            raw = (
+                cls_info.get("input", {})
+                .get("required", {})
+                .get("lora_name", [[]])[0]
+            )
+            if isinstance(raw, list) and raw:
+                loras = raw
+                break
+
         return {
             "name": entry.config.name,
             "checkpoints": checkpoints,
             "video_models": video_models,
+            "loras": loras,
             "total_node_types": len(info),
         }
     except HTTPException:
@@ -243,6 +272,50 @@ async def _probe_node(node_cfg: ComfyUINodeConfig) -> dict:
         result["error"] = str(e)
 
     return result
+
+
+@router.get("/workflow/{workflow_id}/model-nodes")
+async def workflow_model_nodes(workflow_id: str):
+    """
+    Scans the workflow JSON and returns which nodes are model loaders or LoRA loaders.
+
+    Response::
+        {
+          "checkpoint_nodes":   [{"node_id", "class_type", "current_value"}],
+          "video_model_nodes":  [{"node_id", "class_type", "current_value"}],
+          "lora_nodes":         [{"node_id", "class_type", "current_value",
+                                  "strength_model", "strength_clip"}],
+        }
+    """
+    try:
+        from src.core.comfyui.workflow_builder import get_workflow, scan_model_nodes
+        _, wf = get_workflow(workflow_id)
+        return scan_model_nodes(wf)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' non trovato")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workflows/{workflow_id}/validate")
+async def validate_workflow_models_route(workflow_id: str, node_index: int = 0):
+    """Verifica modelli richiesti dal workflow sul nodo ComfyUI indicato."""
+    try:
+        from src.core.comfyui.model_check import validate_workflow_on_node
+
+        pool = ComfyUINodePool()
+        if node_index >= len(pool._nodes):
+            raise HTTPException(status_code=404, detail="Nodo non trovato")
+        entry = pool._nodes[node_index]
+        if not await entry.client.is_alive():
+            raise HTTPException(status_code=503, detail=f"Nodo {entry.config.name} offline")
+        return await validate_workflow_on_node(entry.client, workflow_id)
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' non trovato")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/workflows")

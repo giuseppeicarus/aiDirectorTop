@@ -81,12 +81,32 @@ async def services_status():
 
     llm_result, comfyui_result = await asyncio.gather(llm_task, comfyui_task)
 
+    obsidian_result: dict = {"ok": False, "enabled": False}
+    try:
+        cfg = get_config()
+        if cfg.obsidian.enabled:
+            from src.core.obsidian.docker_service import container_status
+            from src.core.obsidian.vault_manager import get_vault_manager
+
+            mgr = get_vault_manager()
+            docker = container_status()
+            obsidian_result = {
+                "ok": True,
+                "enabled": True,
+                "vault_path": str(mgr.vault_path),
+                "projects_count": len(mgr.list_projects()),
+                "docker_running": docker.get("running", False),
+            }
+    except Exception as e:
+        obsidian_result = {"ok": False, "enabled": True, "error": str(e)}
+
     return {
         "llm":     llm_result,
         "comfyui": comfyui_result,
         "database": _check_db(),
         "ffmpeg":  _check_ffmpeg(),
         "storage": _check_storage(),
+        "obsidian": obsidian_result,
     }
 
 

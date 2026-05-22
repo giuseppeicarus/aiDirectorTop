@@ -100,6 +100,121 @@ def _set_output_prefixes(wf: dict, meta: dict, prefix: str):
                 inp["filename_prefix"] = prefix
 
 
+# ── Model / LoRA override injection ──────────────────────────────────────────
+
+_CHECKPOINT_LOADERS = frozenset({
+    "CheckpointLoaderSimple", "CheckpointLoader",
+})
+_VIDEO_MODEL_LOADERS = frozenset({
+    "LTXVModelLoader", "LTXVideoModelLoader", "WanVideoModelLoader",
+    "UnetLoader", "UNETLoader",
+})
+_LORA_LOADERS = frozenset({
+    "LoraLoader", "LoRALoader", "LtxvLoraLoader",
+})
+
+
+def scan_model_nodes(wf: dict) -> dict:
+    """
+    Scans a workflow dict and returns which nodes are model/LoRA loaders.
+
+    Returns::
+        {
+          "checkpoint_nodes":   [{"node_id", "class_type", "current_value"}],
+          "video_model_nodes":  [{"node_id", "class_type", "current_value"}],
+          "lora_nodes":         [{"node_id", "class_type", "current_value", "strength_model", "strength_clip"}],
+        }
+    """
+    checkpoint_nodes = []
+    video_model_nodes = []
+    lora_nodes = []
+
+    for node_id, node in wf.items():
+        ct = node.get("class_type", "")
+        inputs = node.get("inputs", {})
+        if ct in _CHECKPOINT_LOADERS:
+            checkpoint_nodes.append({
+                "node_id": node_id,
+                "class_type": ct,
+                "current_value": inputs.get("ckpt_name", ""),
+            })
+        elif ct in _VIDEO_MODEL_LOADERS:
+            field = "unet_name" if ct in ("UnetLoader", "UNETLoader") else "model"
+            video_model_nodes.append({
+                "node_id": node_id,
+                "class_type": ct,
+                "current_value": inputs.get(field, ""),
+            })
+        elif ct in _LORA_LOADERS:
+            lora_nodes.append({
+                "node_id": node_id,
+                "class_type": ct,
+                "current_value": inputs.get("lora_name", ""),
+                "strength_model": inputs.get("strength_model", 1.0),
+                "strength_clip":  inputs.get("strength_clip",  1.0),
+            })
+
+    return {
+        "checkpoint_nodes":  checkpoint_nodes,
+        "video_model_nodes": video_model_nodes,
+        "lora_nodes":        lora_nodes,
+    }
+
+
+def apply_model_overrides(wf: dict, overrides: Optional[dict]) -> dict:
+    """
+    Apply model / LoRA overrides to a workflow (in-place on a deep copy).
+
+    overrides format::
+        {
+          "checkpoint":  "v1-5-pruned.ckpt",
+          "video_model": "ltx-video-2b.safetensors",
+          "loras": [
+            {"lora_name": "film_grain.safetensors", "strength_model": 0.7, "strength_clip": 0.7}
+          ]
+        }
+
+    Nodes are matched by class_type; LoRAs are applied in order of encounter
+    within the workflow dict (i.e. by node_id sort order as returned by scan).
+    """
+    if not overrides:
+        return wf
+
+    wf = copy.deepcopy(wf)
+    lora_node_ids: list[str] = []
+
+    for node_id, node in wf.items():
+        ct = node.get("class_type", "")
+        inputs = node.get("inputs", {})
+
+        if overrides.get("checkpoint") and ct in _CHECKPOINT_LOADERS:
+            inputs["ckpt_name"] = overrides["checkpoint"]
+
+        if overrides.get("video_model") and ct in _VIDEO_MODEL_LOADERS:
+            field = "unet_name" if ct in ("UnetLoader", "UNETLoader") else "model"
+            inputs[field] = overrides["video_model"]
+
+        if ct in _LORA_LOADERS:
+            lora_node_ids.append(node_id)
+
+    lora_overrides: list[dict] = overrides.get("loras") or []
+    for i, lo in enumerate(lora_overrides):
+        if i >= len(lora_node_ids):
+            break
+        n_inputs = wf[lora_node_ids[i]]["inputs"]
+        if lo.get("lora_name"):
+            n_inputs["lora_name"] = lo["lora_name"]
+        if lo.get("strength_model") is not None:
+            n_inputs["strength_model"] = float(lo["strength_model"])
+        clip_str = lo.get("strength_clip")
+        if clip_str is None:
+            clip_str = lo.get("strength_model")
+        if clip_str is not None:
+            n_inputs["strength_clip"] = float(clip_str)
+
+    return wf
+
+
 # ── Public API — manifest-based ───────────────────────────────────────────────
 
 def build_txt2img_workflow(
@@ -109,6 +224,7 @@ def build_txt2img_workflow(
     height: int = 1024,
     steps: int = 25,
     workflow_id: Optional[str] = None,
+    model_overrides: Optional[dict] = None,
 ) -> dict:
     meta = _get_wf_meta(workflow_id or "z_image_txt2img", "txt2img")
     wf   = _load_wf_json(meta)
@@ -121,6 +237,7 @@ def build_txt2img_workflow(
         "cfg":             4.0,
         "seed":            frame.seed if frame.seed is not None else random.randint(0, 2**32),
     })
+    wf = apply_model_overrides(wf, model_overrides)
     _set_output_prefixes(wf, meta, output_prefix)
     return wf
 
@@ -134,6 +251,7 @@ def build_txt2video_workflow(
     fps: int = 25,
     steps: int = 25,
     workflow_id: Optional[str] = None,
+    model_overrides: Optional[dict] = None,
 ) -> dict:
     meta = _get_wf_meta(workflow_id or "ltx_txt2video", "txt2video")
     wf   = _load_wf_json(meta)
@@ -146,6 +264,7 @@ def build_txt2video_workflow(
         "steps":        steps,
         "seed":         random.randint(0, 2**32),
     })
+    wf = apply_model_overrides(wf, model_overrides)
     _set_output_prefixes(wf, meta, output_prefix)
     return wf
 
@@ -164,6 +283,7 @@ def build_img2video_workflow(
     workflow_id: Optional[str] = None,
     *,
     use_audio_track: bool = False,
+    model_overrides: Optional[dict] = None,
 ) -> dict:
     """
     use_audio_track=True → workflow con LoadAudio (music video / trailer).
@@ -187,7 +307,7 @@ def build_img2video_workflow(
 
     inject_params: dict = {
         "first_image": first_frame_name,
-        "prompt": shot.motion_prompt or (shot.first_frame.prompt if shot.first_frame else ""),
+        "prompt": getattr(shot, 'ltx_video_prompt', None) or shot.motion_prompt or (shot.first_frame.prompt if shot.first_frame else ""),
         "width": width,
         "height": height,
         "duration_sec": length_frames,
@@ -199,17 +319,71 @@ def build_img2video_workflow(
         inject_params["audio_start_sec"] = audio_start_sec
 
     wf = _inject(wf, meta.get("inject", {}), inject_params)
+    wf = apply_model_overrides(wf, model_overrides)
     _set_output_prefixes(wf, meta, output_prefix)
     return wf
 
 
 def extract_output_files(history: dict) -> list[dict]:
     """Estrae file di output dalla history ComfyUI (images, videos, gifs)."""
-    files = []
+    files: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(entry: dict) -> None:
+        fn = entry.get("filename")
+        if not fn or not isinstance(fn, str):
+            return
+        key = f"{fn}|{entry.get('subfolder', '')}|{entry.get('type', 'output')}"
+        if key in seen:
+            return
+        seen.add(key)
+        files.append({
+            "filename": fn,
+            "subfolder": entry.get("subfolder") or "",
+            "type": entry.get("type") or "output",
+        })
+
     for node_output in history.get("outputs", {}).values():
-        for key in ("images", "videos", "gifs"):
-            files.extend(node_output.get(key, []))
+        if not isinstance(node_output, dict):
+            continue
+        for media_key in ("images", "videos", "gifs"):
+            for item in node_output.get(media_key, []) or []:
+                if isinstance(item, dict):
+                    _add(item)
+
+    def _walk(obj) -> None:
+        if isinstance(obj, dict):
+            if "filename" in obj and isinstance(obj.get("filename"), str):
+                fn = obj["filename"].lower()
+                if fn.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+                    _add(obj)
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(history.get("outputs", {}))
     return files
+
+
+def inject_ws_executed_output(history: dict, node: str | None, output: dict) -> dict:
+    """Unisce l'output del messaggio WS `executed` nella history (proxy spesso senza GET /history)."""
+    if not output or not isinstance(output, dict):
+        return history
+    merged_hist = dict(history or {})
+    outputs = dict(merged_hist.get("outputs") or {})
+    key = str(node) if node else "executed_ws"
+    node_out = dict(outputs.get(key) or {})
+    for media_key, items in output.items():
+        if isinstance(items, list):
+            prev = node_out.get(media_key) or []
+            node_out[media_key] = [*prev, *items]
+        else:
+            node_out[media_key] = items
+    outputs[key] = node_out
+    merged_hist["outputs"] = outputs
+    return merged_hist
 
 
 def extract_history_error(history: dict) -> str | None:
@@ -221,11 +395,27 @@ def extract_history_error(history: dict) -> str | None:
         return None
     parts: list[str] = []
     for msg in status.get("messages") or []:
-        if isinstance(msg, (list, tuple)) and len(msg) >= 2:
-            parts.append(str(msg[1]))
-        elif isinstance(msg, str):
-            parts.append(msg)
-    detail = " | ".join(parts).strip()
+        if not isinstance(msg, (list, tuple)) or len(msg) < 2:
+            continue
+        kind, payload = msg[0], msg[1]
+        if kind != "execution_error" or not isinstance(payload, dict):
+            continue
+        node_type = payload.get("node_type") or "nodo"
+        node_id = payload.get("node_id") or "?"
+        exc = (payload.get("exception_message") or "").strip()
+        exc_type = (payload.get("exception_type") or "").strip()
+        head = f"{node_type} [{node_id}]"
+        if exc_type:
+            head = f"{head} ({exc_type})"
+        parts.append(f"{head}: {exc}" if exc else head)
+    detail = " | ".join(p for p in parts if p).strip()
+    if detail and "VAELoader" in detail and (
+        "shape" in detail.lower() or "invalid" in detail.lower()
+    ):
+        detail += (
+            " — Verifica che ae.safetensors sia il VAE ufficiale Z-Image "
+            "(Comfy-Org/z_image_turbo), non un file SD generico."
+        )
     return detail or "ComfyUI execution error"
 
 

@@ -1,0 +1,27 @@
+# Obsidian in Docker (LinuxServer) — GUI via browser, vault condiviso con CinematicAI Studio
+# Avvio: docker compose -f docker/obsidian/docker-compose.yml up -d
+# UI:    https://localhost:3001  (accetta certificato self-signed)
+# Vault: montato in /vault — in Obsidian: "Open folder as vault" → /vault
+
+services:
+  obsidian:
+    image: lscr.io/linuxserver/obsidian:latest
+    container_name: cinematic-obsidian
+    restart: unless-stopped
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Rome
+      # Opzionale: CUSTOM_USER=studio  PASSWORD=changeme
+    volumes:
+      - obsidian_config:/config
+      - ${CINEMATIC_OBSIDIAN_VAULT:-./vault}:/vault
+    ports:
+      - "${OBSIDIAN_WEB_PORT:-3000}:3000"
+      - "${OBSIDIAN_WEB_HTTPS_PORT:-3001}:3001"
+
+volumes:
+  obsidian_config:

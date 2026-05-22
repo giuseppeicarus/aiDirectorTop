@@ -61,7 +61,10 @@ class OpenAIAdapter(BaseLLMAdapter):
         if self._use_json_format:
             kwargs["response_format"] = {"type": "json_object"}
         response = await self._client.chat.completions.create(**kwargs)
-        return self._parse_json(response.choices[0].message.content)
+        from src.core.llm.style_improve import openai_message_text
+
+        raw = openai_message_text(response.choices[0].message)
+        return self._parse_json(raw)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -100,7 +103,10 @@ class OpenAIAdapter(BaseLLMAdapter):
         if self._use_json_format:
             kwargs["response_format"] = {"type": "json_object"}
         response = await self._client.chat.completions.create(**kwargs)
-        return self._parse_json(response.choices[0].message.content)
+        from src.core.llm.style_improve import openai_message_text
+
+        raw = openai_message_text(response.choices[0].message)
+        return self._parse_json(raw)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -131,15 +137,22 @@ class OpenAIAdapter(BaseLLMAdapter):
             if delta:
                 yield delta
 
-    async def health_check(self) -> bool:
+    async def health_check_detail(self) -> tuple[bool, str | None]:
         try:
-            await asyncio.wait_for(self._client.models.list(), timeout=8.0)
-            return True
-        except Exception:
-            return False
+            await asyncio.wait_for(self._client.models.list(), timeout=12.0)
+            return True, None
+        except Exception as e:
+            base = getattr(self._client, "base_url", None) or "?"
+            return False, f"{type(e).__name__}: {e} (base_url={base})"
 
-    def _parse_json(self, raw: str):
-        raw = self._strip_reasoning(raw)
+    async def health_check(self) -> bool:
+        ok, _ = await self.health_check_detail()
+        return ok
+
+    def _parse_json(self, raw: str | None):
+        if raw is None or not str(raw).strip():
+            raise ValueError("Empty LLM response content")
+        raw = self._strip_reasoning(str(raw))
         # Strip markdown fences
         clean = re.sub(r"```json?\s*", "", raw).replace("```", "").strip()
         # First try direct parse

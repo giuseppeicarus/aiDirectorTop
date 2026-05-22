@@ -80,6 +80,8 @@ class TrailerRequest(BaseModel):
     allow_ffmpeg_fallback: bool = True    # se ComfyUI non esegue (es. proxy RunPod), usa Ken Burns
     storyboard_max_side: int = Field(default=320, ge=96, le=768)   # lato lungo anteprima storyboard
     storyboard_steps: int = Field(default=10, ge=4, le=40)         # step ComfyUI txt2img storyboard
+    hd_frame_steps: int = Field(default=25, ge=4, le=50)           # step txt2img frame HD (first/last)
+    model_overrides: Optional[dict] = None  # {checkpoint?, video_model?, loras?: [...]}
 
 
 class AudioSection(BaseModel):
@@ -123,6 +125,7 @@ class TrailerClip(BaseModel):
     first_frame_prompt: str
     last_frame_prompt: str
     motion_prompt: str
+    ltx_video_prompt: str = ""
     negative_prompt: str = ""
     first_frame_path: Optional[str] = None
     last_frame_path: Optional[str] = None
@@ -130,6 +133,9 @@ class TrailerClip(BaseModel):
     last_frame_comfy: Optional[str] = None
     clip_path: Optional[str] = None
     audio_slice_path: Optional[str] = None
+    # Posizione nella traccia sorgente per LTX audio (sequenziale, non timeline clip)
+    audio_src_start_sec: Optional[float] = None
+    audio_src_end_sec: Optional[float] = None
     storyboard_path: Optional[str] = None
 
 
@@ -145,6 +151,7 @@ def _clip_prompt_payload(clip: "TrailerClip", project_id: str = "") -> dict:
         "first_frame_prompt": clip.first_frame_prompt,
         "last_frame_prompt": clip.last_frame_prompt,
         "motion_prompt": clip.motion_prompt,
+        "ltx_video_prompt": clip.ltx_video_prompt,
     }
     if project_id and clip.storyboard_path and Path(clip.storyboard_path).exists():
         out["storyboard_url"] = (
@@ -328,12 +335,50 @@ class TrailerPipeline:
         self._use_ffmpeg_clips: bool = False
         self._storyboard_approved: bool = False
 
+    def _hd_frame_ok(self, path: Path) -> bool:
+        """True se il PNG è un frame HD di produzione (non anteprima storyboard)."""
+        from src.core.utils.comfyui_outputs import COMFY_REAL_IMAGE_MIN_BYTES, is_real_comfy_image
+
+        if not path.exists() or not is_real_comfy_image(path, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+            return False
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(path) as img:
+                w, h = img.size
+        except Exception:
+            return False
+        hd_w, hd_h = self._hd_dimensions()
+        target_long = max(hd_w, hd_h)
+        long_side = max(w, h)
+        # Storyboard usa lato lungo << risoluzione frame HD (es. 320 vs 3840)
+        return long_side >= int(target_long * 0.88)
+
+    def _purge_sub_hd_frame_cache(self) -> None:
+        """Rimuove frame first/last salvati a risoluzione storyboard (run precedenti)."""
+        for clip in self._clips_list:
+            for name, attr in (
+                (f"{clip.clip_id}_first.png", "first_frame_path"),
+                (f"{clip.clip_id}_last.png", "last_frame_path"),
+            ):
+                p = self._frames_dir / name
+                if p.exists() and not self._hd_frame_ok(p):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    setattr(clip, attr, None)
+
     def _storyboard_dimensions(self) -> tuple[int, int]:
         """Anteprima storyboard: scala dal formato finale al lato lungo configurato."""
         w, h = self.req.width, self.req.height
         max_side = max(96, min(768, int(self.req.storyboard_max_side or 320)))
         scale = max_side / max(w, h, 1)
         return max(96, int(w * scale)), max(96, int(h * scale))
+
+    def _hd_dimensions(self) -> tuple[int, int]:
+        """Frame first/last HD: sempre 2× la risoluzione video di uscita."""
+        return max(64, int(self.req.width) * 2), max(64, int(self.req.height) * 2)
 
     def _resolve_storyboard_file(self, clip: TrailerClip, dest: Path) -> Optional[Path]:
         """Trova storyboard ComfyUI reale (ignora placeholder FFmpeg ~836 byte)."""
@@ -392,6 +437,148 @@ class TrailerPipeline:
                         p.unlink()
                     except OSError:
                         pass
+
+    def _api_project_id(self) -> str:
+        """ID cartella per URL API media (reel/trailer storage)."""
+        return getattr(self, "_storage_project_id", None) or self.req.project_id
+
+    async def recover_storyboard_clip(self, clip: TrailerClip) -> Optional[dict]:
+        """
+        Recupera storyboard da disco o da ComfyUI (/view per prefisso) se il job
+        è terminato ma il download SSE non ha aggiornato la clip.
+        """
+        dest = self._storyboard_dir / f"{clip.clip_id}_sb.png"
+        resolved = self._resolve_storyboard_file(clip, dest)
+        if resolved:
+            clip.storyboard_path = str(resolved)
+            return self._storyboard_frame_event(clip, resolved, ok=True)
+
+        if self.req.clip_backend == "ffmpeg":
+            return None
+
+        from src.core.utils.comfyui_outputs import (
+            STORYBOARD_IMAGE_MIN_BYTES,
+            download_image_by_prefix_probe,
+        )
+
+        prefix = dest.stem
+        try:
+            client = await self._pool.get_client()
+            saved = await download_image_by_prefix_probe(
+                client,
+                prefix,
+                dest,
+                min_image_bytes=STORYBOARD_IMAGE_MIN_BYTES,
+            )
+            self._canonicalize_downloaded_frame(
+                clip,
+                dest,
+                saved,
+                role="storyboard",
+                comfy_filename=saved.name,
+            )
+            resolved = self._resolve_storyboard_file(clip, dest)
+            if resolved:
+                clip.storyboard_path = str(resolved)
+                log.info("storyboard_recovered_comfy", clip_id=clip.clip_id, path=str(resolved))
+                return self._storyboard_frame_event(clip, resolved, ok=True)
+        except Exception as exc:
+            log.warning(
+                "storyboard_recover_failed",
+                clip_id=clip.clip_id,
+                prefix=prefix,
+                error=str(exc),
+            )
+        return None
+
+    async def recover_hd_first_frame(self, clip: TrailerClip) -> Optional[dict]:
+        """Recupera frame HD first da disco o ComfyUI se mancante."""
+        dest = self._frames_dir / f"{clip.clip_id}_first.png"
+        if self._hd_frame_ok(dest):
+            clip.first_frame_path = str(dest)
+        else:
+            resolved = self._resolve_frame_file(clip, dest)
+            if resolved and self._hd_frame_ok(resolved):
+                import shutil
+
+                if resolved.resolve() != dest.resolve():
+                    shutil.copy2(resolved, dest)
+                clip.first_frame_path = str(dest)
+            elif self.req.clip_backend != "ffmpeg":
+                from src.core.utils.comfyui_outputs import (
+                    COMFY_REAL_IMAGE_MIN_BYTES,
+                    download_image_by_prefix_probe,
+                )
+
+                try:
+                    client = await self._pool.get_client()
+                    saved = await download_image_by_prefix_probe(
+                        client,
+                        dest.stem,
+                        dest,
+                        min_image_bytes=COMFY_REAL_IMAGE_MIN_BYTES,
+                    )
+                    self._canonicalize_downloaded_frame(
+                        clip,
+                        dest,
+                        saved,
+                        role="first",
+                        comfy_filename=saved.name,
+                    )
+                    clip.first_frame_path = str(dest)
+                    log.info("hd_frame_recovered_comfy", clip_id=clip.clip_id)
+                except Exception as exc:
+                    log.warning(
+                        "hd_frame_recover_failed",
+                        clip_id=clip.clip_id,
+                        error=str(exc),
+                    )
+                    return None
+            else:
+                return None
+
+        pid = self._api_project_id()
+        return {
+            "event": "frame_done",
+            "clip_id": clip.clip_id,
+            "frame": "first",
+            "path": str(dest),
+            "filename": dest.name,
+            "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{pid}/{clip.clip_id}",
+            "url": f"/api/{self._media_api_prefix()}/frames/{pid}/{dest.name}",
+            "hd_frame_ready": True,
+            "cached": True,
+        }
+
+    async def reconcile_missing_clip_media(
+        self,
+        *,
+        storyboard: bool = True,
+        hd_frames: bool = False,
+    ) -> list[dict]:
+        """Controlla clip senza file locali e tenta recupero da disco / ComfyUI."""
+        events: list[dict] = []
+        for clip in self._clips_list:
+            if storyboard:
+                sb_dest = self._storyboard_dir / f"{clip.clip_id}_sb.png"
+                resolved = self._resolve_storyboard_file(clip, sb_dest)
+                path_broken = False
+                if clip.storyboard_path:
+                    try:
+                        path_broken = not Path(clip.storyboard_path).is_file()
+                    except OSError:
+                        path_broken = True
+                if not resolved or path_broken:
+                    ev = await self.recover_storyboard_clip(clip)
+                    if ev:
+                        events.append(ev)
+            if hd_frames:
+                ff = self._frames_dir / f"{clip.clip_id}_first.png"
+                if not self._hd_frame_ok(ff):
+                    ev = await self.recover_hd_first_frame(clip)
+                    if ev:
+                        events.append(ev)
+        return events
 
     def _resolve_frame_file(self, clip: TrailerClip, dest: Path) -> Optional[Path]:
         """Trova frame HD su disco (nome ComfyUI tipo proge_* o canonico clip_XXX_first.png)."""
@@ -480,6 +667,14 @@ class TrailerPipeline:
 
         if role == "storyboard":
             clip.storyboard_path = str(dest)
+            from src.core.utils.comfyui_outputs import prune_storyboard_sidecars_for_stem
+
+            prune_storyboard_sidecars_for_stem(dest.parent, dest.stem)
+            if src.resolve() != dest.resolve() and src.exists():
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
         elif role == "first":
             clip.first_frame_path = str(dest)
             clip.first_frame_comfy = comfy_filename or src.name
@@ -511,7 +706,9 @@ class TrailerPipeline:
                 "path": path_str,
                 "storyboard_filename": path.name,
                 "url": f"/api/{api}/storyboard/{self._storage_project_id}/{path.name}",
-                "preview_url": f"/api/trailer/source?path={quote(path_str, safe='')}",
+                "preview_url": (
+                    f"/api/{self._media_api_prefix()}/source?path={quote(path_str, safe='')}"
+                ),
                 "storyboard_clip_url": (
                     f"/api/{api}/storyboard-clip/{self._storage_project_id}/{clip.clip_id}"
                 ),
@@ -540,7 +737,9 @@ class TrailerPipeline:
                 "storyboard_ok": True,
                 "storyboard_placeholder": False,
                 "url": f"/api/{api}/storyboard/{self._storage_project_id}/{p.name}",
-                "preview_url": f"/api/trailer/source?path={quote(path_str, safe='')}",
+                "preview_url": (
+                    f"/api/{self._media_api_prefix()}/source?path={quote(path_str, safe='')}"
+                ),
                 "storyboard_clip_url": (
                     f"/api/{api}/storyboard-clip/{self._storage_project_id}/{clip.clip_id}"
                 ),
@@ -588,6 +787,19 @@ class TrailerPipeline:
                 json.dumps(payload, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
+            try:
+                from src.core.config import get_config
+                from src.core.obsidian.sync import schedule_obsidian_sync_from_checkpoint
+
+                if get_config().obsidian.enabled and get_config().obsidian.auto_sync_on_checkpoint:
+                    schedule_obsidian_sync_from_checkpoint(
+                        project_id=self.req.project_id,
+                        job_id=self.job_id,
+                        pipeline_kind="trailer",
+                        checkpoint=payload,
+                    )
+            except Exception:
+                pass
         except Exception as e:
             log.warning("trailer_checkpoint_save_failed", error=str(e))
 
@@ -1675,6 +1887,7 @@ class TrailerPipeline:
             first_frame_p = clean["first_frame_prompt"]
             last_frame_p = clean["last_frame_prompt"]
             motion_prompt = clean["motion_prompt"]
+            ltx_video_prompt = clean.get("ltx_video_prompt", "")
             negative_prompt = clean["negative_prompt"]
 
             clip_count = max(1, math.ceil(slot.duration_sec / self.req.max_clip_sec))
@@ -1717,6 +1930,7 @@ class TrailerPipeline:
                     first_frame_prompt=first_frame_p,
                     last_frame_prompt=last_frame_p,
                     motion_prompt=motion_prompt,
+                    ltx_video_prompt=ltx_video_prompt,
                     negative_prompt=negative_prompt,
                     audio_slice_path=str(audio_slice) if audio_slice else None,
                 )
@@ -1751,7 +1965,12 @@ class TrailerPipeline:
         }
 
         from src.core.comfyui.workflow_builder import sync_workflows_from_base
+        from src.core.utils.comfyui_outputs import prune_storyboard_folder
+
         sync_workflows_from_base()
+        pruned = prune_storyboard_folder(self._storyboard_dir)
+        if pruned:
+            log.info("storyboard_folder_pruned", removed=len(pruned), files=pruned[:8])
 
         use_ffmpeg_storyboard = self.req.clip_backend == "ffmpeg"
         total = len(self._clips_list)
@@ -1850,6 +2069,21 @@ class TrailerPipeline:
                 if pass_idx == 0 and clip != pending[-1]:
                     await asyncio.sleep(STORYBOARD_CLIP_COOLDOWN_SEC)
 
+        pruned_final = prune_storyboard_folder(self._storyboard_dir)
+        if pruned_final:
+            log.info("storyboard_folder_pruned_final", removed=len(pruned_final))
+
+        reconcile_events = await self.reconcile_missing_clip_media(storyboard=True)
+        for ev in reconcile_events:
+            cid = ev.get("clip_id")
+            if cid:
+                clip_obj = next((c for c in self._clips_list if c.clip_id == cid), None)
+                if clip_obj:
+                    self._after_storyboard_frame_saved(clip_obj)
+            yield ev
+        if reconcile_events:
+            log.info("storyboard_reconcile_pass", recovered=len(reconcile_events))
+
         yield {
             "event": "storyboard_ready",
             "frames": self._storyboard_frames_payload(),
@@ -1896,15 +2130,15 @@ class TrailerPipeline:
         """Frame storyboard ComfyUI a bassa risoluzione; restituisce path locale risolto."""
         from src.core.utils.comfyui_outputs import (
             STORYBOARD_IMAGE_MIN_BYTES,
-            download_best_comfyui_image,
-            pick_best_image_output,
+            download_comfyui_image_resilient,
         )
 
         sb_w, sb_h = self._storyboard_dimensions()
         frame = self._comfy_frame_prompt(clip, role="first")
+        output_prefix = dest.stem
         wf = build_txt2img_workflow(
             frame,
-            output_prefix=dest.stem,
+            output_prefix=output_prefix,
             width=sb_w,
             height=sb_h,
             steps=max(4, min(40, int(self.req.storyboard_steps or 10))),
@@ -1917,30 +2151,24 @@ class TrailerPipeline:
         )
         from src.core.comfyui.workflow_builder import extract_history_error
 
-        files = extract_output_files(run.history)
-        if not files and run.prompt_id:
-            run.history = await run.client.refresh_history_until_outputs(
-                run.prompt_id, timeout=90.0,
+        err = extract_history_error(run.history)
+        if err:
+            raise RuntimeError(f"ComfyUI storyboard {clip.clip_id}: {err}")
+
+        try:
+            saved = await download_comfyui_image_resilient(
+                run.client,
+                run.history,
+                output_prefix=output_prefix,
+                dest=dest,
+                prompt_id=run.prompt_id or "",
+                min_image_bytes=STORYBOARD_IMAGE_MIN_BYTES,
             )
-            files = extract_output_files(run.history)
-        if not files:
-            err = extract_history_error(run.history)
-            if err:
-                raise RuntimeError(f"ComfyUI storyboard {clip.clip_id}: {err}")
+        except Exception as exc:
             raise RuntimeError(
                 f"No storyboard output for {clip.clip_id} "
-                f"(prompt_id={run.prompt_id or '?'})"
-            )
-
-        download_dest = dest.parent / (pick_best_image_output(files).get("filename") or dest.name)
-        if not str(download_dest.name).lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-            download_dest = dest
-        saved = await download_best_comfyui_image(
-            run.client,
-            files,
-            download_dest,
-            min_image_bytes=STORYBOARD_IMAGE_MIN_BYTES,
-        )
+                f"(prompt_id={run.prompt_id or '?'}): {exc}"
+            ) from exc
         remote_name = saved.name
         self._canonicalize_downloaded_frame(
             clip, dest, saved, role="storyboard", comfy_filename=remote_name,
@@ -2020,6 +2248,7 @@ class TrailerPipeline:
 
         from src.core.comfyui.workflow_builder import sync_workflows_from_base
         sync_workflows_from_base()
+        self._purge_sub_hd_frame_cache()
 
         yield {"event": "comfyui_probe", "status": "start", "pct": 0.43}
         await self._resolve_clip_backend_mode()
@@ -2060,19 +2289,22 @@ class TrailerPipeline:
                 return is_real_comfy_image(path, min_bytes=max(min_bytes, 5000))
             return path.exists() and path.stat().st_size >= min_bytes
 
+        def _hd_ok(path: Path) -> bool:
+            return self._hd_frame_ok(path)
+
         def _resolve_frame_paths(clip: TrailerClip) -> tuple[Path, Path]:
             """Solo frame di questo job (clip_id esatto) — mai riusare PNG di run precedenti."""
             ff = self._frames_dir / f"{clip.clip_id}_first.png"
             lf = self._frames_dir / f"{clip.clip_id}_last.png"
             if clip.first_frame_path:
                 p = Path(clip.first_frame_path)
-                if _artifact_ok(p):
+                if _hd_ok(p):
                     ff = p
             if clip.last_frame_path:
                 p = Path(clip.last_frame_path)
-                if _artifact_ok(p):
+                if _hd_ok(p):
                     lf = p
-            if _artifact_ok(ff) and not _artifact_ok(lf):
+            if _hd_ok(ff) and not _hd_ok(lf):
                 lf = ff
             return ff, lf
 
@@ -2086,25 +2318,33 @@ class TrailerPipeline:
                         await queue.put(ev)
 
                     ff_path, lf_path, frame_events = await self._ensure_frame_files(
-                        clip, ff_path, lf_path, _artifact_ok, emit=emit_live,
+                        clip, ff_path, lf_path, _hd_ok, emit=emit_live,
                     )
-                    events.extend(frame_events)
+                    # Emit frame preview events immediately to SSE stream
+                    _preview_events = {"frame_done", "frames_ready", "frame_skip"}
+                    for fe in frame_events:
+                        if fe.get("event") in _preview_events:
+                            await emit_live(fe)
+                        else:
+                            events.append(fe)
 
                     ff_path = self._resolve_frame_file(clip, ff_path) or ff_path
                     lf_path = self._resolve_frame_file(clip, lf_path) or lf_path
-                    if not _artifact_ok(ff_path):
+                    if not _hd_ok(ff_path):
                         raise RuntimeError(
                             f"Frame first mancante per {clip.clip_id} — "
                             "verifica download ComfyUI (file proge_* in frames/)"
                         )
-                    if not _artifact_ok(lf_path):
+                    if not _hd_ok(lf_path):
                         lf_path = ff_path
 
-                    events.append({
+                    # Emit frames_ready immediately so UI shows preview without waiting for video gen
+                    await emit_live({
                         "event": "frames_ready",
                         "clip_id": clip.clip_id,
                         "first_path": str(ff_path),
-                        "frame_url": f"/api/trailer/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                        "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                        "hd_frame_ready": True,
                     })
 
                     clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
@@ -2197,6 +2437,8 @@ class TrailerPipeline:
                 for ev in events:
                     await queue.put(ev)
                 await queue.put({"_done_marker": clip.clip_id})
+                # Brief cooldown so ComfyUI can flush its output queue before the next job
+                await asyncio.sleep(1.5)
 
         yield {
             "event": "phase",
@@ -2205,21 +2447,40 @@ class TrailerPipeline:
             "pct": 0.52,
         }
 
-        tasks = [asyncio.create_task(process_clip(c)) for c in self._clips_list]
-
-        markers_received = 0
-        while markers_received < total:
-            ev = await queue.get()
-            if "_done_marker" in ev:
-                markers_received += 1
-                done_count += 1
-                pct = round(0.42 + 0.46 * (done_count / max(total, 1)), 3)
-                yield {"event": "generation_progress", "completed": done_count,
-                       "total": total, "pct": pct}
-            else:
-                yield ev
-
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Sequential processing: one ComfyUI job at a time.
+        # Each clip task must fully complete (including local download) before the next starts.
+        for i, clip in enumerate(self._clips_list):
+            yield {
+                "event": "progress",
+                "msg": f"Avvio clip {i + 1}/{total} — {clip.clip_id}",
+                "clip_id": clip.clip_id,
+                "clip_index": i + 1,
+                "clip_total": total,
+                "pct": round(0.42 + 0.46 * (i / max(total, 1)), 3),
+            }
+            task = asyncio.create_task(process_clip(clip))
+            clip_done = False
+            while not clip_done:
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=120)
+                except asyncio.TimeoutError:
+                    if task.done():
+                        break
+                    yield {"event": "progress", "msg": f"In attesa download ComfyUI — {clip.clip_id}…"}
+                    continue
+                if "_done_marker" in ev:
+                    done_count += 1
+                    pct = round(0.42 + 0.46 * (done_count / max(total, 1)), 3)
+                    yield {"event": "generation_progress", "completed": done_count,
+                           "total": total, "pct": pct}
+                    clip_done = True
+                else:
+                    yield ev
+            # Surface any task exception without swallowing it
+            try:
+                await task
+            except Exception as _task_exc:
+                log.error("clip_task_exception", clip_id=clip.clip_id, error=str(_task_exc))
 
         # Recovery: ComfyUI fallito ma frame presenti → rigenera clip in FFmpeg
         if self.req.allow_ffmpeg_fallback:
@@ -2300,35 +2561,13 @@ class TrailerPipeline:
                 "clip_id": clip.clip_id,
                 "frame": "first",
                 "path": str(ff_path),
-                "url": f"/api/trailer/frames/{self.req.project_id}/{ff_path.name}",
+                "url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{ff_path.name}",
                 "cached": True,
             })
             return ff_path, lf_path, events
 
         canon_ff = self._frames_dir / f"{clip.clip_id}_first.png"
         canon_lf = self._frames_dir / f"{clip.clip_id}_last.png"
-
-        # Riutilizza storyboard approvato come first frame HD (evita rigenerare su RunPod)
-        if not artifact_ok(canon_ff):
-            sb = self._resolve_storyboard_file(
-                clip, self._storyboard_dir / f"{clip.clip_id}_sb.png",
-            )
-            from src.core.utils.comfyui_outputs import is_real_comfy_image
-
-            if sb and is_real_comfy_image(sb):
-                import shutil
-                shutil.copy2(sb, canon_ff)
-                clip.storyboard_path = str(sb)
-                clip.first_frame_path = str(canon_ff)
-                events.append({
-                    "event": "frame_done",
-                    "clip_id": clip.clip_id,
-                    "frame": "first",
-                    "path": str(canon_ff),
-                    "url": f"/api/trailer/frames/{self.req.project_id}/{canon_ff.name}",
-                    "cached": True,
-                    "from_storyboard": True,
-                })
 
         first_comfy_failed = False
         for role, target, prompt, comfy_attr in (
@@ -2352,6 +2591,14 @@ class TrailerPipeline:
                     clip.last_frame_path = str(canon_lf)
                     continue
             frame_timeout = 240.0 if role == "first" else 180.0
+            if emit:
+                role_it = "first frame" if role == "first" else "last frame"
+                await emit({
+                    "event": "progress",
+                    "msg": f"Generazione immagine {role_it} — {clip.clip_id}",
+                    "clip_id": clip.clip_id,
+                    "clip_phase": "frame_gen",
+                })
             try:
                 await asyncio.wait_for(
                     self._gen_frame(
@@ -2375,11 +2622,12 @@ class TrailerPipeline:
                     "path": str(target),
                     "filename": target.name,
                     "frame_url": (
-                        f"/api/trailer/frames-clip/{self.req.project_id}/{clip.clip_id}"
+                        f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}"
                         if role == "first"
-                        else f"/api/trailer/frames/{self.req.project_id}/{target.name}"
+                        else f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{target.name}"
                     ),
-                    "url": f"/api/trailer/frames/{self.req.project_id}/{target.name}",
+                    "url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{target.name}",
+                    "hd_frame_ready": role == "first",
                 })
             except (asyncio.TimeoutError, TimeoutError) as exc:
                 if role == "first":
@@ -2423,9 +2671,10 @@ class TrailerPipeline:
                 "frame": "first",
                 "path": str(canon_ff),
                 "filename": canon_ff.name,
-                "frame_url": f"/api/trailer/frames-clip/{self.req.project_id}/{clip.clip_id}",
-                "url": f"/api/trailer/frames/{self.req.project_id}/{canon_ff.name}",
+                "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                "url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{canon_ff.name}",
                 "recovered": True,
+                "hd_frame_ready": True,
             })
             ff_path, lf_path = _resolved()
             if artifact_ok(ff_path):
@@ -2455,7 +2704,7 @@ class TrailerPipeline:
                 "clip_id": clip.clip_id,
                 "frame": "first",
                 "path": str(ff_path),
-                "url": f"/api/trailer/frames/{self.req.project_id}/{ff_path.name}",
+                "url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{ff_path.name}",
                 "placeholder": True,
             })
             return ff_path, lf_path, events
@@ -2472,7 +2721,7 @@ class TrailerPipeline:
         if self._storyboard_dir in dest.parents or dest.parent == self._storyboard_dir:
             w, h = self._storyboard_dimensions()
         else:
-            w, h = self.req.width, self.req.height
+            w, h = self._hd_dimensions()
         # Evita '%' in lavfi (Windows/cmd interpreta male hsl con saturazione %)
         hue = (clip.clip_index * 41 + (18 if role == "last" else 0)) % 360
         sat = 0.25 + (clip.clip_index % 5) * 0.08
@@ -2538,7 +2787,7 @@ class TrailerPipeline:
         emit=None,
     ) -> str:
         """Genera frame su ComfyUI; scarica localmente e restituisce il filename server."""
-        from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_image_output
+        from src.core.utils.comfyui_outputs import download_comfyui_image_resilient
 
         clip_stub = next((c for c in self._clips_list if c.clip_id == clip_id), None)
         if clip_stub:
@@ -2558,32 +2807,53 @@ class TrailerPipeline:
                 ) or CINEMATIC_NEGATIVE_PROMPT,
                 seed=random.randint(0, 2 ** 32),
             )
+        output_prefix = dest.stem
+        hd_w, hd_h = self._hd_dimensions()
         wf = build_txt2img_workflow(
             frame,
-            output_prefix=dest.stem,
-            width=self.req.width,
-            height=self.req.height,
-            steps=25,
+            output_prefix=output_prefix,
+            width=hd_w,
+            height=hd_h,
+            steps=max(4, min(50, int(getattr(self.req, "hd_frame_steps", None) or 25))),
             workflow_id=self.req.txt2img_workflow,
+            model_overrides=getattr(self.req, "model_overrides", None),
         )
         run = await self._run_comfy_live(
             wf, timeout=300, label=f"Frame {role}",
             clip_id=clip_id, kind="frame", emit=emit,
         )
-        files = extract_output_files(run.history)
-        if not files:
-            raise RuntimeError(f"No frame output from ComfyUI for: {prompt_text[:60]}")
-        best = pick_best_image_output(files)
-        remote_name = best.get("filename") or ""
-        download_dest = dest.parent / Path(remote_name).name if remote_name else dest
-        await download_comfyui_file(run.client, best, download_dest, expect="image")
+        try:
+            download_dest = await download_comfyui_image_resilient(
+                run.client,
+                run.history,
+                output_prefix=output_prefix,
+                dest=dest,
+                prompt_id=run.prompt_id or "",
+            )
+        except Exception as exc:
+            log.error(
+                "gen_frame_no_output",
+                clip_id=clip_id,
+                role=role,
+                prefix=output_prefix,
+                error=str(exc),
+            )
+            raise RuntimeError(f"No frame output from ComfyUI for: {prompt_text[:60]}") from exc
+        remote_name = download_dest.name
+        log.info(
+            "gen_frame_saved",
+            clip_id=clip_id,
+            role=role,
+            dest=str(download_dest),
+            size=download_dest.stat().st_size,
+        )
         if clip_stub:
             self._canonicalize_downloaded_frame(
                 clip_stub, dest, download_dest, role=role, comfy_filename=remote_name,
             )
         else:
             import shutil
-            if download_dest.exists() and download_dest.resolve() != dest.resolve():
+            if download_dest.resolve() != dest.resolve():
                 shutil.copy2(download_dest, dest)
         return remote_name or dest.name
 
@@ -2684,7 +2954,8 @@ class TrailerPipeline:
         class _ClipShot:
             def __init__(self, c: TrailerClip) -> None:
                 self.shot_id = c.clip_id
-                self.motion_prompt = c.motion_prompt
+                self.motion_prompt = c.ltx_video_prompt or c.motion_prompt
+                self.ltx_video_prompt = c.ltx_video_prompt
                 self.first_frame = FramePrompt(prompt=c.first_frame_prompt)
                 self.last_frame = FramePrompt(prompt=c.last_frame_prompt)
 
@@ -2705,30 +2976,48 @@ class TrailerPipeline:
             fps=self.req.fps,
             workflow_id=video_wf_id,
             use_audio_track=use_audio_track,
+            model_overrides=getattr(self.req, "model_overrides", None),
         )
         video_timeout = max(600, int(min(clip.duration_sec, self.req.max_clip_sec) * 90))
+        if emit:
+            await emit({
+                "event": "progress",
+                "msg": f"Generazione clip video — {clip.clip_id}",
+                "clip_id": clip.clip_id,
+                "clip_phase": "video_gen",
+            })
         run = await self._run_comfy_live(
             wf, client=client, timeout=video_timeout,
             label="Video LTX", clip_id=clip.clip_id, kind="video", emit=emit,
         )
         files = extract_output_files(run.history)
         if not files:
+            log.error("gen_video_no_output", clip_id=clip.clip_id, history=str(run.history)[:300])
             raise RuntimeError(f"No video output from ComfyUI for clip {clip.clip_id}")
 
-        from src.core.utils.comfyui_outputs import download_comfyui_file
+        from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_video_output
 
-        fname = files[0]["filename"]
+        best_video = pick_best_video_output(files)
+        fname = best_video["filename"]
         ext = Path(fname).suffix or ".mp4"
         tmp_dest = dest.with_suffix(ext)
+        log.info("gen_video_downloading", clip_id=clip.clip_id, filename=fname, dest=str(tmp_dest))
         await download_comfyui_file(
             client,
-            files[0],
+            best_video,
             tmp_dest,
             expect="video",
-            download_retries=3,
+            download_retries=4,
+            min_image_bytes=None,
         )
-        if tmp_dest.exists() and tmp_dest != dest:
+        if tmp_dest.exists() and tmp_dest.resolve() != dest.resolve():
             tmp_dest.rename(dest)
+        if not dest.exists():
+            raise RuntimeError(
+                f"Video clip non salvato su disco dopo download: {dest} "
+                f"(source: {fname})"
+            )
+        log.info("gen_video_saved", clip_id=clip.clip_id, dest=str(dest), size=dest.stat().st_size)
 
     # ── Phase 7: Video Assembler ──────────────────────────────────────────────
 
