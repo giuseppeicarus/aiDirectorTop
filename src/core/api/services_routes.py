@@ -145,3 +145,89 @@ async def storage_detail():
         "projects": list_project_dirs(),
         "project_count": sum(1 for p in projects_dir.iterdir() if p.is_dir()) if projects_dir.is_dir() else 0,
     }
+
+
+# ── AI-Toolkit config ─────────────────────────────────────────────────────────
+
+@router.get("/ai-toolkit")
+def ai_toolkit_config_get():
+    """Legge la configurazione cartelle AI-Toolkit."""
+    cfg = get_config().ai_toolkit
+    # Resolve effective training_folder (same logic as adapter)
+    training_folder = cfg.training_folder or str(
+        Path("~/.cinematic-studio/ai-toolkit-training").expanduser()
+    )
+    toolkit_dir = cfg.toolkit_dir or ""
+    return {
+        "training_folder": training_folder,
+        "toolkit_dir": toolkit_dir,
+        "backend": cfg.backend,
+        "mode": cfg.mode,
+        "base_model": cfg.base_model,
+        "docker_hf_cache": cfg.docker_hf_cache,
+        "hf_token": cfg.hf_token,
+        "remote_url": cfg.remote_url,
+        "remote_api_key": cfg.remote_api_key,
+    }
+
+
+@router.post("/ai-toolkit")
+async def ai_toolkit_config_save(body: dict):
+    """
+    Salva la configurazione cartelle AI-Toolkit in ~/.cinematic-studio/config.yaml.
+    Accetta: training_folder, toolkit_dir, backend, mode, base_model, docker_hf_cache, hf_token, remote_url, remote_api_key.
+    """
+    import yaml
+    from src.core.config import reload_config
+
+    allowed = {
+        "training_folder",
+        "toolkit_dir",
+        "backend",
+        "mode",
+        "base_model",
+        "docker_hf_cache",
+        "hf_token",
+        "remote_url",
+        "remote_api_key",
+    }
+    update = {k: v for k, v in body.items() if k in allowed}
+
+    user_path = Path("~/.cinematic-studio/config.yaml").expanduser()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if user_path.exists():
+        with open(user_path, encoding="utf-8") as f:
+            existing = yaml.safe_load(f) or {}
+
+    existing.setdefault("ai_toolkit", {}).update(update)
+
+    # Create effective training folder immediately
+    if "training_folder" in update and update["training_folder"]:
+        Path(update["training_folder"]).mkdir(parents=True, exist_ok=True)
+
+    with open(user_path, "w", encoding="utf-8") as f:
+        yaml.dump(existing, f, default_flow_style=False, allow_unicode=True)
+
+    reload_config()
+    return {"ok": True, "saved": update}
+
+
+@router.get("/ai-toolkit/disk")
+def ai_toolkit_disk_info(path: str = ""):
+    """Spazio disco per il path specificato (drive della training_folder)."""
+    try:
+        check_path = Path(path) if path else Path("~/.cinematic-studio").expanduser()
+        # Walk up to find an existing parent
+        while not check_path.exists() and check_path.parent != check_path:
+            check_path = check_path.parent
+        total, used, free = shutil.disk_usage(check_path)
+        return {
+            "ok": True,
+            "free_gb": round(free / 1e9, 1),
+            "total_gb": round(total / 1e9, 1),
+            "used_gb": round(used / 1e9, 1),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

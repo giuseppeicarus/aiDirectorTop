@@ -53,6 +53,13 @@ def reload_manifest():
     return _manifest()
 
 
+def get_workflow_meta(workflow_id: str) -> dict:
+    """Restituisce il metadato manifest per un workflow ID (senza fallback per tipo)."""
+    m = _manifest()
+    found = next((w for w in m["workflows"] if w["id"] == workflow_id), None)
+    return found or {}
+
+
 def _get_wf_meta(workflow_id: Optional[str], wf_type: str) -> dict:
     m = _manifest()
     if workflow_id:
@@ -226,7 +233,7 @@ def build_txt2img_workflow(
     workflow_id: Optional[str] = None,
     model_overrides: Optional[dict] = None,
 ) -> dict:
-    meta = _get_wf_meta(workflow_id or "z_image_txt2img", "txt2img")
+    meta = _get_wf_meta(workflow_id or "z_image_turbo_txt2img", "txt2img")
     wf   = _load_wf_json(meta)
     wf   = _inject(wf, meta.get("inject", {}), {
         "prompt":          frame.prompt,

@@ -35,7 +35,7 @@ class TrailerGenerateRequest(BaseModel):
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    txt2img_workflow: str = "z_image_txt2img"
+    txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 9.5

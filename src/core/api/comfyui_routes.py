@@ -274,6 +274,29 @@ async def _probe_node(node_cfg: ComfyUINodeConfig) -> dict:
     return result
 
 
+@router.get("/gen-stats")
+async def get_gen_stats():
+    """
+    Restituisce le medie di generazione per nodo (rolling 10 campioni).
+
+    Response::
+        {
+          "nodes": {
+            "NodeName": {
+              "image": {"avg_sec": X, "count": N, "samples": K},
+              "video": {"avg_sec": X, "count": N, "samples": K},
+            }
+          },
+          "best": {"image": avg_sec_or_null, "video": avg_sec_or_null, "node": name_or_null}
+        }
+    """
+    from src.core.comfyui.gen_stats import get_node_averages, best_node_averages
+    return {
+        "nodes": get_node_averages(),
+        "best": best_node_averages(),
+    }
+
+
 @router.get("/workflow/{workflow_id}/model-nodes")
 async def workflow_model_nodes(workflow_id: str):
     """

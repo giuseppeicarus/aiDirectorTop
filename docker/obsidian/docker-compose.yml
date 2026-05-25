@@ -2,6 +2,7 @@
 # Avvio: docker compose -f docker/obsidian/docker-compose.yml up -d
 # UI:    https://localhost:3001  (accetta certificato self-signed)
 # Vault: montato in /vault — in Obsidian: "Open folder as vault" → /vault
+# Network: rete condivisa 'aidirector' (creata da: docker network create aidirector)
 
 services:
   obsidian:
@@ -22,6 +23,13 @@ services:
     ports:
       - "${OBSIDIAN_WEB_PORT:-3000}:3000"
       - "${OBSIDIAN_WEB_HTTPS_PORT:-3001}:3001"
+    networks:
+      - aidirector
 
 volumes:
   obsidian_config:
+
+networks:
+  aidirector:
+    external: true
+    name: aidirector

@@ -191,6 +191,7 @@ function registerIpcHandlers() {
   ipcMain.handle('project:get',     (_, id)          => apiCall('GET',  `/api/projects/${id}`))
   ipcMain.handle('project:delete',      (_, id, deleteMedia = false) => apiCall('DELETE', `/api/projects/${id}?delete_media=${deleteMedia}`))
   ipcMain.handle('project:media-count', (_, id)                      => apiCall('GET',    `/api/projects/${id}/media-count`))
+  ipcMain.handle('project:gen-info',    ()                            => apiCall('GET',    '/api/projects/gen-info'))
   ipcMain.handle('project:storyboard', async (_, id) => {
     try { return await apiCall('GET', `/api/projects/${id}/storyboard`) }
     catch { return null }
@@ -199,6 +200,7 @@ function registerIpcHandlers() {
   ipcMain.handle('llm:health',      ()               => apiCall('GET',  '/api/llm/health'))
   ipcMain.handle('llm:enhancePrompt', (_, req) => apiCall('POST', '/api/llm/enhance-prompt', req))
   ipcMain.handle('comfyui:nodes',   ()               => apiCall('GET',  '/api/comfyui/nodes'))
+  ipcMain.handle('comfyui:genStats', ()              => apiCall('GET',  '/api/comfyui/gen-stats'))
 
   ipcMain.handle('config:get',      ()               => apiCall('GET',  '/health')) // placeholder
 
@@ -902,6 +904,15 @@ function registerIpcHandlers() {
       filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv'] }],
     })
   })
+
+  ipcMain.handle('dialog:openDirectory', async (_, opts = {}) => {
+    return dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: opts.title || 'Seleziona cartella',
+      defaultPath: opts.defaultPath || undefined,
+    })
+  })
+
 
   // ── Native notifications ────────────────────────────────────────────────────
   ipcMain.handle('notify', (_, { title, body }) => {

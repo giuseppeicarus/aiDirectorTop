@@ -47,6 +47,7 @@ from src.core.api.obsidian_routes import router as obsidian_router
 from src.core.api.admin_routes import router as admin_router
 from src.core.api.nav_routes import router as nav_router
 from src.core.api.dashboard_routes import router as dashboard_router
+from src.core.api.character_routes import router as character_router
 
 log = structlog.get_logger()
 
@@ -117,6 +118,7 @@ app.include_router(obsidian_router, prefix="/api/obsidian",  tags=["obsidian"])
 app.include_router(admin_router,    tags=["admin"])
 app.include_router(nav_router,      prefix="/api/nav",      tags=["nav"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(character_router, prefix="/api/characters", tags=["characters"])
 
 
 @app.get("/health")

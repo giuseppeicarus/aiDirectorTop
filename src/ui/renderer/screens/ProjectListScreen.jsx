@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Film, Plus, Trash2, Play, Clock } from 'lucide-react'
+import { Film, Plus, Trash2, Play, Clock, Timer } from 'lucide-react'
 import { useProjectStore } from '../stores'
 import clsx from 'clsx'
 import NewProjectTypeModal, { NEW_PROJECT_OPTIONS } from '../components/NewProjectTypeModal'
+import ElegantLoader from '../components/ElegantLoader'
 
 const STATUS_LABEL = {
   draft: 'Bozza',
@@ -20,11 +21,36 @@ const STATUS_COLOR = {
   error:       'text-red-400',
 }
 
+function fmtTime(sec) {
+  if (!sec || sec <= 0) return null
+  const m = Math.round(sec / 60)
+  if (m < 1) return '< 1m'
+  if (m < 60) return `~${m}m`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  return rm > 0 ? `~${h}h ${rm}m` : `~${h}h`
+}
+
+function calcGenEta(projectId, genInfo, genStats) {
+  if (!genInfo || !genStats) return null
+  const info = genInfo[projectId]
+  if (!info) return null
+  const best = genStats.best || {}
+  const imgAvg = best.image
+  const vidAvg = best.video
+  if (!imgAvg && !vidAvg) return null
+  const imgSec = imgAvg ? info.img_count * imgAvg : null
+  const vidSec = vidAvg ? info.video_count * vidAvg : null
+  return { imgSec, vidSec, totalSec: (imgSec || 0) + (vidSec || 0), imgCount: info.img_count, videoCount: info.video_count }
+}
+
 export default function ProjectListScreen() {
   const { projects, loading, loadProjects, deleteProject } = useProjectStore()
   const navigate = useNavigate()
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
+  const [genInfo, setGenInfo] = useState(null)
+  const [genStats, setGenStats] = useState(null)
 
   function handleNewProjectType(optionId) {
     const opt = NEW_PROJECT_OPTIONS.find(o => o.id === optionId)
@@ -32,9 +58,17 @@ export default function ProjectListScreen() {
     setNewProjectOpen(false)
     navigate(opt.to, opt.state ? { state: opt.state } : undefined)
   }
-  // { id, title, mediaCount, mediaSize }
 
-  useEffect(() => { loadProjects() }, [])
+  useEffect(() => {
+    loadProjects()
+    Promise.all([
+      window.studio?.project?.genInfo?.().catch(() => null),
+      window.studio?.comfyui?.genStats?.().catch(() => null),
+    ]).then(([gi, gs]) => {
+      if (gi) setGenInfo(gi)
+      if (gs) setGenStats(gs)
+    })
+  }, [])
 
   async function handleDeleteClick(e, project) {
     e.stopPropagation()
@@ -58,8 +92,12 @@ export default function ProjectListScreen() {
   }
 
   if (loading) return (
-    <div className="flex items-center justify-center h-full text-[#9090a0]">
-      Caricamento...
+    <div className="h-full flex items-center justify-center bg-[#0a0a0f]">
+      <ElegantLoader messages={[
+        'Caricamento della lista dei progetti...',
+        'Sincronizzazione dello stato del database...',
+        'Lettura delle statistiche di completamento...'
+      ]} />
     </div>
   )
 
@@ -101,7 +139,10 @@ export default function ProjectListScreen() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {projects.map(project => (
+          {projects.map(project => {
+            const eta = calcGenEta(project.id, genInfo, genStats)
+            const showEta = eta && project.status !== 'done'
+            return (
             <div key={project.id}
               onClick={() => navigate(`/projects/${project.id}`)}
               className="bg-[#12121a] border border-[#2a2a38] rounded-lg p-5 cursor-pointer
@@ -124,7 +165,7 @@ export default function ProjectListScreen() {
 
               <p className="text-xs text-[#9090a0] line-clamp-2 mb-4">{project.user_prompt}</p>
 
-              <div className="flex items-center gap-2 text-[11px] text-[#9090a0] mb-4">
+              <div className="flex items-center gap-2 text-[11px] text-[#9090a0] mb-2">
                 <span className="capitalize">{project.genre}</span>
                 <span>·</span>
                 <Clock size={11} />
@@ -132,6 +173,23 @@ export default function ProjectListScreen() {
                 <span>·</span>
                 <span>{project.aspect_ratio}</span>
               </div>
+
+              {showEta && (
+                <div className="flex items-center gap-1.5 text-[11px] text-[#9090a0] mb-4 bg-[#0f0f18] rounded px-2 py-1.5 border border-[#1e1e2a]">
+                  <Timer size={10} className="text-[#c9a84c] shrink-0" />
+                  <span className="text-[#9090a0]">
+                    {eta.imgCount} img
+                    {eta.imgSec ? <span className="text-[#c9a84c] ml-0.5">{fmtTime(eta.imgSec)}</span> : null}
+                    {' · '}
+                    {eta.videoCount} video
+                    {eta.vidSec ? <span className="text-[#c9a84c] ml-0.5">{fmtTime(eta.vidSec)}</span> : null}
+                    {eta.totalSec > 0 && (
+                      <span className="ml-1 text-[#555568]">= {fmtTime(eta.totalSec)}</span>
+                    )}
+                  </span>
+                </div>
+              )}
+              {!showEta && <div className="mb-4" />}
 
               <div className="flex gap-2" onClick={e => e.stopPropagation()}>
                 <button
@@ -150,7 +208,8 @@ export default function ProjectListScreen() {
                 </button>
               </div>
             </div>
-          ))}
+          )})}
+
         </div>
       )}
 

@@ -222,6 +222,53 @@ class ObsidianConfig(BaseModel):
         return str(v)
 
 
+class AiToolkitConfig(BaseModel):
+    """ostris/ai-toolkit integration for Create Personaggio LoRA training."""
+
+    mode: Literal["auto", "disabled", "required"] = "auto"
+    backend: Literal["local", "docker", "remote"] = "docker"
+    toolkit_dir: str = ""
+    python_executable: str = ""
+    training_folder: str = ""
+    docker_image: str = "cinematic-ai/ai-toolkit:local"
+    docker_gpus: str = "all"
+    docker_workdir: str = "/workspace/ai-toolkit"
+    docker_hf_cache: str = ""
+    remote_url: str = ""
+    remote_api_key: str = ""
+    base_model: str = "Tongyi-MAI/Z-Image"
+    model_arch: str = "zimage"
+    device: str = "cuda:0"
+    trigger_word_prefix: str = "cai"
+    max_start_seconds: int = 20
+    low_steps: int = 80
+    medium_steps: int = 400
+    high_steps: int = 1000
+    low_resolution: int = 512
+    medium_resolution: int = 768
+    high_resolution: int = 1024
+    hf_token: str = ""
+
+    @field_validator(
+        "toolkit_dir",
+        "python_executable",
+        "training_folder",
+        "docker_image",
+        "docker_gpus",
+        "docker_workdir",
+        "docker_hf_cache",
+        "remote_url",
+        "remote_api_key",
+        "hf_token",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty(cls, v: object) -> str:
+        if v is None:
+            return ""
+        return str(v)
+
+
 class AppSettings(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -232,6 +279,7 @@ class AppSettings(BaseModel):
     ltx_director: LTXDirectorSettings = Field(default_factory=LTXDirectorSettings)
     obsidian: ObsidianConfig = Field(default_factory=ObsidianConfig)
     language: LanguageConfig = Field(default_factory=LanguageConfig)
+    ai_toolkit: AiToolkitConfig = Field(default_factory=AiToolkitConfig)
 
     def get_llm_for_role(self, role: str) -> LLMConfig:
         """Restituisce la config LLM per il ruolo specificato, con fallback al default.

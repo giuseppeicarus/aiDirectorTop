@@ -1,0 +1,34 @@
+# AI-Toolkit LoRA training — build locale o pull da registry
+# Build:  docker compose -f docker/ai-toolkit/docker-compose.yml build
+# Network: rete condivisa 'aidirector' (creata da: docker network create aidirector)
+
+services:
+  ai-toolkit:
+    build:
+      context: ../..
+      dockerfile: docker/ai-toolkit/Dockerfile
+    image: cinematic-ai/ai-toolkit:local
+    container_name: aidirector-ai-toolkit
+    working_dir: /workspace/ai-toolkit
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${CINEMATIC_AI_TOOLKIT_TRAINING:-F:/SOLO_AI/AI-Toolkit-Easy-Install/ai-toolkit-training}:/workspace/training
+      - ${CINEMATIC_HF_CACHE:-F:/SOLO_AI/AI-Toolkit-Easy-Install/hf-cache}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - aidirector
+
+networks:
+  aidirector:
+    external: true
+    name: aidirector

@@ -10,7 +10,7 @@ import {
   ImagePlus, Loader2, Sparkles, Check, RefreshCw, X, Film,
   LayoutGrid, AlertCircle, Image as ImageIcon, Trash2, Clapperboard,
   ChevronRight, Instagram, Library, Search, ChevronDown, Settings2, Cpu, Square,
-  Save, RotateCcw, Edit3, ChevronUp, Wand2,
+  Save, RotateCcw, Edit3, ChevronUp, Wand2, UserRound,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ProjectDirBanner from '../components/ProjectDirBanner'
@@ -39,6 +39,13 @@ import { resolveImagePaths } from '../utils/electronFilePaths'
 import { buildReelEnhanceContext } from '../utils/obsidianEnhanceContext'
 
 const MAX_REFS = 12
+
+const CHARACTER_MODES = [
+  { key: 'none', label: 'Nessun personaggio' },
+  { key: 'reference', label: 'Solo reference' },
+  { key: 'character', label: 'Personaggio creato' },
+  { key: 'character_reference', label: 'Personaggio + reference' },
+]
 
 const REEL_AGENT_LABELS = {
   vision_analyst: 'Analista Vision',
@@ -446,7 +453,7 @@ const DEFAULT_CONFIG = {
   concurrent_jobs: 1,
   clip_backend: 'auto',
   allow_ffmpeg_fallback: false,
-  txt2img_workflow: 'z_image_txt2img',
+  txt2img_workflow: 'z_image_turbo_txt2img',
   img2video_workflow: 'ltx_img2video',
 }
 
@@ -913,6 +920,15 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
         }
         if (!cancelled && clip?.status === 'storyboard_failed') {
           setFailed(true)
+        }
+      } else {
+        // Fallback per caricamento diretto in browser
+        const httpUrl = urls[0]
+        if (!cancelled && httpUrl) {
+          const sep = httpUrl.includes('?') ? '&' : '?'
+          setFailed(false)
+          setSrc(`${httpUrl}${sep}v=${retry}`)
+          return
         }
       }
       if (!cancelled) setSrc(null)
@@ -1667,6 +1683,74 @@ function ReferenceDropZone({ refs, onAddPaths, onRemove, onPick, onPickFromLibra
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function CharacterReelSelector({ mode, setMode, selectedId, setSelectedId }) {
+  const [characters, setCharacters] = useState([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    fetch(`${BACKEND_ORIGIN}/api/characters/?ready_only=true`)
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled) setCharacters(Array.isArray(data) ? data : [])
+      })
+      .catch(() => { if (!cancelled) setCharacters([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const needsCharacter = mode === 'character' || mode === 'character_reference'
+
+  return (
+    <div className="mb-6 rounded-lg border border-[#252533] bg-[#16161f] p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <UserRound size={14} className="text-[#c9a84c]" />
+          <span className="text-[10px] font-mono text-[#9090a8] uppercase tracking-wider">
+            Personaggio CreateReel
+          </span>
+        </div>
+        {loading && <Loader2 size={12} className="animate-spin text-[#9090a8]" />}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 mb-3">
+        {CHARACTER_MODES.map(opt => (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => setMode(opt.key)}
+            className={clsx(
+              'px-2 py-1.5 rounded border text-[11px]',
+              mode === opt.key
+                ? 'border-[#c9a84c] bg-[#c9a84c]/10 text-[#c9a84c]'
+                : 'border-[#252533] text-[#9090a8] hover:text-[#e8e4dd]',
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {needsCharacter && (
+        <select
+          value={selectedId || ''}
+          onChange={e => setSelectedId(e.target.value)}
+          className="w-full bg-[#0f0f18] border border-[#252533] rounded px-2.5 py-2 text-xs text-[#e8e4dd]"
+        >
+          <option value="">Seleziona personaggio completato</option>
+          {characters.map(c => (
+            <option key={c.id} value={c.id}>
+              {c.name} · {c.profile} · {c.valid_image_count} foto
+            </option>
+          ))}
+        </select>
+      )}
+      <p className="mt-2 text-[9px] font-mono text-[#555568]">
+        La modalita personaggio creato inietta reference, caption e regole di continuita nei prompt e nei workflow video.
+      </p>
     </div>
   )
 }
@@ -2433,6 +2517,8 @@ export default function CreateReelScreen() {
   const [modelOverrides, setModelOverrides] = useState(null)
   const [systemActivity, setSystemActivity] = useState(null)
   const [agentsStatus, setAgentsStatus] = useState({})
+  const [characterMode, setCharacterMode] = useState('none')
+  const [selectedCharacterId, setSelectedCharacterId] = useState('')
   const cancelRef = useRef(false)
   const pendingClipsRef = useRef([])
   const clipsRef = useRef([])
@@ -2526,6 +2612,8 @@ export default function CreateReelScreen() {
     phase,
     resume_job_id: resumeJobId,
     model_overrides: modelOverrides || undefined,
+    character_mode: characterMode,
+    character_id: selectedCharacterId || null,
   })
 
   const handleProgress = useCallback((data) => {
@@ -3043,6 +3131,10 @@ export default function CreateReelScreen() {
       setError('Inserisci una descrizione di almeno 20 caratteri')
       return
     }
+    if ((characterMode === 'character' || characterMode === 'character_reference') && !selectedCharacterId) {
+      setError('Seleziona un personaggio completato oppure usa la modalita senza personaggio.')
+      return
+    }
     runPipeline('full')
   }
 
@@ -3149,6 +3241,8 @@ export default function CreateReelScreen() {
     setAudioStartSec(0)
     setLyrics('')
     setAudioAnalysis(null)
+    setCharacterMode('none')
+    setSelectedCharacterId('')
     setError(null)
     setActiveJobId(null)
     setView('setup')
@@ -3162,6 +3256,17 @@ export default function CreateReelScreen() {
       { replace: true, state: {} },
     )
   }, [location.state?.newProject])
+
+  useEffect(() => {
+    if (!location.state?.characterId) return
+    handleNew()
+    setCharacterMode(location.state.characterMode || 'character')
+    setSelectedCharacterId(location.state.characterId)
+    navigate(
+      { pathname: location.pathname, search: location.search },
+      { replace: true, state: {} },
+    )
+  }, [location.state?.characterId])
 
   async function openJobReview(job, { autoContinue = false } = {}) {
     let hydrated = job
@@ -3188,6 +3293,8 @@ export default function CreateReelScreen() {
     setTitle(hydrated.title || '')
     const cfg = { ...DEFAULT_CONFIG, ...(hydrated.config || {}) }
     setConfig(cfg)
+    setCharacterMode(cfg.character_mode || 'none')
+    setSelectedCharacterId(cfg.character_id || '')
     if (cfg.audio_path) {
       setAudioFile({ path: cfg.audio_path, name: cfg.audio_name || 'audio' })
       setAudioStartSec(Number(cfg.audio_start_sec) || 0)
@@ -3223,11 +3330,12 @@ export default function CreateReelScreen() {
     const phase = resolveReelResumePhase(hydrated)
     setResumePhase(phase)
     const interrupted = ['interrupted', 'failed'].includes(hydrated.status) && !hydrated.task_running
+    const isStale = Boolean(hydrated.stale_running)
     setPipelineInterrupted(interrupted)
     setJobControl({
-      staleRunning: Boolean(hydrated.stale_running) || interrupted,
+      staleRunning: isStale || interrupted,
       paused: Boolean(hydrated.paused),
-      canContinue: Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated),
+      canContinue: (interrupted || isStale) && (Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated)),
       taskRunning: Boolean(hydrated.task_running),
     })
     if (hydrated.status === 'running' && hydrated.pipeline_ui_phase === 'production') {
@@ -3348,11 +3456,12 @@ export default function CreateReelScreen() {
         setPhaseStatus(buildPhaseStatusFromJob(hydrated))
         setResumePhase(resolveReelResumePhase(hydrated))
         const pollInterrupted = ['interrupted', 'failed'].includes(hydrated.status) && !hydrated.task_running
+        const pollStale = Boolean(hydrated.stale_running)
         setPipelineInterrupted(pollInterrupted)
         setJobControl({
-          staleRunning: Boolean(hydrated.stale_running) || pollInterrupted,
+          staleRunning: pollStale || pollInterrupted,
           paused: Boolean(hydrated.paused),
-          canContinue: Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated),
+          canContinue: (pollInterrupted || pollStale) && (Boolean(hydrated.can_continue) || jobCanResumePipeline(hydrated)),
           taskRunning: Boolean(hydrated.task_running),
         })
         if (hydrated.pipeline_ui_phase === 'production') {
@@ -3582,6 +3691,13 @@ export default function CreateReelScreen() {
         onPick={handlePickImages}
         onPickFromLibrary={() => setShowMediaPicker(true)}
         uploadError={refUploadError}
+      />
+
+      <CharacterReelSelector
+        mode={characterMode}
+        setMode={setCharacterMode}
+        selectedId={selectedCharacterId}
+        setSelectedId={setSelectedCharacterId}
       />
 
       <ReelAudioSection

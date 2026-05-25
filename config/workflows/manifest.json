@@ -1,6 +1,50 @@
 {
   "workflows": [
     {
+      "id": "z_image_turbo_txt2img",
+      "name": "Z-Image Turbo (default)",
+      "file": "z_image_turbo_txt2img.json",
+      "type": "txt2img",
+      "category": "text_to_image",
+      "default": true,
+      "description": "Text to image con Z-Image Turbo (AuraFlow, 25 step). Più veloce e qualità superiore. Modelli: z_image_turbo_bf16.safetensors + qwen_3_4b.safetensors + ae.safetensors.",
+      "models": [
+        "z_image_turbo_bf16.safetensors (models/diffusion_models)",
+        "qwen_3_4b.safetensors (models/text_encoders)",
+        "ae.safetensors (models/vae)"
+      ],
+      "inject": {
+        "prompt": {
+          "node": "57:27",
+          "field": "text"
+        },
+        "width": {
+          "node": "57:13",
+          "field": "width"
+        },
+        "height": {
+          "node": "57:13",
+          "field": "height"
+        },
+        "seed": {
+          "node": "57:3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "57:3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "57:3",
+          "field": "cfg"
+        }
+      },
+      "output_nodes": [
+        "9"
+      ],
+      "source": "base_workflow_comfyui/z-imageTurbo_Text_To_image.json"
+    },
+    {
       "id": "z_image_txt2img",
       "name": "Z-Image / AuraFlow",
       "file": "z-image_Text_To_Image.json",
@@ -252,6 +296,59 @@
         "fps": { "node": "267:260", "field": "value" }
       },
       "output_nodes": ["75"]
+    },
+    {
+      "id": "ltx_img_audio2video_vbvr",
+      "name": "LTX 2.3 Image+Audio → Video VBVR (last frame upscaled)",
+      "file": "ltx_ia2v_vbvr_lastframe.json",
+      "type": "img_audio2video",
+      "category": "audio_image_to_video",
+      "description": "LTX 2.3 Image+Audio→Video con VBVR LoRA attivo (Licon-VBVR-I2V) + upscale latente spaziale x2. Salva video e last frame upscalato con RealESRGAN 2x.",
+      "models": [
+        "ltx-2.3-22b-dev-fp8.safetensors",
+        "gemma_3_12B_it_fp4_mixed.safetensors",
+        "ltx-2.3-22b-distilled-lora-384.safetensors",
+        "Ltx2.3-Licon-VBVR-I2V-96000-R32.safetensors",
+        "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+        "RealESRGAN_x2plus.pth"
+      ],
+      "inject": {
+        "first_image": {
+          "node": "269",
+          "field": "image"
+        },
+        "audio": {
+          "node": "276",
+          "field": "audio"
+        },
+        "prompt": {
+          "node": "340:319",
+          "field": "value"
+        },
+        "width": {
+          "node": "340:330",
+          "field": "value"
+        },
+        "height": {
+          "node": "340:324",
+          "field": "value"
+        },
+        "duration_sec": {
+          "node": "340:331",
+          "field": "value"
+        },
+        "fps": {
+          "node": "340:323",
+          "field": "value"
+        },
+        "audio_start_sec": {
+          "node": "340:332",
+          "field": "start_index"
+        }
+      },
+      "output_nodes": ["341", "407"],
+      "last_frame_node": "407",
+      "source": "base_workflow_comfyui/ltx_2_3_Image_Audio_To_Video_VBVR_last_frame_upscaled.json"
     }
   ]
 }

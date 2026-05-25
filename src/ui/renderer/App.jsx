@@ -21,6 +21,7 @@ import TrailerScreen from './screens/TrailerScreen'
 import CreateReelScreen from './screens/CreateReelScreen'
 import ObsidianScreen from './screens/ObsidianScreen'
 import DashboardScreen from './screens/DashboardScreen'
+import CreateCharacterScreen from './screens/CreateCharacterScreen'
 
 /** Nessun hook custom qui — evita warning HMR sull'ordine degli hook. */
 export default function App() {
@@ -40,6 +41,8 @@ export default function App() {
           <Route path="nodes"                   element={<NodesScreen />} />
           <Route path="services"                element={<ServicesScreen />} />
           <Route path="media"                   element={<MediaLibraryScreen />} />
+          <Route path="characters"              element={<CreateCharacterScreen />} />
+          <Route path="characters/:id"          element={<CreateCharacterScreen />} />
           <Route path="frame-cut-optimizer"     element={<FrameCutOptimizerScreen />} />
           <Route path="queue"                   element={<QueueScreen />} />
           <Route path="workflows"               element={<WorkflowsScreen />} />

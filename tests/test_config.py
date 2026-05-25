@@ -29,7 +29,7 @@ def _make_config(tmp_path, data: dict) -> AppSettings:
 
 def test_default_settings():
     cfg = AppSettings()
-    assert cfg.app.backend_port == 8765
+    assert cfg.app.backend_port == 8123
     assert cfg.llm.temperature == 0.7
     assert cfg.comfyui.execution_timeout_sec == 300
     assert cfg.llm_roles == {}

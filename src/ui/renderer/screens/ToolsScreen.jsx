@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Image, Film, Music, Wand2, Sparkles, Download,
   Upload, FolderOpen, X, Play, Loader2, AlertTriangle,
-  ChevronDown, ZoomIn,
+  ChevronDown, ZoomIn, Maximize2, Minimize2,
 } from 'lucide-react'
 import ImageLightbox from '../components/ImageLightbox'
 import MediaImageContextMenu from '../components/MediaImageContextMenu'
@@ -33,6 +33,7 @@ const TOOLS = [
   { id: 'txt2video',       label: 'Text → Video',          Icon: Film,   needsImage: false, needsAudio: false, isVideo: true  },
   { id: 'img2video',       label: 'Image → Video',         Icon: Play,   needsImage: true,  needsAudio: false, isVideo: true  },
   { id: 'img_audio2video', label: 'Image + Audio → Video', Icon: Music,  needsImage: true,  needsAudio: true,  isVideo: true  },
+  { id: 'img2img',         label: 'Image → Image',         Icon: Image,  needsImage: true,  needsAudio: false, isVideo: false, hidden: true },
 ]
 
 const ASPECT_RATIOS = ['16:9', '9:16', '1:1', '21:9', '4:3']
@@ -94,6 +95,7 @@ const TOOL_WORKFLOW_TYPES = {
   txt2video:       ['txt2video'],
   img2video:       ['img2video', 'img2video_lastframe'],
   img_audio2video: ['img_audio2video', 'img_audio2video_lastframe'],
+  img2img:         ['img2img'],
 }
 
 // ── CompactSelect ─────────────────────────────────────────────────────────────
@@ -277,11 +279,26 @@ function JobCard({ job, selected, onSelect, onOpenPreview }) {
   )
 }
 
+// ── Resolution badge helper ───────────────────────────────────────────────────
+
+function resolutionLabel(w, h) {
+  if (!w || !h || w <= 0 || h <= 0) return null
+  const long = Math.max(w, h)
+  const short = Math.min(w, h)
+  if (long >= 3840 || short >= 2160) return { label: '4K',  cls: 'text-[var(--gold)] bg-[var(--gold)]/20 border-[var(--gold)]/30' }
+  if (long >= 2560 || short >= 1440) return { label: '2K',  cls: 'text-blue-300 bg-blue-500/15 border-blue-500/25' }
+  if (long >= 1920 || short >= 1080) return { label: 'FHD', cls: 'text-emerald-300 bg-emerald-500/15 border-emerald-500/25' }
+  if (long >= 1280 || short >=  720) return { label: 'HD',  cls: 'text-white/70 bg-white/10 border-white/15' }
+  return { label: 'SD', cls: 'text-white/40 bg-white/5 border-white/10' }
+}
+
 // ── MediaCard (for all-media view from library) ───────────────────────────────
 
-function MediaCard({ item, selected, onSelect, onOpenPreview, onImageContextMenu }) {
+function MediaCard({ item, selected, onSelect, onOpenPreview, onImageContextMenu,
+  onAnimate, onAnimateAudio, onUseAsRef, hasAudio, hasImg2img }) {
   const src = resolveBackendUrl(`/api/media/file/${item.id}`)
   const isImage = item.media_type === 'image' || item.type === 'image'
+
   return (
     <div
       className={clsx(
@@ -291,6 +308,7 @@ function MediaCard({ item, selected, onSelect, onOpenPreview, onImageContextMenu
       onClick={() => onSelect(item)}
       onContextMenu={isImage ? (e) => onImageContextMenu?.(e, item) : undefined}
     >
+      {/* Media content */}
       {isImage
         ? (
           <img
@@ -298,7 +316,6 @@ function MediaCard({ item, selected, onSelect, onOpenPreview, onImageContextMenu
             alt=""
             className="w-full h-full object-cover cursor-zoom-in"
             onClick={(e) => { e.stopPropagation(); onOpenPreview?.(item) }}
-            onContextMenu={(e) => onImageContextMenu?.(e, item)}
           />
         ) : (
           <video
@@ -307,25 +324,80 @@ function MediaCard({ item, selected, onSelect, onOpenPreview, onImageContextMenu
             onClick={(e) => { e.stopPropagation(); onOpenPreview?.(item) }}
           />
         )}
-      <button
-        type="button"
-        title="Schermo intero"
-        onClick={(e) => { e.stopPropagation(); onOpenPreview?.(item) }}
-        className="absolute bottom-1.5 right-1.5 z-20 p-1.5 rounded-md bg-black/55 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-black/75 transition-opacity pointer-events-auto"
-      >
-        <ZoomIn size={12} />
-      </button>
 
-      <div className="absolute top-1.5 left-1.5 z-10 text-[9px] px-1.5 py-0.5 rounded font-mono bg-black/60 text-white/60 pointer-events-none">
-        {item.project_title || 'tools'}
+      {/* Dark scrim on hover */}
+      <div className="absolute inset-0 z-10 opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 pointer-events-none" />
+
+      {/* Top-left badges: resolution + project tag */}
+      <div className="absolute top-1.5 left-1.5 z-20 flex flex-col gap-0.5 items-start pointer-events-none">
+        {(() => { const r = resolutionLabel(item.width, item.height); return r ? (
+          <span className={clsx('text-[8px] px-1.5 py-[1px] rounded font-mono font-semibold border tracking-wide', r.cls)}>
+            {r.label}
+          </span>
+        ) : null })()}
+        <span className="text-[9px] px-1.5 py-0.5 rounded font-mono bg-black/60 text-white/60">
+          {item.project_title || 'tools'}
+        </span>
       </div>
 
-      <div className="absolute inset-0 z-10 opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 flex items-start justify-end p-1.5 pointer-events-none">
-        <a href={src} download={item.filename} onClick={e => e.stopPropagation()}
-           className="w-7 h-7 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center pointer-events-auto">
-          <Download size={11} className="text-white" />
+      {/* Top-right controls — zoom + download */}
+      <div className="absolute top-1.5 right-1.5 z-20 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          type="button"
+          title="Schermo intero"
+          onClick={(e) => { e.stopPropagation(); onOpenPreview?.(item) }}
+          className="w-6 h-6 rounded-md bg-black/60 text-white/80 hover:bg-black/80 flex items-center justify-center"
+        >
+          <ZoomIn size={11} />
+        </button>
+        <a
+          href={src}
+          download={item.filename}
+          onClick={e => e.stopPropagation()}
+          className="w-6 h-6 rounded-md bg-black/60 text-white/80 hover:bg-black/80 flex items-center justify-center"
+        >
+          <Download size={11} />
         </a>
       </div>
+
+      {/* Action bar — bottom, images only */}
+      {isImage && (
+        <div className="absolute bottom-0 left-0 right-0 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-stretch bg-black/80 backdrop-blur-sm border-t border-white/10">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAnimate?.(item) }}
+              className="flex-1 py-1.5 text-[10px] text-white/75 hover:text-white hover:bg-white/10 transition-colors text-center leading-none"
+            >
+              Anima video
+            </button>
+            {hasAudio && (
+              <>
+                <div className="w-px bg-white/15 self-stretch" />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onAnimateAudio?.(item) }}
+                  className="flex-1 py-1.5 text-[10px] text-[var(--gold)]/80 hover:text-[var(--gold)] hover:bg-[var(--gold)]/10 transition-colors text-center leading-none"
+                >
+                  Anima+audio
+                </button>
+              </>
+            )}
+            {hasImg2img && (
+              <>
+                <div className="w-px bg-white/15 self-stretch" />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onUseAsRef?.(item) }}
+                  className="flex-1 py-1.5 text-[10px] text-blue-300/80 hover:text-blue-300 hover:bg-blue-500/10 transition-colors text-center leading-none"
+                >
+                  Referenza img
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -661,6 +733,11 @@ export default function ToolsScreen() {
   const [allMedia, setAllMedia]           = useState([])
   const [loadingLib, setLoadingLib]       = useState(false)
 
+  // Prompt expand / auto-resize
+  const [promptExpanded, setPromptExpanded] = useState(false)
+  const textareaRef                         = useRef(null)
+  const expandedTextareaRef                 = useRef(null)
+
   // Enhance overlay progress
   const [enhancing, setEnhancing]         = useState(false)
   const [enhancePct, setEnhancePct]       = useState(0)
@@ -746,6 +823,24 @@ export default function ToolsScreen() {
     if (!tool.needsAudio) setAudioSource(null)
     setWorkflowId(null)
   }, [activeTool])
+
+  // Auto-resize inline textarea to fit content
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const next = Math.min(el.scrollHeight, 240)
+    el.style.height = next + 'px'
+  }, [prompt])
+
+  // Focus expanded textarea when modal opens
+  useEffect(() => {
+    if (promptExpanded && expandedTextareaRef.current) {
+      expandedTextareaRef.current.focus()
+      const len = expandedTextareaRef.current.value.length
+      expandedTextareaRef.current.setSelectionRange(len, len)
+    }
+  }, [promptExpanded])
 
   // Load all media when switch is toggled ON
   useEffect(() => {
@@ -915,10 +1010,12 @@ export default function ToolsScreen() {
     setEnhancing(true)
     setError(null)
     try {
+      const isVideoTool = ['img2video', 'img_audio2video', 'txt2video', 'txt2video_lastframe'].includes(activeTool)
       const res = await window.studio.tools.enhance({
         prompt: prompt.trim(),
         tool: activeTool,
         negative_prompt: '',
+        project_context: isVideoTool ? { duration_sec: duration } : undefined,
       })
       const unified = normalizeUnifiedPrompt(res?.enhanced, prompt.trim(), res?.negative_prompt)
       if (unified) {
@@ -1013,6 +1110,33 @@ export default function ToolsScreen() {
     setError(null)
   }
 
+  function applyAnimateAudioFromMedia(item) {
+    const source = imageSourceFromMediaItem(item)
+    if (!source) return
+    setActiveTool('img_audio2video')
+    setImageSource(source)
+    setShowAllMedia(false)
+    setSelectedLibItem(null)
+    setSelectedJob(null)
+    setCtxMenu(null)
+    setError(null)
+  }
+
+  function applyUseAsRefFromMedia(item) {
+    const source = imageSourceFromMediaItem(item)
+    if (!source) return
+    setActiveTool('img2img')
+    setImageSource(source)
+    setWorkflowId(workflows.find(w => w.type === 'img2img')?.id || null)
+    setShowAllMedia(false)
+    setSelectedLibItem(null)
+    setSelectedJob(null)
+    setCtxMenu(null)
+    setError(null)
+  }
+
+  const hasImg2img = workflows.some(w => w.type === 'img2img')
+
   function openPreview(target) {
     if (!target?.id) return
     const isJob = target.status != null
@@ -1071,7 +1195,7 @@ export default function ToolsScreen() {
 
         {/* ── Tool tabs ── */}
         <div className="flex items-center gap-1 px-5 pt-4 pb-2 shrink-0 border-b border-[var(--border)]">
-          {TOOLS.map(t => {
+          {TOOLS.filter(t => !t.hidden).map(t => {
             const active = t.id === activeTool
             return (
               <button key={t.id} onClick={() => setActiveTool(t.id)}
@@ -1138,7 +1262,12 @@ export default function ToolsScreen() {
                     selected={selectedLibItem?.id === item.id}
                     onSelect={handleSelectLibItem}
                     onOpenPreview={openPreview}
-                    onImageContextMenu={handleImageContextMenu} />
+                    onImageContextMenu={handleImageContextMenu}
+                    onAnimate={applyAnimateFromMedia}
+                    onAnimateAudio={applyAnimateAudioFromMedia}
+                    onUseAsRef={applyUseAsRefFromMedia}
+                    hasAudio={Boolean(audioSource)}
+                    hasImg2img={hasImg2img} />
                 ))}
               </div>
             )
@@ -1195,17 +1324,27 @@ export default function ToolsScreen() {
                 />
               )}
 
-              {/* Prompt textarea with enhance overlay */}
-              <div className="flex-1 relative">
+              {/* Prompt textarea with enhance overlay + expand button */}
+              <div className="flex-1 relative group/prompt min-h-[56px]">
                 <textarea
+                  ref={textareaRef}
                   value={prompt}
                   onChange={e => setPrompt(e.target.value)}
                   placeholder="Descrivi la scena… Migliora aggiunge --- Negative prompt --- nello stesso testo"
-                  rows={(tool.needsImage || tool.needsAudio) ? 3 : 2}
                   disabled={enhancing}
-                  className="w-full h-full resize-none text-sm text-[var(--text)] placeholder-[var(--text3)] bg-transparent focus:outline-none leading-relaxed"
+                  style={{ minHeight: (tool.needsImage || tool.needsAudio) ? 72 : 52, transition: 'height 0.2s cubic-bezier(0.4,0,0.2,1)' }}
+                  className="w-full resize-none text-sm text-[var(--text)] placeholder-[var(--text3)] bg-transparent focus:outline-none leading-relaxed overflow-hidden"
                   onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleGenerate() }}
                 />
+
+                {/* Expand button */}
+                <button
+                  onClick={() => setPromptExpanded(true)}
+                  title="Espandi editor prompt"
+                  className="absolute top-1 right-1 p-1 rounded opacity-0 group-hover/prompt:opacity-100 transition-opacity text-[var(--text3)] hover:text-[var(--gold)] hover:bg-[var(--bg3)]"
+                >
+                  <Maximize2 size={11} />
+                </button>
 
                 {/* Enhance loading overlay */}
                 {enhancing && (
@@ -1367,6 +1506,86 @@ export default function ToolsScreen() {
           onClose={() => setCtxMenu(null)}
           onAnimate={() => applyAnimateFromMedia(ctxMenu.item)}
         />
+      )}
+
+      {/* ── Expanded Prompt Editor Modal ── */}
+      {promptExpanded && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center"
+          style={{ background: 'rgba(7,7,13,0.82)', backdropFilter: 'blur(6px)' }}
+          onClick={e => { if (e.target === e.currentTarget) setPromptExpanded(false) }}
+        >
+          <div
+            className="w-full max-w-2xl flex flex-col rounded-2xl border border-[var(--border2)] overflow-hidden"
+            style={{
+              background: 'var(--bg1)',
+              boxShadow: '0 8px 64px rgba(201,168,76,0.10), 0 2px 16px rgba(0,0,0,0.6)',
+              animation: 'promptModalIn 0.22s cubic-bezier(0.34,1.56,0.64,1) both',
+            }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)]">
+              <div className="flex items-center gap-2">
+                <Wand2 size={13} className="text-[var(--gold)]" />
+                <span className="text-xs font-medium text-[var(--text2)] uppercase tracking-widest">Editor Prompt</span>
+              </div>
+              <button
+                onClick={() => setPromptExpanded(false)}
+                className="p-1.5 rounded-lg text-[var(--text3)] hover:text-[var(--text)] hover:bg-[var(--bg3)] transition-colors"
+              >
+                <Minimize2 size={13} />
+              </button>
+            </div>
+
+            {/* Textarea */}
+            <div className="relative flex-1 p-4">
+              <textarea
+                ref={expandedTextareaRef}
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                placeholder="Descrivi la scena… Migliora aggiunge --- Negative prompt --- nello stesso testo"
+                disabled={enhancing}
+                className="w-full resize-none text-sm text-[var(--text)] placeholder-[var(--text3)] bg-transparent focus:outline-none leading-relaxed"
+                style={{ minHeight: 220, maxHeight: 480, transition: 'height 0.18s ease', overflow: 'auto', height: 'auto' }}
+                rows={10}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setPromptExpanded(false); handleGenerate() } }}
+              />
+              {/* char count */}
+              <span className="absolute bottom-2 right-4 text-[10px] text-[var(--text3)] select-none tabular-nums">
+                {prompt.length} car
+              </span>
+            </div>
+
+            {/* Footer actions */}
+            <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-t border-[var(--border)] bg-[var(--bg0)]/40">
+              <button
+                onClick={() => { handleEnhance(); }}
+                disabled={!prompt.trim() || enhancing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--gold)]/30 text-[var(--gold)] hover:bg-[var(--gold)]/10 disabled:opacity-40 transition-colors"
+              >
+                <Sparkles size={11} />
+                Migliora
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--text3)]">Ctrl+Enter per generare</span>
+                <button
+                  onClick={() => setPromptExpanded(false)}
+                  className="px-4 py-1.5 rounded-lg text-xs font-semibold text-[var(--bg0)] transition-colors"
+                  style={{ background: 'var(--gold)' }}
+                >
+                  Fatto
+                </button>
+              </div>
+            </div>
+          </div>
+          <style>{`
+            @keyframes promptModalIn {
+              from { opacity: 0; transform: translateY(20px) scale(0.97); }
+              to   { opacity: 1; transform: translateY(0)    scale(1);    }
+            }
+          `}</style>
+        </div>,
+        document.body
       )}
     </div>
   )

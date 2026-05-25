@@ -187,3 +187,32 @@ ltx_director:
   frame_rate: 24
   width: 1280
   height: 720
+
+# Create Personaggio / ai-toolkit LoRA training
+# mode:
+#   auto     = usa ai-toolkit quando trova una installazione valida, altrimenti fallback preview
+#   disabled = non lancia training LoRA
+#   required = fallisce se ai-toolkit non è configurato o il training non parte
+ai_toolkit:
+  mode: "auto"
+  backend: "docker"                 # local | docker | remote
+  toolkit_dir: ""                 # es. F:/SOLO_AI/ai-toolkit oppure usa AI_TOOLKIT_DIR
+  python_executable: ""           # vuoto = Python corrente
+  training_folder: "F:/SOLO_AI/AI-Toolkit-Easy-Install/ai-toolkit-training"
+  docker_image: "cinematic-ai/ai-toolkit:local"
+  docker_gpus: "all"               # "all", "device=0", oppure "" per CPU/smoke
+  docker_workdir: "/workspace/ai-toolkit"
+  docker_hf_cache: "F:/SOLO_AI/AI-Toolkit-Easy-Install/hf-cache"
+  remote_url: ""                   # es. https://<runpod-id>-8000.proxy.runpod.net/run-lora
+  remote_api_key: ""               # bearer token opzionale per RunPod/Vast endpoint custom
+  base_model: "Tongyi-MAI/Z-Image"
+  model_arch: "zimage"
+  device: "cuda:0"
+  trigger_word_prefix: "cai"
+  max_start_seconds: 20           # smoke start: verifica che run.py parta senza bloccare la UI
+  low_steps: 80
+  medium_steps: 400
+  high_steps: 1000
+  low_resolution: 512
+  medium_resolution: 768
+  high_resolution: 1024

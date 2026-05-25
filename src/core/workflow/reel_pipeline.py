@@ -155,7 +155,7 @@ class ReelRequest(BaseModel):
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    txt2img_workflow: str = "z_image_txt2img"
+    txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 5.0
@@ -172,6 +172,9 @@ class ReelRequest(BaseModel):
     audio_name: str = ""
     audio_start_sec: float = Field(default=0.0, ge=0.0)
     lyrics: Optional[str] = None
+    character_mode: str = "none"  # none | reference | character | character_reference
+    character_id: Optional[str] = None
+    character_owner_id: str = "local_user"
 
 
 def _build_visual_plans_from_edl(
@@ -465,6 +468,21 @@ class ReelPipeline(TrailerPipeline):
         self._vision: dict[str, Any] = {}
         self._director_narrative: dict[str, Any] = {}
         self._ref_paths: List[Path] = []
+        self._character_context: dict[str, Any] = self._load_character_context()
+
+    def _load_character_context(self) -> dict[str, Any]:
+        mode = (self._reel_req.character_mode or "none").strip()
+        if mode not in ("character", "character_reference") or not self._reel_req.character_id:
+            return {}
+        try:
+            from src.core.workflow.character_service import character_prompt_context, get_record
+
+            record = get_record(self._reel_req.character_owner_id or "local_user", self._reel_req.character_id)
+            if record and record.status == "completato":
+                return character_prompt_context(record)
+        except Exception:
+            return {}
+        return {}
 
     def _checkpoint_path(self) -> Path:
         from src.core.config import get_config
@@ -544,7 +562,10 @@ class ReelPipeline(TrailerPipeline):
 
     async def _ingest_references(self) -> list[Path]:
         saved: list[Path] = []
-        for i, raw in enumerate(self._reel_req.reference_image_paths):
+        raw_refs = list(self._reel_req.reference_image_paths)
+        if (self._reel_req.character_mode or "none") in ("character", "character_reference"):
+            raw_refs.extend(self._character_context.get("reference_image_paths") or [])
+        for i, raw in enumerate(raw_refs):
             src = Path(raw)
             if not src.is_file():
                 continue
@@ -576,7 +597,7 @@ class ReelPipeline(TrailerPipeline):
             self._vision = await asyncio.wait_for(
                 analyze_reference_images(
                     refs,
-                    brief=self._reel_req.description,
+                    brief=self._character_augmented_brief(),
                     style=self._reel_req.style,
                 ),
                 timeout=vision_timeout,
@@ -606,6 +627,19 @@ class ReelPipeline(TrailerPipeline):
             "wardrobe_notes":      (self._vision.get("wardrobe_notes") or "")[:300],
             "continuity_rules":    self._vision.get("continuity_rules") or [],
         }
+
+    def _character_augmented_brief(self) -> str:
+        ctx = self._character_context or {}
+        if not ctx:
+            return self._reel_req.description
+        parts = [
+            self._reel_req.description,
+            "",
+            "CREATED CHARACTER CONTINUITY:",
+            ctx.get("prompt_anchor", ""),
+            ctx.get("caption_summary", ""),
+        ]
+        return "\n".join(p for p in parts if p)
 
     def _bootstrap_timeline(self) -> None:
         """Timeline sintetica (reel senza musica) per EDL e downbeat."""
@@ -1573,11 +1607,19 @@ class ReelPipeline(TrailerPipeline):
                 if cp.exists():
                     cp.unlink(missing_ok=True)
         except asyncio.CancelledError:
-            self._save_job(status="interrupted", error="Pipeline annullata")
+            self._save_job(
+                status="interrupted",
+                result=self._job_result_snapshot() or None,
+                error="Pipeline annullata",
+            )
             raise
         except Exception as exc:
             log.exception("reel_pipeline_fatal", error=str(exc))
-            self._save_job(status="failed", error=str(exc))
+            self._save_job(
+                status="failed",
+                result=self._job_result_snapshot() or None,
+                error=str(exc),
+            )
             yield {"error": str(exc), "phase": "fatal"}
 
     def _save_checkpoint(self, phase_num: int) -> None:
@@ -1730,4 +1772,18 @@ class ReelPipeline(TrailerPipeline):
                 "visual_motifs": self._director_narrative.get("visual_motifs") or [],
                 "slots": len(self._edl.slots),
                 "pct": 0.22,
+            }
+        if cp_phase >= 5 and self._clips_list:
+            vp = getattr(self, "_visual_plans_cache", None) or {}
+            for clip in self._clips_list:
+                yield {
+                    **_reel_clip_sse_payload(clip, self._storage_project_id, self, vp),
+                    "event": "clip_queued",
+                    "pct": 0.42,
+                }
+            yield {
+                "event": "prompts_ready",
+                "clips": [_reel_clip_sse_payload(c, self._storage_project_id, self, vp) for c in self._clips_list],
+                "clip_count": len(self._clips_list),
+                "pct": 0.42,
             }

@@ -9,6 +9,7 @@ import {
 import { useProjectStore } from '../stores'
 import clsx from 'clsx'
 import { API_BASE } from '../utils/apiClient'
+import ElegantLoader from '../components/ElegantLoader'
 
 const API = API_BASE
 
@@ -687,8 +688,13 @@ export default function ProjectDetailScreen() {
   }
 
   if (loading) return (
-    <div className="flex items-center justify-center h-full gap-2 text-[var(--text3)] text-sm">
-      <Loader2 size={16} className="animate-spin" /> Caricamento...
+    <div className="h-full flex items-center justify-center bg-[#0a0a0f]">
+      <ElegantLoader messages={[
+        'Caricamento dei dettagli del progetto...',
+        'Lettura dello storyboard e dell’arco narrativo...',
+        'Recupero dello stato di avanzamento della pipeline...',
+        'Orchestrando gli output di ragionamento LLM...'
+      ]} />
     </div>
   )
 

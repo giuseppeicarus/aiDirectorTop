@@ -81,7 +81,7 @@ class TrailerRequest(BaseModel):
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    txt2img_workflow: str = "z_image_txt2img"
+    txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img_audio2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 9.5
@@ -165,8 +165,9 @@ def _clip_prompt_payload(clip: "TrailerClip", project_id: str = "") -> dict:
         "ltx_video_prompt": clip.ltx_video_prompt,
     }
     if project_id and clip.storyboard_path and Path(clip.storyboard_path).exists():
+        prefix = "reel" if (project_id.startswith("reel_") or "reel" in project_id.lower()) else "trailer"
         out["storyboard_url"] = (
-            f"/api/trailer/storyboard/{project_id}/{Path(clip.storyboard_path).name}"
+            f"/api/{prefix}/storyboard/{project_id}/{Path(clip.storyboard_path).name}"
         )
     return out
 
@@ -1922,7 +1923,7 @@ class TrailerPipeline:
         yield {
             "event": "audio_ready",
             "path": str(trailer_audio),
-            "audio_url": f"/api/trailer/source?path={str(trailer_audio)}",
+            "audio_url": f"/api/{self._media_api_prefix()}/source?path={str(trailer_audio)}",
             "duration_sec": round(actual_dur, 2),
             "target_duration_sec": target_dur,
             "slots": n_slots,
@@ -2524,7 +2525,7 @@ class TrailerPipeline:
                         events.append({
                             "event": "clip_done", "clip_id": clip.clip_id,
                             "path": str(clip_dest), "backend": "ffmpeg",
-                            "url": f"/api/trailer/clips/{self.req.project_id}/{clip_dest.name}",
+                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         })
                     else:
                         await self._gen_video(
@@ -2534,7 +2535,7 @@ class TrailerPipeline:
                         events.append({
                             "event": "clip_done", "clip_id": clip.clip_id,
                             "path": str(clip_dest),
-                            "url": f"/api/trailer/clips/{self.req.project_id}/{clip_dest.name}",
+                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         })
 
                 except Exception as exc:
@@ -2557,7 +2558,7 @@ class TrailerPipeline:
                                     {
                                         "event": "clip_done", "clip_id": clip.clip_id,
                                         "path": str(clip_dest), "backend": "ffmpeg",
-                                        "url": f"/api/trailer/clips/{self.req.project_id}/{clip_dest.name}",
+                                        "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                                     },
                                 ]
                             else:
@@ -2672,7 +2673,7 @@ class TrailerPipeline:
                             "clip_id": clip.clip_id,
                             "path": str(clip_dest),
                             "backend": "ffmpeg",
-                            "url": f"/api/trailer/clips/{self.req.project_id}/{clip_dest.name}",
+                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         }
                     except Exception as exc:
                         yield {
@@ -3124,7 +3125,7 @@ class TrailerPipeline:
 
         video_wf_id = self.req.img2video_workflow
         use_audio_track = bool(audio_filename)
-        if not use_audio_track and video_wf_id == "ltx_img_audio2video":
+        if not use_audio_track and video_wf_id in ("ltx_img_audio2video", "ltx_img_audio2video_vbvr"):
             video_wf_id = "ltx_img2video"
 
         wf = build_img2video_workflow(
@@ -3182,6 +3183,34 @@ class TrailerPipeline:
             )
         log.info("gen_video_saved", clip_id=clip.clip_id, dest=str(dest), size=dest.stat().st_size)
 
+        # Download last frame image if the workflow produces one (e.g., VBVR)
+        from src.core.comfyui.workflow_builder import get_workflow_meta
+        wf_meta = get_workflow_meta(video_wf_id)
+        if wf_meta.get("last_frame_node"):
+            _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+            image_files = [
+                f for f in files
+                if Path(f.get("filename") or "").suffix.lower() in _IMAGE_EXTS
+            ]
+            if image_files:
+                from src.core.utils.comfyui_outputs import pick_best_image_output, download_comfyui_file
+                try:
+                    best_img = pick_best_image_output(image_files)
+                    lf_dest = self._frames_dir / f"{clip.clip_id}_last_from_video.png"
+                    await download_comfyui_file(client, best_img, lf_dest, expect="image")
+                    if lf_dest.exists() and lf_dest.stat().st_size > 5000:
+                        log.info("gen_video_last_frame_saved", clip_id=clip.clip_id, dest=str(lf_dest))
+                        _fire_register(register_media(
+                            lf_dest, "image",
+                            self.req.project_id,
+                            getattr(self.req, "title", None) or "Trailer",
+                            source="trailer",
+                            tags=["last_frame", "vbvr"],
+                        ))
+                except Exception as lf_err:
+                    log.warning("gen_video_last_frame_download_failed",
+                                clip_id=clip.clip_id, error=str(lf_err))
+
     # ── Phase 7: Video Assembler ──────────────────────────────────────────────
 
     async def _phase7_video_assembler(self) -> AsyncGenerator[dict, None]:
@@ -3217,7 +3246,7 @@ class TrailerPipeline:
                             "clip_id": clip.clip_id,
                             "path": str(clip_dest),
                             "backend": "ffmpeg",
-                            "url": f"/api/trailer/clips/{self.req.project_id}/{clip_dest.name}",
+                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         }
                     except Exception as exc:
                         log.warning(
@@ -3307,7 +3336,7 @@ class TrailerPipeline:
         good_count = len([c for c in self._clips_list if c.clip_path])
         self._last_result = {
             "video_path":   str(output_path),
-            "video_url":    f"/api/trailer/output/{self.req.project_id}/{output_path.name}",
+            "video_url":    f"/api/{self._media_api_prefix()}/output/{self.req.project_id}/{output_path.name}",
             "filename":     output_path.name,
             "duration_sec": final_dur,
             "width":        self.req.width,
@@ -3321,7 +3350,7 @@ class TrailerPipeline:
         yield {
             "done": True,
             "video_path": str(output_path),
-            "video_url": f"/api/trailer/output/{self.req.project_id}/{output_path.name}",
+            "video_url": f"/api/{self._media_api_prefix()}/output/{self.req.project_id}/{output_path.name}",
             "filename": output_path.name,
             "project_id": self.req.project_id,
             "duration_sec": final_dur,

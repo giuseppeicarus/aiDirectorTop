@@ -53,3 +53,6 @@ coverage/
 
 # User data (never commit)
 ~/.cinematic-studio/
+
+# External tool checkouts / local runners
+.external/

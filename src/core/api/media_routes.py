@@ -364,6 +364,7 @@ async def scan_and_register_media(
 async def list_media(
     type: Optional[str]       = Query(None, description="image | video | audio"),
     project_id: Optional[str] = Query(None),
+    category: Optional[str]   = Query(None, description="characters"),
     db: AsyncSession           = Depends(get_db),
 ):
     """Lista tutti i media con filtri opzionali per tipo e progetto."""
@@ -373,6 +374,8 @@ async def list_media(
 
     if type in ("image", "video", "audio"):
         query = query.where(MediaItemORM.type == type)
+    if category in ("characters", "personaggi"):
+        query = query.where(MediaItemORM.source == "character")
     if project_id:
         query = query.where(MediaItemORM.project_id == project_id)
 
@@ -392,6 +395,7 @@ async def media_stats(db: AsyncSession = Depends(get_db)):
         "images":     sum(1 for i in items if i.type == "image"),
         "videos":     sum(1 for i in items if i.type == "video"),
         "audios":     sum(1 for i in items if i.type == "audio"),
+        "characters": sum(1 for i in items if i.source == "character"),
         "size_bytes": total_size,
         "size_gb":    round(total_size / 1024**3, 2),
         "projects":   list({i.project_id for i in items}),

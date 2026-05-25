@@ -86,25 +86,38 @@ _CONTEXT_HINTS: dict[str, str] = {
     "txt2img": "Migliora per generazione immagine statica (dettaglio, luce, composizione).",
     "txt2video": (
         "LTX 2.3 text-to-video: ONE paragraph 4–8 sentences. Full scene in sentence 1, "
-        "lighting+mood, one camera+lens, timed action, env motion, Sound: final line."
+        "lighting+mood, one camera+lens, "
+        "second-by-second temporal action beats '1s [action], 2s [action]...' up to duration_sec, "
+        "env motion, Sound: final line."
     ),
     "txt2video_lastframe": (
         "LTX 2.3 text-to-video: ONE paragraph 4–8 sentences. Full scene in sentence 1, "
-        "lighting+mood, one camera+lens, timed action, env motion, Sound: final line."
+        "lighting+mood, one camera+lens, "
+        "second-by-second temporal action beats '1s [action], 2s [action]...' up to duration_sec, "
+        "env motion, Sound: final line."
     ),
     "img2video": (
         "LTX 2.3 image-to-video: ONE paragraph 4–8 sentences. Motion/changes ONLY "
-        "(reference frame already shows the still). Timed action + Sound: line."
+        "(reference frame already shows the still). "
+        "Include second-by-second temporal action beats from the user description: "
+        "'1s [action], 2s [action], Ns [action]' covering the full clip duration_sec. "
+        "End with a Sound: line."
     ),
     "img2video_lastframe": (
         "LTX 2.3 image-to-video: ONE paragraph 4–8 sentences. Motion/changes ONLY "
-        "(reference frame already shows the still). Timed action + Sound: line."
+        "(reference frame already shows the still). "
+        "Include second-by-second temporal action beats: '1s [action], 2s [action]...' "
+        "covering the full clip duration_sec. End with a Sound: line."
     ),
     "img_audio2video": (
-        "LTX 2.3 image+audio-to-video: same as img2video; Sound: must match music/vocal energy."
+        "LTX 2.3 image+audio-to-video: same as img2video. "
+        "Include second-by-second temporal action beats: '1s [action], 2s [action]...' "
+        "covering the full clip duration_sec. Sound: must match music/vocal energy."
     ),
     "img2video_audio": (
-        "LTX 2.3 image+audio-to-video: same as img2video; Sound: must match music/vocal energy."
+        "LTX 2.3 image+audio-to-video: same as img2video. "
+        "Include second-by-second temporal action beats: '1s [action], 2s [action]...' "
+        "covering the full clip duration_sec. Sound: must match music/vocal energy."
     ),
     "director_clip": (
         "Migliora il prompt motion della clip LTX Director: camera, azione, atmosfera, max ~30 parole."
@@ -208,6 +221,7 @@ def _format_project_context(ctx: Optional[dict[str, Any]]) -> str:
         ("energy", "ENERGY"),
         ("lyrics_segment", "LYRICS SEGMENT"),
         ("scene_description", "SCENE"),
+        ("duration_sec", "CLIP DURATION (seconds)"),
     ]
     for key, label in mapping:
         val = ctx.get(key)

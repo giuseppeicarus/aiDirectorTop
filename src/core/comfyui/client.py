@@ -419,6 +419,14 @@ class ComfyUIClient:
                             raise RuntimeError(
                                 f"ComfyUI error: {data.get('exception_message', 'unknown')}"
                             )
+
+                    elif mtype == "execution_interrupted":
+                        data = msg.get("data", {})
+                        pid = data.get("prompt_id") if isinstance(data, dict) else None
+                        if not pid or pid == prompt_id:
+                            raise RuntimeError(
+                                f"ComfyUI job {prompt_id} interrotto (execution_interrupted)"
+                            )
         except Exception as exc:
             ws_failed = True
             _log.warning("comfyui_ws_fallback", prompt_id=prompt_id, error=str(exc))
@@ -448,8 +456,9 @@ class ComfyUIClient:
     ) -> dict:
         """
         Ripoll history finché compaiono output file (proxy RunPod spesso in ritardo).
+        Esce subito se la history riporta un errore — evita blocco su job falliti.
         """
-        from src.core.comfyui.workflow_builder import extract_output_files
+        from src.core.comfyui.workflow_builder import extract_history_error, extract_output_files
 
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
@@ -458,6 +467,15 @@ class ComfyUIClient:
             last = await self.get_history(prompt_id)
             if extract_output_files(last):
                 return last
+            err = extract_history_error(last)
+            if err:
+                raise RuntimeError(f"ComfyUI job {prompt_id} fallito: {err}")
+            # Job ancora in coda / esecuzione — polling status
+            status = last.get("status") if isinstance(last.get("status"), dict) else {}
+            if status.get("status_str") in ("error", "cancelled"):
+                raise RuntimeError(
+                    f"ComfyUI job {prompt_id} terminato senza output (status={status.get('status_str')})"
+                )
             await asyncio.sleep(poll_interval)
         return last
 

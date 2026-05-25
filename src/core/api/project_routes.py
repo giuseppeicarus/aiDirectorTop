@@ -104,6 +104,87 @@ async def delete_project(
     await db.delete(project)
 
 
+@router.get("/gen-info")
+async def get_projects_gen_info():
+    """
+    Restituisce conteggio immagini/video da generare per ogni progetto,
+    leggendo i file reel_jobs.json / trailer_jobs.json senza query al DB.
+
+    Response::
+        {
+          "<project_id>": {
+            "img_count": N,      # tot txt2img jobs previsti
+            "video_count": M,    # tot img2video jobs previsti
+            "txt2img_workflow": str,
+            "img2video_workflow": str,
+          },
+          ...
+        }
+    """
+    cfg = get_config()
+    projects_dir = cfg.app.data_path / "projects"
+    result: dict = {}
+
+    if not projects_dir.exists():
+        return result
+
+    for project_dir in projects_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        project_id = project_dir.name
+        img_count = 0
+        video_count = 0
+        txt2img_wf = "z_image_turbo_txt2img"
+        img2video_wf = "ltx_img2video"
+
+        reel_file = project_dir / "reel_jobs.json"
+        trailer_file = project_dir / "trailer_jobs.json"
+
+        if reel_file.exists():
+            try:
+                jobs = json.loads(reel_file.read_text(encoding="utf-8"))
+                for job in jobs:
+                    res = job.get("result") or {}
+                    clips = res.get("clips") or []
+                    if clips:
+                        img_count = len(clips)
+                        video_count = len(clips)
+                        jcfg = job.get("config") or {}
+                        txt2img_wf = jcfg.get("txt2img_workflow", txt2img_wf)
+                        img2video_wf = jcfg.get("img2video_workflow", img2video_wf)
+                        break
+            except Exception:
+                pass
+
+        elif trailer_file.exists():
+            try:
+                jobs = json.loads(trailer_file.read_text(encoding="utf-8"))
+                for job in jobs:
+                    res = job.get("result") or {}
+                    clip_count = res.get("clip_count") or 0
+                    sb = res.get("storyboard") or []
+                    count = clip_count or len(sb)
+                    if count:
+                        img_count = count * 2   # first_frame + last_frame per shot
+                        video_count = count
+                        jcfg = job.get("config") or {}
+                        txt2img_wf = jcfg.get("txt2img_workflow", txt2img_wf)
+                        img2video_wf = jcfg.get("img2video_workflow", img2video_wf)
+                        break
+            except Exception:
+                pass
+
+        if img_count > 0 or video_count > 0:
+            result[project_id] = {
+                "img_count": img_count,
+                "video_count": video_count,
+                "txt2img_workflow": txt2img_wf,
+                "img2video_workflow": img2video_wf,
+            }
+
+    return result
+
+
 @router.get("/{project_id}/storyboard")
 async def get_storyboard(project_id: str, db: AsyncSession = Depends(get_db)):
     project = await db.get(ProjectORM, project_id)

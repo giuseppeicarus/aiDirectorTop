@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write(**/*.py)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] Writing Python file: checking for hardcoded secrets...' && grep -n 'sk-\\|api_key\\s*=\\s*[\"'\"'\"']' \"$CLAUDE_TOOL_INPUT_PATH\" 2>/dev/null && echo 'WARNING: Possible hardcoded secret detected!' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write(**/*.py)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python -m py_compile \"$CLAUDE_TOOL_INPUT_PATH\" 2>&1 && echo '[OK] Python syntax valid' || echo '[WARN] Python syntax error in $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write(**/*.ts)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] TypeScript file written: $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write(**/*.jsx)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] React component written: $CLAUDE_TOOL_INPUT_PATH'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Session End] Remind: commit changes with git add -A && git commit -m \"feat: <description>\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

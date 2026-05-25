@@ -39,6 +39,12 @@ LTX 2.3 VIDEO PROMPT RULES (mandatory for enhanced output):
 - Order: (1) shot type + subject + setting, (2) lighting + mood atmosphere,
   (3) ONE camera move + lens mm, (4) timed physical action across clip duration,
   (5) environment micro-motion, (6) final sentence starting with "Sound: " (once only).
+- TIMED ACTION BEATS (mandatory for img2video / img_audio2video):
+  Embed second-by-second temporal beats inline in the action sentence, using this format:
+  "1s [action happens], 2s [next action], 3s [next]..." up to the full CLIP DURATION (seconds).
+  Derive each beat from the user's description — if vague, infer logical progression.
+  Example for 6s: "1s the hand lowers slowly, 2s she turns to face camera, 3s eyes close gently,
+  4s a soft smile forms, 5s hair shifts with the breeze, 6s stillness holds."
 - img2video / ltx_video_prompt: describe MOTION and CHANGES only — do NOT re-describe the static reference image.
 - txt2video: you may describe the full scene in sentence 1 (no reference frame).
 - img_audio2video: align Sound: with music/vocal energy from context.
@@ -164,6 +170,33 @@ def _subject_clause(dop: dict, visual_hint: str) -> str:
     return clause
 
 
+def _generate_second_beats(description: str, duration_sec: float) -> str:
+    """
+    Genera beat temporali secondo-per-secondo da una descrizione utente.
+    Format: "1s action, 2s action, Ns action."
+    """
+    d = max(2, min(15, round(duration_sec)))
+    # Split the description into meaningful fragments to map to seconds
+    # Remove common filler patterns
+    desc = re.sub(r"\s+", " ", description.strip().lower())
+    # Extract action fragments: split on common conjunctions / punctuation
+    fragments = re.split(r"[,;]|\s+(?:then|and then|after|next|finally|while|as|when)\s+", desc)
+    fragments = [f.strip().strip(".,;") for f in fragments if f.strip() and len(f.strip()) > 3]
+
+    if not fragments:
+        fragments = [desc] if desc else ["movement occurs"]
+
+    beats: list[str] = []
+    for sec in range(1, d + 1):
+        # Map each second to a fragment (cycle if fewer fragments than seconds)
+        frag = fragments[(sec - 1) % len(fragments)]
+        # Capitalize first word
+        frag = frag[:1].upper() + frag[1:] if frag else ""
+        beats.append(f"{sec}s {frag}")
+
+    return ", ".join(beats) + "."
+
+
 def _action_timeline(
     dop: dict,
     *,
@@ -172,25 +205,20 @@ def _action_timeline(
 ) -> str:
     """Azione fisica con progressione temporale (LTX: cosa accade nel clip)."""
     motion = (dop.get("motion_intent") or dop.get("subject_action") or "").strip()
+    if not motion and brief:
+        motion = brief.strip()
     if not motion:
-        beat = dop.get("emotion_beat") or dop.get("narrative_role") or ""
-        motion = dop.get("subject_action") or "the subject completes one clear gesture toward camera"
+        motion = "the subject completes one clear gesture toward camera"
 
-    motion = _clean_clause(motion, 200).rstrip(".")
-    d = max(3.0, min(12.0, float(duration_sec or 5.0)))
+    motion = _clean_clause(motion, 300).rstrip(".")
+    d = max(3.0, min(15.0, float(duration_sec or 5.0)))
 
-    if d <= 4.5:
-        return (
-            f"Over the clip, {motion}, with deliberate pacing and visible weight shift."
-        )
+    # For short clips keep it compact
+    if d <= 3.5:
+        return f"Over the clip, {motion}, with deliberate pacing and visible weight shift."
 
-    t_mid = max(2, round(d * 0.45))
-    t_end = max(t_mid + 1, round(d * 0.85))
-    return (
-        f"In the first seconds, {motion}. "
-        f"Around second {t_mid}, the movement intensifies and expression sharpens. "
-        f"By second {t_end}, the action reaches its held beat before settling."
-    )
+    # Generate second-by-second beats from the motion description
+    return _generate_second_beats(motion, d)
 
 
 def _environment_motion(dop: dict) -> str:

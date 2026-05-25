@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('studio', {
     get:        (id)    => ipcRenderer.invoke('project:get', id),
     delete:     (id, deleteMedia = false) => ipcRenderer.invoke('project:delete', id, deleteMedia),
     mediaCount: (id)                      => ipcRenderer.invoke('project:media-count', id),
+    genInfo:    ()                        => ipcRenderer.invoke('project:gen-info'),
     storyboard: (id)    => ipcRenderer.invoke('project:storyboard', id),
   },
 
@@ -26,7 +27,8 @@ contextBridge.exposeInMainWorld('studio', {
 
   // ComfyUI
   comfyui: {
-    nodes: () => ipcRenderer.invoke('comfyui:nodes'),
+    nodes:    () => ipcRenderer.invoke('comfyui:nodes'),
+    genStats: () => ipcRenderer.invoke('comfyui:genStats'),
   },
 
   // Pipeline
@@ -160,6 +162,11 @@ contextBridge.exposeInMainWorld('studio', {
   settings: {
     downloadComfyModelScript: (scriptId) =>
       ipcRenderer.invoke('settings:downloadComfyModelScript', scriptId),
+  },
+
+  // Dialog nativi Electron
+  dialog: {
+    openDirectory: (opts) => ipcRenderer.invoke('dialog:openDirectory', opts),
   },
 
   // Shell utilities

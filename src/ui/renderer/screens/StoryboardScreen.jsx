@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useProjectStore } from '../stores/index'
 import { API_BASE } from '../utils/apiClient'
+import ElegantLoader from '../components/ElegantLoader'
 
 const API = API_BASE
 
@@ -429,7 +430,14 @@ export default function StoryboardScreen() {
   }, [id])
 
   if (loading) return (
-    <div className="p-6 text-[var(--text3)] text-sm animate-pulse">Caricamento storyboard...</div>
+    <div className="h-full flex items-center justify-center bg-[#0a0a0f]">
+      <ElegantLoader messages={[
+        'Caricamento dello storyboard cinematografico...',
+        'Lettura delle sequenze e delle inquadrature...',
+        'Verifica dei frame generati txt2img...',
+        'Preparazione del report di continuità visiva...'
+      ]} />
+    </div>
   )
 
   const shotMap = storyboard?.shot_list?.length

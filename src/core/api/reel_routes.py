@@ -30,7 +30,7 @@ class ReelGenerateRequest(BaseModel):
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    txt2img_workflow: str = "z_image_txt2img"
+    txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 5.0
@@ -46,6 +46,9 @@ class ReelGenerateRequest(BaseModel):
     audio_name: str = ""
     audio_start_sec: float = Field(default=0.0, ge=0.0)
     lyrics: Optional[str] = None
+    character_mode: str = "none"
+    character_id: Optional[str] = None
+    character_owner_id: str = "local_user"
 
 
 class ReelAudioAnalyzeRequest(BaseModel):

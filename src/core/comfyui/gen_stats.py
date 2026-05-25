@@ -105,3 +105,52 @@ def estimate_seconds(kind: str, workflow: str) -> Optional[float]:
     """Quick lookup: average elapsed seconds for given kind+workflow, or None."""
     avgs = get_averages()
     return avgs.get(kind, {}).get(workflow, {}).get("avg_sec")
+
+
+def get_node_averages() -> dict:
+    """
+    Returns rolling averages grouped by (node, kind).
+
+    {
+      "NodeName": {
+        "image": {"avg_sec": X, "count": N, "samples": K},
+        "video": {"avg_sec": X, "count": N, "samples": K},
+      },
+      ...
+    }
+    """
+    entries = _load_all()
+    buckets: dict[tuple, list[dict]] = {}
+    for e in entries:
+        node = e.get("node") or "default"
+        kind = e.get("kind", "image")
+        buckets.setdefault((node, kind), []).append(e)
+
+    result: dict = {}
+    for (node, kind), items in buckets.items():
+        window = items[-_WINDOW:]
+        avg_sec = sum(i["elapsed_sec"] for i in window) / len(window)
+        result.setdefault(node, {})[kind] = {
+            "avg_sec": round(avg_sec, 1),
+            "count": len(items),
+            "samples": len(window),
+        }
+    return result
+
+
+def best_node_averages() -> dict:
+    """
+    Returns the best per-kind averages across all nodes (node with most samples).
+    {"image": avg_sec or None, "video": avg_sec or None, "node": name or None}
+    """
+    node_avgs = get_node_averages()
+    best: dict = {"image": None, "video": None, "node": None}
+    best_samples = -1
+    for node, kinds in node_avgs.items():
+        total_samples = sum(k.get("samples", 0) for k in kinds.values())
+        if total_samples > best_samples:
+            best_samples = total_samples
+            best["node"] = node
+            best["image"] = (kinds.get("image") or {}).get("avg_sec")
+            best["video"] = (kinds.get("video") or {}).get("avg_sec")
+    return best

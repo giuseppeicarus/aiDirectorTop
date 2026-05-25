@@ -33,7 +33,7 @@ const API = API_BASE
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
-function Section({ title, children, defaultOpen = true }) {
+function Section({ title, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="border border-[var(--border)] rounded-lg mb-4 overflow-hidden">
@@ -295,6 +295,300 @@ function StorageSection() {
               </ul>
             )}
           </Field>
+        </>
+      )}
+    </Section>
+  )
+}
+
+// ── AI-Toolkit Storage Section ───────────────────────────────────────────────
+
+function AiToolkitSection() {
+  const [cfg, setCfg] = useState({
+    training_folder: '',
+    toolkit_dir: '',
+    backend: 'docker',
+    mode: 'auto',
+    base_model: 'Tongyi-MAI/Z-Image',
+    docker_hf_cache: '',
+    hf_token: '',
+    remote_url: '',
+    remote_api_key: '',
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState(null)
+  const [diskInfo, setDiskInfo] = useState(null)
+
+  // Load current config
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      try {
+        await waitForBackend()
+        const res = await fetch(`${API}/services/ai-toolkit`)
+        const data = await res.json()
+        if (!cancelled) {
+          setCfg(c => ({ ...c, ...data }))
+          // Fetch disk info for training_folder drive
+          if (data.training_folder) {
+            const sRes = await fetch(`${API}/services/ai-toolkit/disk?path=${encodeURIComponent(data.training_folder)}`).catch(() => null)
+            if (sRes?.ok) {
+              const d = await sRes.json()
+              if (!cancelled) setDiskInfo(d)
+            }
+          }
+        }
+      } catch { /* offline */ } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Electron folder picker
+  async function pickFolder(field) {
+    if (window.studio?.dialog?.openDirectory) {
+      const result = await window.studio.dialog.openDirectory()
+      if (result && !result.canceled && result.filePaths?.[0]) {
+        setCfg(c => ({ ...c, [field]: result.filePaths[0] }))
+      }
+    } else {
+      const val = window.prompt(`Inserisci percorso per ${field}:`, cfg[field])
+      if (val !== null) setCfg(c => ({ ...c, [field]: val }))
+    }
+  }
+
+  async function save() {
+    setSaving(true)
+    setSaveStatus(null)
+    try {
+      const res = await fetch(`${API}/services/ai-toolkit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      })
+      const data = await res.json()
+      if (res.ok && data.ok) {
+        setSaveStatus({ ok: true, msg: 'Salvato — cartelle aggiornate' })
+      } else {
+        setSaveStatus({ ok: false, msg: `Errore: ${data.error || 'sconosciuto'}` })
+      }
+    } catch (e) {
+      setSaveStatus({ ok: false, msg: `Errore rete: ${e.message}` })
+    } finally {
+      setSaving(false)
+      setTimeout(() => setSaveStatus(null), 4000)
+    }
+  }
+
+  function openFolder(path) {
+    if (path) window.studio?.shell?.openPath?.(path)
+  }
+
+  return (
+    <Section title="AI-Toolkit — Cartelle & Storage" defaultOpen={false}>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-[var(--text3)] py-2">
+          <Loader2 size={12} className="animate-spin" /> Caricamento configurazione…
+        </div>
+      ) : (
+        <>
+          {/* training_folder */}
+          <Field label="Cartella training">
+            <div className="flex gap-2">
+              <input
+                className={inp + ' flex-1'}
+                value={cfg.training_folder}
+                onChange={e => setCfg(c => ({ ...c, training_folder: e.target.value }))}
+                placeholder="es. F:/SOLO_AI/AI-Toolkit-Easy-Install/ai-toolkit-training"
+              />
+              <button
+                type="button"
+                onClick={() => pickFolder('training_folder')}
+                title="Scegli cartella"
+                className="px-2.5 py-2 rounded border border-[var(--border)] text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors shrink-0"
+              >
+                <FolderOpen size={13} />
+              </button>
+              {cfg.training_folder && (
+                <button
+                  type="button"
+                  onClick={() => openFolder(cfg.training_folder)}
+                  title="Apri nel file manager"
+                  className="px-2.5 py-2 rounded border border-[var(--border)] text-[var(--text3)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors shrink-0"
+                >
+                  <ExternalLink size={13} />
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-[var(--text3)] mt-1.5 leading-relaxed">
+              Qui vengono salvati: <span className="text-[var(--text2)]">dataset immagini</span>, <span className="text-[var(--text2)]">config YAML</span>, <span className="text-[var(--text2)]">output LoRA</span> e <span className="text-[var(--text2)]">checkpoint modelli</span> per ogni personaggio.
+            </p>
+            {diskInfo && (
+              <div className="mt-2 flex items-center gap-3 text-[10px] font-mono text-[var(--text3)]">
+                <HardDrive size={11} />
+                <span>Libero: <span className="text-[var(--gold)]">{diskInfo.free_gb} GB</span></span>
+                <span className="opacity-40">·</span>
+                <span>Totale: {diskInfo.total_gb} GB</span>
+              </div>
+            )}
+          </Field>
+
+          {/* toolkit_dir */}
+          <Field label="Installazione ai-toolkit">
+            <div className="flex gap-2">
+              <input
+                className={inp + ' flex-1'}
+                value={cfg.toolkit_dir}
+                onChange={e => setCfg(c => ({ ...c, toolkit_dir: e.target.value }))}
+                placeholder="es. F:/SOLO_AI/AI-Toolkit-Easy-Install/AI-Toolkit (vuoto = auto)"
+              />
+              <button
+                type="button"
+                onClick={() => pickFolder('toolkit_dir')}
+                title="Scegli cartella"
+                className="px-2.5 py-2 rounded border border-[var(--border)] text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors shrink-0"
+              >
+                <FolderOpen size={13} />
+              </button>
+            </div>
+            <p className="text-[10px] text-[var(--text3)] mt-1.5">
+              Percorso della cartella contenente <span className="text-[var(--text2)] font-mono">run.py</span>. Vuoto = usa la variabile d'ambiente <span className="text-[var(--text2)] font-mono">AI_TOOLKIT_DIR</span>.
+            </p>
+          </Field>
+
+          {/* HF Cache */}
+          <Field label="Cache HuggingFace">
+            <div className="flex gap-2">
+              <input
+                className={inp + ' flex-1'}
+                value={cfg.docker_hf_cache}
+                onChange={e => setCfg(c => ({ ...c, docker_hf_cache: e.target.value }))}
+                placeholder="es. F:/SOLO_AI/huggingface-cache (vuoto = predefinito sistema)"
+              />
+              <button
+                type="button"
+                onClick={() => pickFolder('docker_hf_cache')}
+                title="Scegli cartella cache"
+                className="px-2.5 py-2 rounded border border-[var(--border)] text-[var(--text2)] hover:border-[var(--gold)] hover:text-[var(--gold)] transition-colors shrink-0"
+              >
+                <FolderOpen size={13} />
+              </button>
+            </div>
+            <p className="text-[10px] text-[var(--text3)] mt-1.5">
+              Dove vengono scaricati i modelli HuggingFace (es. Z-Image base model). Consigliato su unità con almeno 20 GB liberi.
+            </p>
+          </Field>
+
+          {/* Backend + Mode row */}
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <Field label="Backend">
+              <select
+                className={sel}
+                value={cfg.backend}
+                onChange={e => setCfg(c => ({ ...c, backend: e.target.value }))}
+              >
+                <option value="local">Local (Python diretto)</option>
+                <option value="docker">Docker (container)</option>
+                <option value="remote">Remote (RunPod/Vast)</option>
+              </select>
+            </Field>
+            <Field label="Modalità">
+              <select
+                className={sel}
+                value={cfg.mode}
+                onChange={e => setCfg(c => ({ ...c, mode: e.target.value }))}
+              >
+                <option value="auto">Auto (usa se disponibile)</option>
+                <option value="required">Richiesto (errore se assente)</option>
+                <option value="disabled">Disabilitato</option>
+              </select>
+            </Field>
+          </div>
+
+          {/* Remote config conditional group */}
+          {cfg.backend === 'remote' && (
+            <div className="mb-4 p-4 border border-[var(--gold-dim)] rounded-lg bg-[var(--bg3)] relative overflow-hidden transition-all duration-300">
+              <div className="absolute top-0 right-0 bg-[var(--gold)]/10 text-[var(--gold)] text-[9px] px-2 py-0.5 font-mono uppercase tracking-wider rounded-bl border-l border-b border-[var(--gold-dim)]">
+                Remote Config
+              </div>
+              <h4 className="text-[11px] font-display text-[var(--gold)] tracking-wide uppercase mb-3 flex items-center gap-1.5">
+                <Globe size={11} className="text-[var(--gold)]" />
+                Configurazione Istanza Remota
+              </h4>
+              <Field label="URL Remoto">
+                <input
+                  className={inp}
+                  value={cfg.remote_url || ''}
+                  onChange={e => setCfg(c => ({ ...c, remote_url: e.target.value }))}
+                  placeholder="es. https://xxxx.runpod.net/v1/run-lora"
+                />
+                <p className="text-[10px] text-[var(--text3)] mt-1 font-sans">
+                  L'URL dell'endpoint dell'API server remota per il training (es. RunPod, Vast.ai).
+                </p>
+              </Field>
+              <Field label="API Key Remota">
+                <input
+                  type="password"
+                  className={inp}
+                  value={cfg.remote_api_key || ''}
+                  onChange={e => setCfg(c => ({ ...c, remote_api_key: e.target.value }))}
+                  placeholder="Inserisci la chiave API dell'istanza"
+                />
+                <p className="text-[10px] text-[var(--text3)] mt-1 font-sans">
+                  La chiave di autenticazione per autorizzare le chiamate verso l'istanza remota.
+                </p>
+              </Field>
+            </div>
+          )}
+
+          {/* Base model */}
+          <Field label="Modello base">
+            <input
+              className={inp}
+              value={cfg.base_model}
+              onChange={e => setCfg(c => ({ ...c, base_model: e.target.value }))}
+              placeholder="es. Tongyi-MAI/Z-Image"
+            />
+            <p className="text-[10px] text-[var(--text3)] mt-1">
+              Repo HuggingFace del modello base su cui fare fine-tuning LoRA.
+            </p>
+          </Field>
+
+          {/* HuggingFace Token */}
+          <Field label="Token HuggingFace">
+            <input
+              type="password"
+              className={inp}
+              value={cfg.hf_token || ''}
+              onChange={e => setCfg(c => ({ ...c, hf_token: e.target.value }))}
+              placeholder="hf_..."
+            />
+            <p className="text-[10px] text-[var(--text3)] mt-1">
+              Token di accesso HuggingFace (HF_TOKEN) per scaricare modelli privati o gated (es. Z-Image).
+            </p>
+          </Field>
+
+          {/* Save bar */}
+          <div className="flex items-center justify-between pt-4 border-t border-[var(--border)]">
+            <div>
+              {saveStatus && (
+                <span className={`text-xs ${saveStatus.ok ? 'text-[var(--green)]' : 'text-[var(--red)]'}`}>
+                  {saveStatus.msg}
+                </span>
+              )}
+            </div>
+            <button
+              onClick={save}
+              disabled={saving}
+              className="flex items-center gap-2 px-4 py-2 text-xs rounded bg-[var(--gold)]/15 hover:bg-[var(--gold)]/25 text-[var(--gold)] disabled:opacity-50 transition-colors"
+            >
+              {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+              {saving ? 'Salvataggio…' : 'Salva'}
+            </button>
+          </div>
         </>
       )}
     </Section>
@@ -628,6 +922,7 @@ export default function SettingsScreen() {
 
       <LanguageSection />
       <StorageSection />
+      <AiToolkitSection />
       <LlmSection />
       <LlmAgentsSection />
       <LlmModelRegistrySection />
@@ -1971,7 +2266,7 @@ function ComfyUIModelScriptsSection() {
   const scripts = data?.scripts?.filter(s => s.available) ?? []
 
   return (
-    <Section title="SCRIPT MODEL COMFYUI" defaultOpen>
+    <Section title="SCRIPT MODEL COMFYUI" defaultOpen={false}>
       <div className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg2)]">
         <Terminal size={18} className="text-[var(--gold)] shrink-0 mt-0.5" />
         <div className="text-xs text-[var(--text2)] leading-relaxed space-y-1.5">

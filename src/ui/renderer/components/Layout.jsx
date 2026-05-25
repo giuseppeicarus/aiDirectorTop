@@ -4,6 +4,7 @@ import {
   Image, GitBranch, Wand2, Package, Clapperboard, Tv, Instagram, BookOpen,
   ChevronDown, ChevronRight, Play, Music, Layers, Video,
   Image as ImageIcon,
+  UserRound,
 } from 'lucide-react'
 import { useConfigStore, usePipelineStore, useProjectStore } from '../stores'
 import { useEffect, useMemo, useState } from 'react'
@@ -25,6 +26,7 @@ const MEDIA_NAV = [
   { type: 'image', label: 'Image', Icon: ImageIcon, to: '/media?type=image' },
   { type: 'video', label: 'Video', Icon: Video, to: '/media?type=video' },
   { type: 'audio', label: 'Audio', Icon: Music, to: '/media?type=audio' },
+  { type: 'characters', label: 'Personaggi', Icon: UserRound, to: '/media?category=characters' },
 ]
 
 const CONFIG_NAV = [
@@ -240,6 +242,16 @@ export default function Layout() {
               <Instagram size={15} />
               CreateReel
             </NavLink>
+            <NavLink
+              to="/characters"
+              className={({ isActive }) => navClass(
+                isActive || location.pathname.startsWith('/characters'),
+                true,
+              )}
+            >
+              <UserRound size={15} />
+              Personaggio
+            </NavLink>
           </div>
 
           <div className="my-2 border-t border-[#2a2a38]" />
@@ -277,9 +289,13 @@ export default function Layout() {
             </div>
             {MEDIA_NAV.map(({ type, label, Icon, to }) => {
               const active = mediaActive && (
+                type === 'characters'
+                  ? searchParams.get('category') === 'characters'
+                  : (
                 type === 'all'
-                  ? !searchParams.get('type') || searchParams.get('type') === 'all'
+                  ? (!searchParams.get('type') && !searchParams.get('category')) || searchParams.get('type') === 'all'
                   : searchParams.get('type') === type
+                  )
               )
               return (
                 <NavLink

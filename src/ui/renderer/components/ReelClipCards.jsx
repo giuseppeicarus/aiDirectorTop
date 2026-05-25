@@ -253,8 +253,137 @@ function emptyPromptDraft(clip) {
   }
 }
 
+function FullScreenImageViewer({ src, onClose, title }) {
+  const [scale, setScale] = useState(1)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  const handleWheel = (e) => {
+    e.preventDefault()
+    const zoomIntensity = 0.1
+    const nextScale = e.deltaY < 0 ? scale + zoomIntensity : scale - zoomIntensity
+    setScale(Math.max(0.5, Math.min(5, nextScale)))
+  }
+
+  const handleMouseDown = (e) => {
+    e.preventDefault()
+    setIsDragging(true)
+    setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y })
+  }
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return
+    e.preventDefault()
+    setPosition({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y,
+    })
+  }
+
+  const handleMouseUp = () => {
+    setIsDragging(false)
+  }
+
+  const zoomIn = () => setScale(s => Math.min(5, s + 0.25))
+  const zoomOut = () => setScale(s => Math.max(0.5, s - 0.25))
+  const resetZoom = () => {
+    setScale(1)
+    setPosition({ x: 0, y: 0 })
+  }
+
+  return (
+    <div 
+      className="fixed inset-0 z-[9999] bg-[#07070a]/95 backdrop-blur-md flex flex-col justify-between items-center overflow-hidden select-none"
+      onWheel={handleWheel}
+    >
+      <div className="w-full flex items-center justify-between px-6 py-4 bg-gradient-to-b from-[#07070a] to-transparent z-10">
+        <div className="flex flex-col">
+          <span className="text-white text-xs font-semibold tracking-wide">
+            {title || 'Visualizzazione Anteprima'}
+          </span>
+          <span className="text-[#8e8ea8] text-[9px] font-mono mt-0.5">
+            Trascina per spostare • Usa la rotellina o i pulsanti per lo zoom • Doppio clic per resettare
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 active:scale-95 transition-all flex items-center justify-center text-[#8e8ea8] hover:text-white border border-white/10"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div 
+        className={`w-full flex-1 flex items-center justify-center overflow-hidden relative cursor-${scale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in'}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <img
+          src={src}
+          alt="Anteprima a schermo intero"
+          className="max-w-[90vw] max-h-[75vh] object-contain transition-transform duration-75 ease-out select-none pointer-events-none rounded border border-[#252533]/50 shadow-2xl"
+          style={{
+            transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+          }}
+          onDoubleClick={resetZoom}
+        />
+      </div>
+
+      <div className="px-6 py-4 bg-gradient-to-t from-[#07070a] to-transparent w-full flex items-center justify-center gap-4 z-10 mb-2">
+        <div className="flex items-center gap-2 bg-[#101018]/90 backdrop-blur border border-[#252533] px-3 py-1.5 rounded-full shadow-2xl">
+          <button
+            onClick={zoomOut}
+            className="w-7 h-7 rounded-full bg-[#1b1b24] hover:bg-[#252533] active:scale-90 transition-all flex items-center justify-center text-white text-xs font-semibold"
+            title="Zoom Out"
+          >
+            -
+          </button>
+          
+          <span 
+            className="text-[10px] text-white font-mono min-w-[45px] text-center cursor-pointer hover:text-[#c9a84c]"
+            onClick={resetZoom}
+            title="Clicca per resettare lo zoom"
+          >
+            {Math.round(scale * 100)}%
+          </span>
+          
+          <button
+            onClick={zoomIn}
+            className="w-7 h-7 rounded-full bg-[#1b1b24] hover:bg-[#252533] active:scale-90 transition-all flex items-center justify-center text-white text-xs font-semibold"
+            title="Zoom In"
+          >
+            +
+          </button>
+          
+          <div className="w-[1px] h-3 bg-[#252533] mx-1" />
+          
+          <button
+            onClick={resetZoom}
+            className="px-2.5 py-0.5 rounded text-[9px] uppercase font-mono text-[#c9a84c] border border-[#c9a84c]/20 bg-[#c9a84c]/5 hover:bg-[#c9a84c]/10 active:scale-95 transition-all"
+            title="Reset"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', localPath }) {
   const [src, setSrc] = useState(null)
+  const [modalOpen, setModalOpen] = useState(false)
   const isPortrait = aspectRatio === '9:16'
 
   useEffect(() => {
@@ -301,6 +430,9 @@ function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', loca
             setSrc(r.dataUrl)
             return
           }
+        } else if (!cancelled) {
+          setSrc(httpUrl)
+          return
         }
       }
       if (!cancelled) setSrc(null)
@@ -309,27 +441,48 @@ function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', loca
     return () => { cancelled = true }
   }, [clip, projectId, jobId, kind, localPath])
 
+  const isClickable = kind !== 'video' && src
+
   const box = (
-    <div
-      className="relative rounded border border-[#252533] bg-[#0f0f18] overflow-hidden"
-      style={{ aspectRatio: isPortrait ? '9/16' : '16/9' }}
-    >
-      {kind === 'video' && src ? (
-        <video src={src} className="w-full h-full object-cover" muted playsInline preload="metadata" />
-      ) : src ? (
-        <img src={src} alt="" className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[#555568]">
-          {clip?.status === 'generating' ? <Loader2 size={12} className="animate-spin text-[#c9a84c]" /> : <ImageIcon size={12} />}
-          <span className="text-[6px] font-mono uppercase">{kind}</span>
-        </div>
+    <>
+      <div
+        className={clsx(
+          "relative rounded border border-[#252533] bg-[#0f0f18] overflow-hidden select-none",
+          isClickable && "cursor-zoom-in group hover:border-[#c9a84c]/50 transition-colors"
+        )}
+        style={{ aspectRatio: isPortrait ? '9/16' : '16/9' }}
+        onClick={isClickable ? () => setModalOpen(true) : undefined}
+      >
+        {kind === 'video' && src ? (
+          <video src={src} className="w-full h-full object-cover" muted playsInline preload="metadata" />
+        ) : src ? (
+          <>
+            <img src={src} alt="" className="w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white/90 backdrop-blur-[1px]">
+              <Maximize2 size={12} className="scale-75 group-hover:scale-100 transition-transform duration-200" />
+            </div>
+          </>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[#555568]">
+            {clip?.status === 'generating' ? <Loader2 size={12} className="animate-spin text-[#c9a84c]" /> : <ImageIcon size={12} />}
+            <span className="text-[6px] font-mono uppercase">{kind}</span>
+          </div>
+        )}
+        {clip?.comfyuiPct > 0 && kind === 'preview' && (
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1e1e2a]/80">
+            <div className="h-full bg-[#c9a84c]" style={{ width: `${clip.comfyuiPct}%` }} />
+          </div>
+        )}
+      </div>
+
+      {modalOpen && (
+        <FullScreenImageViewer
+          src={src}
+          onClose={() => setModalOpen(false)}
+          title={`Inquadratura ${clip?.slot_id || ''} - ${kind === 'preview' ? 'Anteprima Storyboard' : kind === 'first' ? 'Primo Frame (First)' : 'Ultimo Frame (Last)'}`}
+        />
       )}
-      {clip?.comfyuiPct > 0 && kind === 'preview' && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1e1e2a]/80">
-          <div className="h-full bg-[#c9a84c]" style={{ width: `${clip.comfyuiPct}%` }} />
-        </div>
-      )}
-    </div>
+    </>
   )
   return box
 }
@@ -459,10 +612,16 @@ export function ReelClipPlanCard({
             <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="last" />
           ) : (
             <div
-              className="rounded border border-dashed border-[#32324a] bg-[#0f0f18] flex items-center justify-center text-[7px] font-mono text-[#555568]"
+              className="rounded border border-[#32324a]/60 bg-[#0d0d18] flex flex-col items-center justify-center p-2 text-center select-none"
               style={{ aspectRatio: aspectRatio === '9:16' ? '9/16' : '16/9' }}
             >
-              —
+              <div className="flex items-center justify-center w-5 h-5 rounded-full bg-[#1e1e2a] border border-[#32324a] text-[#555568] mb-1">
+                <X size={9} className="stroke-[2.5]" />
+              </div>
+              <span className="text-[5.5px] font-semibold text-[#9090a0] uppercase tracking-wider block">Last Frame</span>
+              <span className="text-[5px] text-[#555568] leading-tight block mt-0.5 max-w-[72px] mx-auto">
+                Sarà estratto dalla clip video
+              </span>
             </div>
           )}
         </div>

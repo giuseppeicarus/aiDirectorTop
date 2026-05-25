@@ -1605,7 +1605,7 @@ const DEFAULT_CONFIG = {
   duration_sec: 60, aspect_ratio: '9:16', width: 1080, height: 1920,
   fps: 30, style: 'cinematic, dramatic lighting, music video',
   concurrent_jobs: 1, max_clip_sec: 9.5,
-  txt2img_workflow: 'z_image_txt2img',
+  txt2img_workflow: 'z_image_turbo_txt2img',
   img2video_workflow: 'ltx_img2video',
   clip_backend: 'auto',
   allow_ffmpeg_fallback: true,

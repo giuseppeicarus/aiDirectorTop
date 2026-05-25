@@ -391,12 +391,23 @@ async def download_comfyui_image_resilient(
 ) -> Path:
     """
     Scarica output immagine: history → refresh → probe per prefisso filename_prefix.
+    Esce subito se la history segnala errore (evita polling infinito su job falliti).
     """
-    from src.core.comfyui.workflow_builder import extract_output_files
+    from src.core.comfyui.workflow_builder import extract_history_error, extract_output_files
+
+    # Fail fast: se la history riporta già un errore, non probare download
+    initial_err = extract_history_error(history)
+    if initial_err:
+        raise RuntimeError(f"ComfyUI job fallito (no download): {initial_err}")
+    status = history.get("status") if isinstance(history.get("status"), dict) else {}
+    if status.get("status_str") in ("error", "cancelled") and not extract_output_files(history):
+        raise RuntimeError(
+            f"ComfyUI job terminato senza output (status={status.get('status_str')})"
+        )
 
     files = extract_output_files(history)
     if not files and prompt_id:
-        history = await client.refresh_history_until_outputs(prompt_id, timeout=90.0)
+        history = await client.refresh_history_until_outputs(prompt_id, timeout=45.0)
         files = extract_output_files(history)
 
     if files:

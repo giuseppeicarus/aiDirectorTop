@@ -7,7 +7,7 @@ import {
   ExternalLink, FolderOpen, X, ChevronDown, Eye, Layers,
   Tag, Info, Check, Loader2, RefreshCw, Grid2X2, LayoutList,
   Play, Volume2, ZoomIn, ArrowLeft, ArrowRight, Link2, AlertTriangle,
-  Download,
+  Download, UserRound,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ImageLightbox from '../components/ImageLightbox'
@@ -30,12 +30,14 @@ const TYPE_TABS = [
   { key: 'image', label: 'Immagini', Icon: ImageIcon },
   { key: 'video', label: 'Video',    Icon: Film    },
   { key: 'audio', label: 'Audio',    Icon: Music   },
+  { key: 'characters', label: 'Personaggi', Icon: UserRound },
 ]
 
 const SOURCE_OPTS = [
   { key: 'all',       label: 'Tutti i sorgenti' },
   { key: 'uploaded',  label: 'Caricati'         },
   { key: 'generated', label: 'Generati dalla pipeline' },
+  { key: 'character', label: 'Personaggi' },
 ]
 
 const SORT_OPTS = [
@@ -105,6 +107,35 @@ function sortItems(items, sortKey) {
 
 // ── Anteprima in griglia (img / video / audio) ───────────────────────────────
 
+function MediaLibraryImage({ src, alt, className, onPreview, onContextMenu, reportSize, onError }) {
+  const [loaded, setLoaded] = useState(false)
+  return (
+    <div className="relative w-full h-full flex items-center justify-center bg-[#0f0f18] min-h-[5.5rem] md:min-h-[7rem] lg:min-h-[9rem] overflow-hidden">
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0f0f18] z-10">
+          <Loader2 size={16} className="text-[#c9a84c] animate-spin" />
+        </div>
+      )}
+      <img
+        src={src}
+        alt={alt}
+        onLoad={(e) => {
+          setLoaded(true)
+          reportSize(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+        }}
+        onError={onError}
+        onClick={onPreview}
+        onContextMenu={onContextMenu}
+        className={clsx(
+          className,
+          "transition-all duration-500",
+          loaded ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-95 blur-sm"
+        )}
+      />
+    </div>
+  )
+}
+
 function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize }) {
   const fileUrl = mediaFileUrl(item.id)
   const [imgSrc, setImgSrc] = useState(() => mediaThumbUrl(item.id) || fileUrl)
@@ -125,14 +156,13 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize
   if (item.type === 'image') {
     return (
       <>
-        <img
+        <MediaLibraryImage
           src={imgSrc}
           alt={item.filename}
           className="max-w-full max-h-full w-auto h-auto object-contain cursor-zoom-in pointer-events-auto"
-          loading="lazy"
-          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
+          onPreview={(e) => { e.stopPropagation(); onPreview(item) }}
           onContextMenu={(e) => onImageContextMenu?.(e, item)}
-          onLoad={(e) => reportSize(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+          reportSize={reportSize}
           onError={() => {
             if (imgSrc !== fileUrl) setImgSrc(fileUrl)
           }}
@@ -199,9 +229,22 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize
   return null
 }
 
+// ── Resolution badge helper ───────────────────────────────────────────────────
+
+function resolutionLabel(w, h) {
+  if (!w || !h || w <= 0 || h <= 0) return null
+  const long = Math.max(w, h)
+  const short = Math.min(w, h)
+  if (long >= 3840 || short >= 2160) return { label: '4K',  cls: 'text-[var(--gold)] bg-[var(--gold)]/20 border-[var(--gold)]/30' }
+  if (long >= 2560 || short >= 1440) return { label: '2K',  cls: 'text-blue-300 bg-blue-500/15 border-blue-500/25' }
+  if (long >= 1920 || short >= 1080) return { label: 'FHD', cls: 'text-emerald-300 bg-emerald-500/15 border-emerald-500/25' }
+  if (long >= 1280 || short >=  720) return { label: 'HD',  cls: 'text-white/70 bg-white/10 border-white/15' }
+  return { label: 'SD', cls: 'text-white/40 bg-white/5 border-white/10' }
+}
+
 // ── MediaCard ─────────────────────────────────────────────────────────────────
 
-function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign, onDownload, onImageContextMenu }) {
+function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign, onDownload, onImageContextMenu, onOpenCharacter, onUseCharacter }) {
   const isImage = item.type === 'image'
   const isAudio = item.type === 'audio'
   const [intrinsic, setIntrinsic] = useState(null)
@@ -238,21 +281,41 @@ function MediaCard({ item, thumbSize, onDelete, onPreview, onAssign, onDownload,
           }}
         />
 
-        {/* Source badge */}
-        <span className={clsx(
-          'absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded font-mono',
-          item.source === 'uploaded'
-            ? 'bg-blue-500/20 text-blue-400'
-            : 'bg-[var(--gold)]/15 text-[var(--gold)]'
-        )}>
-          {item.source === 'uploaded' ? 'upload' : 'gen'}
-        </span>
+        {/* Top-left: resolution badge + source badge */}
+        <div className="absolute top-1 left-1 flex flex-col gap-0.5 items-start pointer-events-none z-20">
+          {(() => {
+            const w = dims?.w || item.width
+            const h = dims?.h || item.height
+            const r = resolutionLabel(w, h)
+            return r ? (
+              <span className={clsx('text-[8px] px-1.5 py-[1px] rounded font-mono font-semibold border tracking-wide', r.cls)}>
+                {r.label}
+              </span>
+            ) : null
+          })()}
+          <span className={clsx(
+            'text-[9px] px-1.5 py-0.5 rounded font-mono',
+            item.source === 'uploaded'
+              ? 'bg-blue-500/20 text-blue-400'
+              : 'bg-[var(--gold)]/15 text-[var(--gold)]'
+          )}>
+            {item.source === 'uploaded' ? 'upload' : 'gen'}
+          </span>
+        </div>
 
         {/* Hover overlay — pointer-events-none così la lente resta cliccabile */}
         <div className="absolute inset-0 z-10 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
           <ActionBtn icon={Eye}        title="Preview"           onClick={() => onPreview(item)} />
           <ActionBtn icon={Download}  title="Scarica"           onClick={() => onDownload(item)} />
-          <ActionBtn icon={Link2}      title="Usa nel progetto"  onClick={() => onAssign(item)} gold />
+          {item.source === 'character' && (
+            <ActionBtn icon={ExternalLink} title="Dettaglio personaggio" onClick={() => onOpenCharacter(item)} gold />
+          )}
+          <ActionBtn
+            icon={Link2}
+            title={item.source === 'character' ? 'Usa in CreateReel' : 'Usa nel progetto'}
+            onClick={() => (item.source === 'character' ? onUseCharacter(item) : onAssign(item))}
+            gold
+          />
           <ActionBtn icon={Trash2}     title="Elimina"           onClick={() => onDelete(item.id)} danger />
         </div>
       </div>
@@ -642,9 +705,10 @@ function StatItem({ label, val, Icon }) {
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
-const MEDIA_TYPE_KEYS = new Set(['all', 'image', 'video', 'audio'])
+const MEDIA_TYPE_KEYS = new Set(['all', 'image', 'video', 'audio', 'characters'])
 
 function mediaTypeFromSearch(params) {
+  if (params.get('category') === 'characters') return 'characters'
   const t = params.get('type') || 'all'
   return MEDIA_TYPE_KEYS.has(t) ? t : 'all'
 }
@@ -678,14 +742,14 @@ export default function MediaLibraryScreen() {
     setLoading(true)
     try {
       const [itemsRes, statsRes] = await Promise.all([
-        fetch(`${API}/media?limit=500`).then(r => r.json()),
+        fetch(`${API}/media?limit=500${typeFilter === 'characters' ? '&category=characters' : ''}`).then(r => r.json()),
         fetch(`${API}/media/stats`).then(r => r.json()),
       ])
       setItems(Array.isArray(itemsRes) ? itemsRes : (itemsRes.items || []))
       setStats(statsRes)
     } catch { setItems([]) }
     setLoading(false)
-  }, [])
+  }, [typeFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -699,6 +763,8 @@ export default function MediaLibraryScreen() {
     setPage(1)
     if (key === 'all') {
       setSearchParams({}, { replace: true })
+    } else if (key === 'characters') {
+      setSearchParams({ category: 'characters' }, { replace: true })
     } else {
       setSearchParams({ type: key }, { replace: true })
     }
@@ -708,7 +774,8 @@ export default function MediaLibraryScreen() {
 
   const filtered = useMemo(() => {
     let arr = items
-    if (typeFilter !== 'all') arr = arr.filter(i => i.type === typeFilter)
+    if (typeFilter === 'characters') arr = arr.filter(i => i.source === 'character')
+    else if (typeFilter !== 'all') arr = arr.filter(i => i.type === typeFilter)
     if (srcFilter  !== 'all') arr = arr.filter(i => (i.source || 'generated') === srcFilter)
     if (search) {
       const q = search.toLowerCase()
@@ -842,6 +909,7 @@ export default function MediaLibraryScreen() {
     image: items.filter(i => i.type === 'image').length,
     video: items.filter(i => i.type === 'video').length,
     audio: items.filter(i => i.type === 'audio').length,
+    characters: items.filter(i => i.source === 'character').length,
   }), [items])
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -1020,6 +1088,16 @@ export default function MediaLibraryScreen() {
                 onAssign={setAssignItem}
                 onDownload={handleDownload}
                 onImageContextMenu={handleImageContextMenu}
+                onOpenCharacter={(mediaItem) => {
+                  const charId = String(mediaItem.project_id || '').replace('character:', '')
+                  if (charId) navigate(`/characters/${charId}`)
+                }}
+                onUseCharacter={(mediaItem) => {
+                  const charId = String(mediaItem.project_id || '').replace('character:', '')
+                  if (charId) {
+                    navigate('/createreel', { state: { characterId: charId, characterMode: 'character' } })
+                  }
+                }}
               />
             ))}
           </div>
