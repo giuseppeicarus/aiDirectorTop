@@ -46,6 +46,8 @@ from src.core.llm.vision import analyze_reference_images
 
 log = structlog.get_logger()
 
+_REEL_COMFYUI_GENERATION_LOCK = asyncio.Lock()
+
 REEL_AGENT_LABELS = {
     "vision_analyst": "Analista Vision",
     "story_analyst": "Analisi Audio",
@@ -114,8 +116,8 @@ def _reel_clip_sse_payload(
     out = _clip_prompt_payload(clip, storage_project_id)
     dop = (visual_plans or {}).get(clip.slot_id) or {}
     sb_w, sb_h = pipeline._storyboard_dimensions()
-    hd_w = int(pipeline._reel_req.width) * 2
-    hd_h = int(pipeline._reel_req.height) * 2
+    hd_w = int(pipeline._reel_req.width)
+    hd_h = int(pipeline._reel_req.height)
     out.update({
         "slot_id": clip.slot_id,
         "start_sec": round(clip.start_sec, 2),
@@ -157,6 +159,7 @@ class ReelRequest(BaseModel):
     fps: int = 30
     txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img2video"
+    img_audio2video_workflow: str = "ltx_img_audio2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 5.0
     num_slots: int = Field(default=0, ge=0, le=12)
@@ -359,6 +362,30 @@ class ReelPipeline(TrailerPipeline):
     def _after_storyboard_frame_saved(self, clip: TrailerClip) -> None:
         self._save_checkpoint(55)
 
+    async def _run_comfy_live(
+        self,
+        *args,
+        emit=None,
+        clip_id: str = "",
+        kind: str = "frame",
+        **kwargs,
+    ):
+        if _REEL_COMFYUI_GENERATION_LOCK.locked() and emit:
+            await emit({
+                "event": "progress",
+                "msg": f"ComfyUI in coda sequenziale - {clip_id or kind}",
+                "clip_id": clip_id,
+                "kind": kind,
+            })
+        async with _REEL_COMFYUI_GENERATION_LOCK:
+            return await super()._run_comfy_live(
+                *args,
+                emit=emit,
+                clip_id=clip_id,
+                kind=kind,
+                **kwargs,
+            )
+
     def __init__(self, request: ReelRequest) -> None:
         from src.core.utils.project_paths import (
             ensure_project_directory,
@@ -367,6 +394,11 @@ class ReelPipeline(TrailerPipeline):
         )
         from src.core.workflow.reel_jobs import job_storage_project_id
 
+        request.concurrent_jobs = 1
+        # Force comfyui backend to skip the txt2img probe that would load
+        # z-image before LTX, causing OOM.
+        if request.clip_backend == "auto":
+            request.clip_backend = "comfyui"
         self._reel_req = request
         self._created_at = now_iso()
         self.job_id = request.resume_job_id or uuid.uuid4().hex[:10]
@@ -418,7 +450,7 @@ class ReelPipeline(TrailerPipeline):
 
         img2video_wf = request.img2video_workflow
         if has_audio:
-            img2video_wf = "ltx_img_audio2video"
+            img2video_wf = request.img_audio2video_workflow or "ltx_img_audio2video"
         elif img2video_wf == "ltx_img_audio2video":
             img2video_wf = "ltx_img2video"
 
@@ -937,9 +969,12 @@ class ReelPipeline(TrailerPipeline):
             self._director_narrative = {
                 "logline":       self._reel_req.description[:220],
                 "mood":          "intense",
-                "visual_theme":  (vis.get("combined_style") or self._reel_req.description)[:200],
+                "visual_theme":  (vis.get("combined_style") or self._reel_req.style or self._reel_req.description)[:200],
                 "narrative_arc": self._reel_req.description[:400],
-                "visual_motifs": (vis.get("environment_anchors") or [])[:6],
+                "visual_motifs": (
+                    (vis.get("environment_anchors") or [])[:6]
+                    or self._extract_visual_motifs_from_brief()
+                ),
             }
             yield _reel_agent_event(
                 "narrative_director",
@@ -1443,7 +1478,7 @@ class ReelPipeline(TrailerPipeline):
                 self._storyboard_approved = True
                 self._re_enrich_clips_for_production()
                 if self._has_source_audio:
-                    self.req.img2video_workflow = "ltx_img_audio2video"
+                    self.req.img2video_workflow = self._reel_req.img_audio2video_workflow or "ltx_img_audio2video"
                     await self._ensure_clip_audio_slices()
                 self._save_checkpoint(55)
                 yield {"event": "resume", "job_id": self.job_id, "phase": "production", "pct": 0.46}
@@ -1465,6 +1500,16 @@ class ReelPipeline(TrailerPipeline):
                     else:
                         async for ev in self._phase_reel_silent_audio():
                             yield ev
+                # Give ComfyUI time to unload the storyboard txt2img model before
+                # Free storyboard model from VRAM before HD+video phase starts.
+                # This avoids OOM when z-image and LTX would overlap in VRAM.
+                yield _reel_agent_event(
+                    "comfyui",
+                    "working",
+                    "Scarico modello storyboard da VRAM…",
+                    pct=0.46,
+                )
+                await self._comfyui_free_vram(wait_sec=5.0)
                 yield _reel_agent_event(
                     "comfyui",
                     "working",
@@ -1693,6 +1738,9 @@ class ReelPipeline(TrailerPipeline):
         self._sections = [AudioSection(**s) for s in data.get("sections", [])]
         self._downbeats = data.get("downbeats", [])
         self._audio_duration = float(data.get("audio_duration", 0))
+        self._audio_start_sec = float(data.get("audio_start_sec") or 0.0)
+        self._lyric_beats = data.get("lyric_beats") or []
+        self._slot_lyrics = data.get("slot_lyrics") or {}
         edl_raw = data.get("edl")
         if edl_raw:
             self._edl = EDL(**edl_raw)
@@ -1737,6 +1785,45 @@ class ReelPipeline(TrailerPipeline):
             or dn.get("narrative_arc")
             or (dn.get("visual_motifs") or [])
         )
+
+    def _extract_visual_motifs_from_brief(self) -> list[str]:
+        """Extract key visual motifs from brief + style when LLM director fails."""
+        import re as _re
+
+        brief = (self._reel_req.description or "").lower()
+        style = (self._reel_req.style or "").lower()
+        combined = f"{brief} {style}"
+        motifs: list[str] = []
+
+        _MOTIF_PATTERNS: list[tuple[str, str]] = [
+            (r"\b(?:circo|circus|tendone|big top)\b", "decaying circus tent under stormy light"),
+            (r"\b(?:clown|pagliaccio)\b", "clown with smeared white makeup and hollow eyes"),
+            (r"\b(?:specchi?|mirror)\b", "warped funhouse mirrors distorting reality"),
+            (r"\b(?:neon|insegne al neon)\b", "broken neon signs flickering red and blue"),
+            (r"\b(?:fumo|smoke|nebbia|fog)\b", "volumetric fog and smoke drifting through the space"),
+            (r"\b(?:pioggia|rain)\b", "rain-soaked surfaces reflecting crimson light"),
+            (r"\b(?:acrobat|acrobata|ballerina)\b", "acrobatic performer suspended mid-air on ropes"),
+            (r"\b(?:rouge|crimson|rosso|red)\b", "deep crimson color bleeding through shadows"),
+            (r"\b(?:industrial|glitch|noise)\b", "industrial glitch textures and distorted percussive light"),
+            (r"\b(?:noir)\b", "noir chiaroscuro with hard shadows and wet streets"),
+            (r"\b(?:surreal|allucinazion)\b", "surreal visual logic where gravity and scale break"),
+            (r"\b(?:horror|horreur|spettro)\b", "horror spectacle staging with theatrical excess"),
+            (r"\b(?:marionette?|puppet)\b", "puppet or marionette figures with broken joints"),
+            (r"\b(?:sangue|blood)\b", "blood-red visual symbolism in costume and set detail"),
+            (r"\b(?:fuoco|fire|fiamma)\b", "controlled fire and ember light in the background"),
+        ]
+        for pattern, motif in _MOTIF_PATTERNS:
+            if _re.search(pattern, combined, _re.I):
+                motifs.append(motif)
+            if len(motifs) >= 6:
+                break
+
+        if not motifs:
+            # Generic fallback from style keywords
+            style_words = [w.strip().rstrip(",") for w in self._reel_req.style.split() if len(w) > 4]
+            motifs = style_words[:5]
+
+        return motifs[:6]
 
     async def _emit_checkpoint_catchup_events(self, cp_phase: int) -> AsyncGenerator[dict, None]:
         """Eventi SSE sintetici dopo resume da checkpoint (allinea UI fasi)."""

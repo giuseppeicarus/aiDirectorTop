@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, RefreshCw, Image as ImageIcon, Film, Music, Layers,
   GitBranch, Activity, CheckCircle, XCircle, Clock, ChevronLeft, ChevronRight,
-  Zap, HardDrive,
+  Zap, HardDrive, Loader2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE } from '../utils/apiClient'
 import { mediaFileUrl, mediaThumbUrl } from '../utils/mediaUrl'
+import ElegantLoader from '../components/ElegantLoader'
 
 const API = API_BASE
 const CAROUSEL_MS = 5500
@@ -51,25 +52,45 @@ function ServicePill({ name, ok, detail }) {
 function MediaPreview({ item }) {
   const thumb = mediaThumbUrl(item.id)
   const file = mediaFileUrl(item.id)
+  const [loaded, setLoaded] = useState(false)
 
-  if (item.type === 'video') {
-    return (
-      <video
-        src={file}
-        className="w-full h-full object-cover"
-        muted
-        loop
-        playsInline
-        autoPlay
-      />
-    )
-  }
+  // Reset loaded state when item changes
+  useEffect(() => {
+    setLoaded(false)
+  }, [item.id])
+
   return (
-    <img
-      src={thumb || file}
-      alt={item.filename}
-      className="w-full h-full object-cover"
-    />
+    <div className="relative w-full h-full flex items-center justify-center bg-[#07070d] overflow-hidden">
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#07070d] z-10 animate-pulse">
+          <Loader2 size={20} className="text-[#c9a84c] animate-spin" />
+        </div>
+      )}
+      {item.type === 'video' ? (
+        <video
+          src={file}
+          className={clsx(
+            "w-full h-full object-cover transition-opacity duration-300",
+            loaded ? "opacity-100" : "opacity-0"
+          )}
+          muted
+          loop
+          playsInline
+          autoPlay
+          onLoadedData={() => setLoaded(true)}
+        />
+      ) : (
+        <img
+          src={thumb || file}
+          alt={item.filename}
+          className={clsx(
+            "w-full h-full object-cover transition-opacity duration-300",
+            loaded ? "opacity-100" : "opacity-0"
+          )}
+          onLoad={() => setLoaded(true)}
+        />
+      )}
+    </div>
   )
 }
 
@@ -242,6 +263,14 @@ export default function DashboardScreen() {
     const t = setInterval(load, 15000)
     return () => clearInterval(t)
   }, [load])
+
+  if (loading && !data) {
+    return (
+      <div className="flex h-full items-center justify-center bg-[#0a0a0f]">
+        <ElegantLoader message="Caricamento dei dati della dashboard in corso..." />
+      </div>
+    )
+  }
 
   const media = data?.media || {}
   const gen = data?.generation || {}

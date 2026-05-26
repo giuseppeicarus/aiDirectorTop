@@ -401,8 +401,8 @@ class TrailerPipeline:
         return max(96, int(w * scale)), max(96, int(h * scale))
 
     def _hd_dimensions(self) -> tuple[int, int]:
-        """Frame first/last HD: sempre 2× la risoluzione video di uscita."""
-        return max(64, int(self.req.width) * 2), max(64, int(self.req.height) * 2)
+        """Frame first/last: stessa risoluzione video (no upscale 2×, evita OOM dopo LTX)."""
+        return max(64, int(self.req.width)), max(64, int(self.req.height))
 
     def _resolve_storyboard_file(self, clip: TrailerClip, dest: Path) -> Optional[Path]:
         """Trova storyboard ComfyUI reale (ignora placeholder FFmpeg ~836 byte)."""
@@ -2402,6 +2402,57 @@ class TrailerPipeline:
                     "Verifica Bearer auth / tunnel :8188, oppure abilita fallback FFmpeg."
                 )
 
+    async def _comfyui_free_vram(self, wait_sec: float = 5.0) -> None:
+        """Call /free on the primary ComfyUI node and wait for VRAM to be released.
+        Prevents OOM when switching from txt2img (z-image) to video (LTX) model.
+        """
+        import httpx as _hx
+
+        try:
+            node = self._pool._nodes[0].config if self._pool._nodes else None
+        except Exception:
+            node = None
+        if not node:
+            await asyncio.sleep(wait_sec)
+            return
+
+        base = f"http://{node.host}:{node.port}"
+        headers: dict = {}
+        if getattr(node, "token", None):
+            headers["Authorization"] = f"Bearer {node.token}"
+
+        # Step 1: request model unload
+        try:
+            async with _hx.AsyncClient(timeout=8) as hc:
+                await hc.post(
+                    f"{base}/free",
+                    json={"unload_models": True, "free_memory": True},
+                    headers=headers,
+                )
+        except Exception:
+            pass
+
+        # Step 2: poll /system_stats until VRAM is sufficiently free (or timeout)
+        deadline = asyncio.get_event_loop().time() + 60.0
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(2)
+            try:
+                async with _hx.AsyncClient(timeout=5) as hc:
+                    r = await hc.get(f"{base}/system_stats", headers=headers)
+                    if r.status_code == 200:
+                        stats = r.json()
+                        devs = stats.get("devices", [])
+                        if devs:
+                            vram_free_mb = devs[0].get("vram_free", 0)
+                            vram_total_mb = devs[0].get("vram_total", 1)
+                            # Consider VRAM free when >60% is available
+                            if vram_free_mb / vram_total_mb > 0.60:
+                                return
+            except Exception:
+                pass
+        # Fallback: just wait the minimum
+        await asyncio.sleep(max(0, wait_sec - 4))
+
     async def _phase6_comfyui_generation(self) -> AsyncGenerator[dict, None]:
         yield {"event": "phase", "phase": "comfyui", "pct": 0.42}
 
@@ -2528,6 +2579,15 @@ class TrailerPipeline:
                             "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         })
                     else:
+                        # Free z-image VRAM before LTX loads — prevents OOM when
+                        # both models can't fit simultaneously (23.52 GB limit).
+                        await emit_live({
+                            "event": "progress",
+                            "msg": f"Scarico modello frame da VRAM prima di LTX…",
+                            "clip_id": clip.clip_id,
+                            "clip_phase": "video_gen",
+                        })
+                        await self._comfyui_free_vram(wait_sec=5.0)
                         await self._gen_video(
                             clip, ff_path, lf_path, clip_dest, emit=emit_live,
                         )
@@ -2601,7 +2661,7 @@ class TrailerPipeline:
                 for ev in events:
                     await queue.put(ev)
                 await queue.put({"_done_marker": clip.clip_id})
-                # Brief cooldown so ComfyUI can flush its output queue before the next job
+                # Small cooldown between clips so ComfyUI output queue is flushed.
                 await asyncio.sleep(1.5)
 
         yield {
@@ -2754,7 +2814,7 @@ class TrailerPipeline:
                     shutil.copy2(canon_ff, canon_lf)
                     clip.last_frame_path = str(canon_lf)
                     continue
-            frame_timeout = 240.0 if role == "first" else 180.0
+            frame_timeout = 300.0 if role == "first" else 240.0
             if emit:
                 role_it = "first frame" if role == "first" else "last frame"
                 await emit({
@@ -3182,6 +3242,26 @@ class TrailerPipeline:
                 f"(source: {fname})"
             )
         log.info("gen_video_saved", clip_id=clip.clip_id, dest=str(dest), size=dest.stat().st_size)
+
+        # Extract the real last frame from the generated video so the UI can show it.
+        try:
+            lf_extracted = self._frames_dir / f"{clip.clip_id}_last.png"
+            rc, _ = await _run_ffmpeg(
+                "-y", "-sseof", "-0.1", "-i", str(dest),
+                "-vframes", "1", "-q:v", "2", str(lf_extracted),
+            )
+            if rc == 0 and lf_extracted.exists() and lf_extracted.stat().st_size > 5000:
+                clip.last_frame_path = str(lf_extracted)
+                log.info("gen_video_last_frame_extracted", clip_id=clip.clip_id, dest=str(lf_extracted))
+                if emit:
+                    await emit({
+                        "event": "last_frame_ready",
+                        "clip_id": clip.clip_id,
+                        "last_frame_path": str(lf_extracted),
+                        "last_frame_url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{lf_extracted.name}",
+                    })
+        except Exception:
+            pass
 
         # Download last frame image if the workflow produces one (e.g., VBVR)
         from src.core.comfyui.workflow_builder import get_workflow_meta

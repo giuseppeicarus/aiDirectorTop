@@ -32,6 +32,7 @@ class ReelGenerateRequest(BaseModel):
     fps: int = 30
     txt2img_workflow: str = "z_image_turbo_txt2img"
     img2video_workflow: str = "ltx_img2video"
+    img_audio2video_workflow: str = "ltx_img_audio2video"
     concurrent_jobs: int = 1
     max_clip_sec: float = 5.0
     num_slots: int = 0
@@ -56,6 +57,22 @@ class ReelAudioAnalyzeRequest(BaseModel):
     audio_start_sec: float = Field(default=0.0, ge=0.0)
     duration_sec: int = Field(default=30, ge=8, le=180)
     lyrics: Optional[str] = None
+
+
+@router.get("/workflows")
+async def reel_workflows():
+    """Return available ComfyUI workflows grouped by type (txt2img, img2video, img_audio2video)."""
+    manifest_path = Path(__file__).parents[3] / "config" / "workflows" / "manifest.json"
+    if not manifest_path.exists():
+        return {"txt2img": [], "img2video": [], "img_audio2video": []}
+    with manifest_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    result: dict = {"txt2img": [], "img2video": [], "img_audio2video": []}
+    for wf in data.get("workflows", []):
+        t = wf.get("type", "")
+        if t in result:
+            result[t].append({"id": wf["id"], "name": wf.get("name", wf["id"]), "description": wf.get("description", "")})
+    return result
 
 
 @router.post("/analyze-audio")
@@ -131,6 +148,9 @@ async def reel_generate(req: ReelGenerateRequest):
     job_id = req.resume_job_id or uuid.uuid4().hex[:10]
     req_dict = req.model_dump()
     req_dict["resume_job_id"] = job_id
+    # CreateReel must submit one generation workflow at a time to ComfyUI.
+    # Ignore stale UI/local-storage values that may still send a higher value.
+    req_dict["concurrent_jobs"] = 1
     reel_req = ReelRequest(**req_dict)
 
     q: asyncio.Queue = asyncio.Queue()
@@ -573,6 +593,19 @@ async def serve_frame_clip(project_id: str, clip_id: str):
 
     for pid in reel_media_search_project_ids(project_id):
         fp = _find_frame_for_clip(pid, clip_id)
+        if fp:
+            return file_response(fp, inline=True)
+    raise HTTPException(status_code=404, detail="Frame not found")
+
+
+@router.get("/frames/{project_id}/{filename:path}")
+async def serve_frame(project_id: str, filename: str):
+    """Serve frame images (first/last) for reel clips."""
+    from src.core.api.trailer_routes import _find_frame_file
+    from src.core.utils.project_paths import reel_media_search_project_ids
+
+    for pid in reel_media_search_project_ids(project_id):
+        fp = _find_frame_file(pid, filename)
         if fp:
             return file_response(fp, inline=True)
     raise HTTPException(status_code=404, detail="Frame not found")

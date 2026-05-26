@@ -12,6 +12,7 @@ import {
 import clsx from 'clsx'
 import ImageLightbox from '../components/ImageLightbox'
 import MediaImageContextMenu from '../components/MediaImageContextMenu'
+import ElegantLoader from '../components/ElegantLoader'
 import { mediaFileUrl, mediaThumbUrl } from '../utils/mediaUrl'
 import { downloadMediaItem } from '../utils/mediaDownload'
 import {
@@ -135,6 +136,35 @@ function MediaLibraryImage({ src, alt, className, onPreview, onContextMenu, repo
     </div>
   )
 }
+function MediaLibraryVideo({ src, className, onPreview, reportSize }) {
+  const [loaded, setLoaded] = useState(false)
+  return (
+    <div className="relative w-full h-full flex items-center justify-center bg-[#0f0f18] min-h-[5.5rem] md:min-h-[7rem] lg:min-h-[9rem] overflow-hidden">
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0f0f18] z-10">
+          <Loader2 size={16} className="text-[#c9a84c] animate-spin" />
+        </div>
+      )}
+      <video
+        src={src}
+        muted
+        playsInline
+        preload="metadata"
+        onLoadedData={() => setLoaded(true)}
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget
+          reportSize(v.videoWidth, v.videoHeight)
+        }}
+        onClick={onPreview}
+        className={clsx(
+          className,
+          "transition-all duration-500 bg-black",
+          loaded ? "opacity-100 scale-100 blur-0" : "opacity-0 scale-95 blur-sm"
+        )}
+      />
+    </div>
+  )
+}
 
 function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize }) {
   const fileUrl = mediaFileUrl(item.id)
@@ -182,17 +212,11 @@ function MediaGridPreview({ item, onPreview, onImageContextMenu, onIntrinsicSize
   if (item.type === 'video') {
     return (
       <>
-        <video
+        <MediaLibraryVideo
           src={fileUrl}
-          muted
-          playsInline
-          preload="metadata"
           className="max-w-full max-h-full w-auto h-auto object-contain cursor-pointer pointer-events-auto bg-black"
-          onClick={(e) => { e.stopPropagation(); onPreview(item) }}
-          onLoadedMetadata={(e) => {
-            const v = e.currentTarget
-            reportSize(v.videoWidth, v.videoHeight)
-          }}
+          onPreview={(e) => { e.stopPropagation(); onPreview(item) }}
+          reportSize={reportSize}
         />
         <button
           type="button"
@@ -1062,7 +1086,13 @@ export default function MediaLibraryScreen() {
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-y-auto pr-1">
+      <div className="flex-1 overflow-y-auto pr-1 relative min-h-[300px]">
+        {loading && items.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[#0a0a0f]/60 backdrop-blur-sm z-30 rounded-xl">
+            <ElegantLoader message="Caricamento della galleria multimediale in corso..." />
+          </div>
+        )}
+
         {!loading && filtered.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <ImageIcon size={48} className="text-[var(--text3)] opacity-20 mb-4" />

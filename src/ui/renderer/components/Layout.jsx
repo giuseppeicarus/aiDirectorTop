@@ -77,6 +77,7 @@ export default function Layout() {
   const [toolsOpen, setToolsOpen] = useState(false)
   const [recentItems, setRecentItems] = useState([])
   const [newProjectOpen, setNewProjectOpen] = useState(false)
+  const [mediaFiltersOpen, setMediaFiltersOpen] = useState(false)
 
   useGlobalActivityBridge()
 
@@ -120,6 +121,17 @@ export default function Layout() {
   useEffect(() => {
     setConfigOpen(configActive)
   }, [configActive])
+
+  const mediaSubActive = mediaActive && (
+    searchParams.get('type') === 'image' ||
+    searchParams.get('type') === 'video' ||
+    searchParams.get('type') === 'audio' ||
+    searchParams.get('category') === 'characters'
+  )
+
+  useEffect(() => {
+    if (mediaSubActive) setMediaFiltersOpen(true)
+  }, [mediaSubActive])
 
   const onlineCount = nodes.filter(n => n.online).length
 
@@ -287,27 +299,45 @@ export default function Layout() {
             <div className="px-2 py-1.5 text-[10px] font-mono uppercase tracking-wider text-[#555568]">
               Media Library
             </div>
-            {MEDIA_NAV.map(({ type, label, Icon, to }) => {
-              const active = mediaActive && (
-                type === 'characters'
-                  ? searchParams.get('category') === 'characters'
-                  : (
-                type === 'all'
-                  ? (!searchParams.get('type') && !searchParams.get('category')) || searchParams.get('type') === 'all'
-                  : searchParams.get('type') === type
-                  )
-              )
+            {/* "All" is always visible */}
+            {(() => {
+              const allItem = MEDIA_NAV.find(i => i.type === 'all')
+              const active = mediaActive && (!searchParams.get('type') && !searchParams.get('category') || searchParams.get('type') === 'all')
               return (
                 <NavLink
-                  key={type}
-                  to={to}
+                  to={allItem.to}
                   className={({ isActive }) => navClass(isActive || active)}
                 >
-                  <Icon size={15} />
-                  {label}
+                  <allItem.Icon size={15} />
+                  {allItem.label}
                 </NavLink>
               )
-            })}
+            })()}
+
+            {/* Collapsible group for sub-filters */}
+            <SidebarGroup
+              title="Filtri"
+              open={mediaFiltersOpen}
+              onToggle={() => setMediaFiltersOpen(v => !v)}
+            >
+              {MEDIA_NAV.filter(i => i.type !== 'all').map(({ type, label, Icon, to }) => {
+                const active = mediaActive && (
+                  type === 'characters'
+                    ? searchParams.get('category') === 'characters'
+                    : searchParams.get('type') === type
+                )
+                return (
+                  <NavLink
+                    key={type}
+                    to={to}
+                    className={({ isActive }) => navClass(isActive || active)}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </NavLink>
+                )
+              })}
+            </SidebarGroup>
           </div>
 
           <div className="my-2 border-t border-[#2a2a38]" />

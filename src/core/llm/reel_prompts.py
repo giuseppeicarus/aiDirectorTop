@@ -110,6 +110,35 @@ Rules:
 - If the brief is a music video / rap / performance: at least one slot must show lip-sync or vocal performance energy, one wide establishing, one intense close-up — not only slow zoom"""
 
 
+def _build_section_lyric_map(lyrics: str, sections: list[dict], duration_sec: float) -> str:
+    """Map lyric lines to audio sections for director context when timed beats are unavailable."""
+    if not lyrics.strip() or not sections:
+        return ""
+    lines = [l.strip() for l in lyrics.splitlines() if l.strip()]
+    if not lines:
+        return ""
+    n = len(lines)
+    total = duration_sec or 1.0
+    out_parts: list[str] = []
+    acc = 0
+    for sec in sections:
+        s_start = sec.get("start_sec", 0)
+        s_end = sec.get("end_sec", total)
+        sec_dur = max(0.1, s_end - s_start)
+        n_sec = max(1, round(n * sec_dur / total))
+        end_idx = min(n, acc + n_sec)
+        sec_lines = lines[acc:end_idx]
+        if sec_lines:
+            energy = sec.get("energy", "medium")
+            stype = sec.get("section_type", "")
+            label = f"{stype or 'section'} [{s_start:.0f}s–{s_end:.0f}s, energy={energy}]"
+            out_parts.append(f"{label}:\n" + "\n".join(f"  {l}" for l in sec_lines[:8]))
+        acc = end_idx
+        if acc >= n:
+            break
+    return "\n\n".join(out_parts)[:2000]
+
+
 def build_reel_director_user_prompt(
     *,
     brief: str,
@@ -149,8 +178,19 @@ Sections: {_json.dumps(sections_payload[:10], ensure_ascii=True)[:2500]}
 Timed lyric beats: {_json.dumps(beats, ensure_ascii=True)[:2000]}
 """
         if lyrics and lyrics.strip():
+            if not beats and sections_payload:
+                section_lyric_map = _build_section_lyric_map(
+                    lyrics.strip(),
+                    sections_payload,
+                    float(duration_sec),
+                )
+                if section_lyric_map:
+                    audio_block += f"""
+=== LYRICS BY AUDIO SECTION (use this to sync each slot's narrative to its lyric window) ===
+{section_lyric_map}
+"""
             audio_block += f"""
-=== FULL LYRICS (user-provided — do NOT re-transcribe; honor these words in slot timing) ===
+=== FULL LYRICS (honor these exact words — sync slot narrative to lyric meaning and section energy) ===
 {lyrics.strip()[:2500]}
 """
 
@@ -293,7 +333,7 @@ FORBIDDEN: "The scene shows...", "with every surface visible", repeated shot typ
 trailing "cinematic aesthetic / photorealistic / natural skin texture" keyword stacks, emotion labels alone ("anticipation energy").
 
 GOOD EXAMPLE (5s clip):
-"A wide shot of a rap artist in a leather jacket and chains in a dim urban interior. The lighting is warm directional key light with deep shadows, creating an intense anticipation atmosphere. The camera slowly dollies forward on a 24mm lens. In the first seconds he steps out of shadow with head bowed, then lifts his chin toward lens with deliberate pace. Background haze drifts subtly in the depth of field. Sound: muted city room tone and a low bass pulse under the beat."
+"A wide shot of the protagonist exactly as described in the brief inside the story's main environment. The lighting follows the requested palette, creating a tense atmosphere. The camera slowly dollies forward on a 24mm lens. In the first seconds the protagonist steps deeper into the symbolic space, mid-clip a key motif moves in the background, and before the end the character reacts to the central threat. Haze, rain, dust or practical lights move according to the brief. Sound: ambient room tone and musical pulse support the moment."
 
 CHARACTER RULE (CRITICAL):
 - If the scene features a character, their COMPLETE physical description from CHARACTER ANCHORS

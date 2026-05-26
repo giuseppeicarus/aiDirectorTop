@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react'
 import {
   Loader2, Image as ImageIcon, Film, Camera, Clock, Maximize2,
-  Sparkles, Check, Edit3, Save, RotateCcw, X, Wand2,
+  Sparkles, Check, Edit3, Save, RotateCcw, X, Wand2, Clapperboard,
 } from 'lucide-react'
 import { normalizeUnifiedPrompt } from '../utils/promptEnhance'
 import clsx from 'clsx'
@@ -416,12 +416,12 @@ function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', loca
         if (hd) urls.push(hd)
       }
       if (kind === 'last') {
+        // Only show the last frame if it was explicitly set — never fall back to
+        // the first frame image (last_frame is extracted from the video after gen).
         const hdLast = clip?.last_frame_path
           ? resolveBackendUrl(null, clip.last_frame_path)
           : null
         if (hdLast) urls.push(hdLast)
-        const hd = clipReelFramePreviewUrl(clip, projectId)
-        if (hd && clip?.hd_frame_ready) urls.push(hd)
       }
       for (const httpUrl of urls) {
         if (window.studio?.reel?.fetchImageUrl) {
@@ -442,32 +442,111 @@ function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', loca
   }, [clip, projectId, jobId, kind, localPath])
 
   const isClickable = kind !== 'video' && src
+  const isGeneratingFirstFrame = !src && kind === 'first'
+    && clip?.status === 'generating'
+    && (clip?.clip_phase === 'frame_gen' || clip?.comfyuiKind === 'frame')
+  const step    = clip?.comfyuiStep    ?? 0
+  const stepMax = clip?.comfyuiStepMax ?? 0
+  const pct     = clip?.comfyuiPct    ?? 0
 
-  const box = (
+  return (
     <>
       <div
         className={clsx(
-          "relative rounded border border-[#252533] bg-[#0f0f18] overflow-hidden select-none",
-          isClickable && "cursor-zoom-in group hover:border-[#c9a84c]/50 transition-colors"
+          "relative rounded border overflow-hidden select-none bg-[#0f0f18]",
+          isClickable
+            ? "border-[#252533] cursor-zoom-in group hover:border-[#c9a84c]/50 transition-colors"
+            : isGeneratingFirstFrame
+              ? "border-[#c9a84c]/40"
+              : "border-[#252533]",
         )}
         style={{ aspectRatio: isPortrait ? '9/16' : '16/9' }}
         onClick={isClickable ? () => setModalOpen(true) : undefined}
       >
-        {kind === 'video' && src ? (
-          <video src={src} className="w-full h-full object-cover" muted playsInline preload="metadata" />
-        ) : src ? (
+        {/* ── video ── */}
+        {kind === 'video' && src && (
+          <video
+            src={src}
+            className="w-full h-full object-contain"
+            controls
+            playsInline
+            preload="metadata"
+          />
+        )}
+
+        {/* ── image (first/last/preview) ── */}
+        {kind !== 'video' && src && (
           <>
             <img src={src} alt="" className="w-full h-full object-cover" />
             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white/90 backdrop-blur-[1px]">
               <Maximize2 size={12} className="scale-75 group-hover:scale-100 transition-transform duration-200" />
             </div>
           </>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[#555568]">
-            {clip?.status === 'generating' ? <Loader2 size={12} className="animate-spin text-[#c9a84c]" /> : <ImageIcon size={12} />}
-            <span className="text-[6px] font-mono uppercase">{kind}</span>
+        )}
+
+        {/* ── first frame: real ComfyUI step progress ── */}
+        {isGeneratingFirstFrame && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-[#07070d]">
+            {/* scanline shimmer */}
+            <div className="absolute inset-0 overflow-hidden opacity-20 pointer-events-none">
+              <div
+                className="absolute left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-[#c9a84c] to-transparent"
+                style={{ animation: 'scanline 1.6s linear infinite', top: `${pct}%` }}
+              />
+            </div>
+            <Camera size={11} className="text-[#c9a84c]/70 relative z-10" />
+            {stepMax > 1 ? (
+              <span className="text-[6px] font-mono text-[#c9a84c] relative z-10 tabular-nums">
+                {step} <span className="text-[#555568]">/</span> {stepMax}
+              </span>
+            ) : (
+              <Loader2 size={9} className="animate-spin text-[#c9a84c]/60 relative z-10" />
+            )}
+            {/* step progress bar */}
+            <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[#1a1a24]">
+              <div
+                className="h-full bg-[#c9a84c] transition-all duration-300 ease-out"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
           </div>
         )}
+
+        {/* ── first/preview: idle placeholder ── */}
+        {!src && !isGeneratingFirstFrame && kind !== 'last' && kind !== 'video' && (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[#555568]">
+            {clip?.status === 'generating'
+              ? <Loader2 size={11} className="animate-spin text-[#c9a84c]/50" />
+              : <ImageIcon size={11} />}
+            <span className="text-[5.5px] font-mono uppercase tracking-wider">{kind}</span>
+          </div>
+        )}
+
+        {/* ── last frame: static placeholder (image arrives after video gen) ── */}
+        {!src && kind === 'last' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-2 text-center">
+            <div className={clsx(
+              "flex items-center justify-center w-5 h-5 rounded-full border mb-0.5",
+              clip?.clip_phase === 'video_gen'
+                ? "bg-[#c9a84c]/10 border-[#c9a84c]/30 text-[#c9a84c]/70"
+                : "bg-[#1e1e2a] border-[#32324a] text-[#555568]",
+            )}>
+              {clip?.clip_phase === 'video_gen'
+                ? <Loader2 size={8} className="animate-spin" />
+                : <Clapperboard size={8} />}
+            </div>
+            <span className="text-[5.5px] font-semibold text-[#9090a0] uppercase tracking-wider block leading-tight">
+              Last Frame
+            </span>
+            <span className="text-[5px] text-[#555568] leading-tight block max-w-[68px] mx-auto">
+              {clip?.clip_phase === 'video_gen'
+                ? 'clip in generazione…'
+                : 'estratto dalla clip video'}
+            </span>
+          </div>
+        )}
+
+        {/* ── preview progress bar ── */}
         {clip?.comfyuiPct > 0 && kind === 'preview' && (
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1e1e2a]/80">
             <div className="h-full bg-[#c9a84c]" style={{ width: `${clip.comfyuiPct}%` }} />
@@ -482,9 +561,15 @@ function ReelThumb({ clip, projectId, jobId, aspectRatio, kind = 'preview', loca
           title={`Inquadratura ${clip?.slot_id || ''} - ${kind === 'preview' ? 'Anteprima Storyboard' : kind === 'first' ? 'Primo Frame (First)' : 'Ultimo Frame (Last)'}`}
         />
       )}
+
+      <style>{`
+        @keyframes scanline {
+          from { top: 0% }
+          to   { top: 100% }
+        }
+      `}</style>
     </>
   )
-  return box
 }
 
 export function ReelClipPlanCard({
@@ -597,54 +682,69 @@ export function ReelClipPlanCard({
         </div>
       </div>
 
-      <div className="p-2 grid grid-cols-3 gap-1.5">
-        <div>
-          <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Anteprima</p>
-          <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="preview" />
-        </div>
-        <div>
-          <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">First</p>
-          <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="first" />
-        </div>
-        <div>
-          <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Last</p>
-          {hasLast || clip.last_frame_path ? (
-            <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="last" />
-          ) : (
-            <div
-              className="rounded border border-[#32324a]/60 bg-[#0d0d18] flex flex-col items-center justify-center p-2 text-center select-none"
+      {/* ── Video done: large full-width player + 3-image row below ── */}
+      {clip.status === 'done' && clip.clip_url ? (
+        <>
+          <div className="px-2 pt-2">
+            <p className="text-[6px] font-mono text-[#22c55e]/80 uppercase mb-1 flex items-center gap-1">
+              <Check size={7} className="text-[#22c55e]" />Clip video pronta
+            </p>
+            <div className="rounded-lg border border-[#22c55e]/30 overflow-hidden bg-[#0f0f18]"
               style={{ aspectRatio: aspectRatio === '9:16' ? '9/16' : '16/9' }}
             >
-              <div className="flex items-center justify-center w-5 h-5 rounded-full bg-[#1e1e2a] border border-[#32324a] text-[#555568] mb-1">
-                <X size={9} className="stroke-[2.5]" />
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="video" />
+            </div>
+          </div>
+          <div className="p-2 grid grid-cols-3 gap-1.5">
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Storyboard</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="preview" />
+            </div>
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">First Frame</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="first" />
+            </div>
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Last Frame</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="last" />
+            </div>
+          </div>
+        </>
+      ) : (
+        /* ── Not yet done: 3-col thumbnails + small video placeholder ── */
+        <>
+          <div className="p-2 grid grid-cols-3 gap-1.5">
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Anteprima</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="preview" />
+            </div>
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">First</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="first" />
+            </div>
+            <div>
+              <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5 text-center">Last</p>
+              <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="last" />
+            </div>
+          </div>
+          <div className="px-2 pb-2">
+            <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5">Clip video</p>
+            <div className="rounded border border-[#252533] overflow-hidden" style={{ maxHeight: 72 }}>
+              <div className="w-full h-full min-h-[48px] flex items-center justify-center gap-1 bg-[#0f0f18] text-[#555568]">
+                {clip.clip_phase === 'video_gen'
+                  ? <Loader2 size={11} className="animate-spin text-[#c9a84c]/60" />
+                  : <Film size={12} />}
+                <span className="text-[7px] font-mono text-center px-1">
+                  {clip.comfyuiMsg
+                    || (clip.clip_phase === 'video_gen' ? 'Video in generazione…'
+                      : clip.clip_phase === 'frame_gen' ? 'Frame HD…'
+                        : 'In attesa')}
+                </span>
               </div>
-              <span className="text-[5.5px] font-semibold text-[#9090a0] uppercase tracking-wider block">Last Frame</span>
-              <span className="text-[5px] text-[#555568] leading-tight block mt-0.5 max-w-[72px] mx-auto">
-                Sarà estratto dalla clip video
-              </span>
             </div>
-          )}
-        </div>
-      </div>
-
-      <div className="px-2 pb-2">
-        <p className="text-[6px] font-mono text-[#555568] uppercase mb-0.5">Clip video</p>
-        <div className="rounded border border-[#252533] overflow-hidden" style={{ aspectRatio: aspectRatio === '9:16' ? '9/16' : '16/9', maxHeight: 72 }}>
-          {clip.status === 'done' && clip.clip_url ? (
-            <ReelThumb clip={clip} projectId={projectId} jobId={jobId} aspectRatio={aspectRatio} kind="video" />
-          ) : (
-            <div className="w-full h-full min-h-[48px] flex items-center justify-center gap-1 bg-[#0f0f18] text-[#555568]">
-              <Film size={12} />
-              <span className="text-[7px] font-mono text-center px-1">
-                {clip.comfyuiMsg
-                  || (clip.clip_phase === 'video_gen' ? 'Video…'
-                    : clip.clip_phase === 'frame_gen' ? 'Frame HD…'
-                      : 'In attesa')}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
+      )}
 
       <div className="px-3 py-2 border-t border-[#252533] space-y-2 text-[9px]">
         <div className="flex flex-wrap gap-1.5">
@@ -820,68 +920,100 @@ export function ReelEstimatedClipStrip({ config, sbSize, hdSize }) {
 export function ReelSystemActivityPanel({ activity, agentsStatus, phaseStatus }) {
   const agents = REEL_PIPELINE_AGENTS
 
+  const activeAgent = agents.find(a => {
+    const st = agentsStatus[a.role]
+    const phaseDone = phaseStatus[a.phase] === 'done'
+    return st?.status === 'working' && !phaseDone
+  })
+
   return (
-    <div className="rounded-xl border border-[#32324a] bg-[#0f0f18] p-4 mb-4">
-      <div className="flex items-center gap-2 mb-3">
-        <Sparkles size={14} className="text-[#c9a84c]" />
-        <p className="text-[11px] font-mono text-[#e8e4dd] uppercase tracking-wider">Attività sistema</p>
+    <div className="rounded-xl border border-[#252533] bg-[#0a0a12] overflow-hidden mb-4">
+      {/* Console header */}
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#252533] bg-[#07070d]">
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#c9a84c] opacity-50" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-[#c9a84c]" />
+        </span>
+        <span className="text-[9px] font-mono text-[#c9a84c] uppercase tracking-widest">Pipeline di produzione</span>
+        {activeAgent && (
+          <span className="ml-auto text-[8px] font-mono text-[#555568]">
+            Agente attivo: <span className="text-[#9090a8]">{activeAgent.label}</span>
+          </span>
+        )}
       </div>
 
+      {/* Current message */}
       {activity?.msg && (
-        <div className={clsx(
-          'mb-3 px-3 py-2 rounded-lg border',
-          activity?.status === 'done'
-            ? 'border-[#22c55e]/30 bg-[#22c55e]/8'
-            : 'border-[#c9a84c]/30 bg-[#c9a84c]/8',
-        )}>
-          <p className={clsx(
-            'text-[10px] font-mono flex items-center gap-2',
-            activity?.status === 'done' ? 'text-[#22c55e]' : 'text-[#c9a84c]',
-          )}>
-            {activity?.status !== 'done' && (
-              <Loader2 size={12} className="animate-spin shrink-0" />
-            )}
-            {activity?.status === 'done' && <Check size={12} className="shrink-0" />}
-            <span>
-              {activity.agent_label && (
-                <span className="text-[#e6c46a]">[{activity.agent_label}] </span>
-              )}
-              {activity.msg}
-              {activity.clip_index != null && activity.clip_total != null && (
-                <span className="text-[#9090a8]">
-                  {' '}· clip {activity.clip_index}/{activity.clip_total}
+        <div className="px-4 py-2.5 border-b border-[#1a1a26]">
+          <div className="flex items-start gap-2">
+            {activity.status !== 'done'
+              ? <Loader2 size={11} className="animate-spin text-[#c9a84c] shrink-0 mt-0.5" />
+              : <Check size={11} className="text-[#22c55e] shrink-0 mt-0.5" />}
+            <div className="min-w-0">
+              <p className="text-[10px] font-mono leading-snug">
+                {activity.agent_label && (
+                  <span className="text-[#c9a84c] mr-1">{activity.agent_label}</span>
+                )}
+                <span className={activity.status === 'done' ? 'text-[#22c55e]' : 'text-[#9090a8]'}>
+                  {activity.msg}
                 </span>
+                {activity.clip_index != null && activity.clip_total != null && (
+                  <span className="text-[#555568]"> · clip {activity.clip_index}/{activity.clip_total}</span>
+                )}
+              </p>
+              {activity.model && (
+                <p className="text-[8px] font-mono text-[#555568] mt-0.5">{activity.model}</p>
               )}
-            </span>
-          </p>
-          {activity.model && (
-            <p className="text-[8px] font-mono text-[#555568] mt-1 ml-5">{activity.model}</p>
-          )}
+            </div>
+          </div>
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        {agents.map(a => {
-          const st = agentsStatus[a.role]
-          const phaseDone = phaseStatus[a.phase] === 'done'
-          const working = st?.status === 'working' && !phaseDone
-          const done = st?.status === 'done' || phaseDone
-          return (
-            <div
-              key={a.role}
-              className={clsx(
-                'flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] font-mono',
-                working && 'border-[#c9a84c]/50 bg-[#c9a84c]/12 text-[#c9a84c]',
-                done && !working && 'border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]',
-                !working && !done && 'border-[#252533] text-[#555568]',
-              )}
-            >
-              {done && !working ? <Check size={10} /> : working ? <Loader2 size={10} className="animate-spin" /> : null}
-              <span>{a.label}</span>
-              {st?.model && <span className="text-[#555568] truncate max-w-[100px]">· {st.model}</span>}
-            </div>
-          )
-        })}
+      {/* Agent pipeline flow */}
+      <div className="px-4 py-3">
+        <div className="flex items-center gap-0 overflow-x-auto">
+          {agents.map((a, i) => {
+            const st = agentsStatus[a.role]
+            const phaseDone = phaseStatus[a.phase] === 'done'
+            const working = st?.status === 'working' && !phaseDone
+            const done = st?.status === 'done' || phaseDone
+            return (
+              <div key={a.role} className="flex items-center gap-0 shrink-0">
+                <div className={clsx(
+                  'flex flex-col items-center gap-1 px-2 py-2 rounded-lg border transition-all',
+                  working && 'border-[#c9a84c]/50 bg-[#c9a84c]/8',
+                  done && !working && 'border-[#22c55e]/25 bg-[#22c55e]/5',
+                  !working && !done && 'border-[#1e1e2a] bg-transparent',
+                )}>
+                  <div className={clsx(
+                    'w-5 h-5 rounded-full border flex items-center justify-center',
+                    working && 'border-[#c9a84c] bg-[#c9a84c]/20',
+                    done && !working && 'border-[#22c55e] bg-[#22c55e]/15',
+                    !working && !done && 'border-[#32324a]',
+                  )}>
+                    {done && !working
+                      ? <Check size={9} className="text-[#22c55e]" />
+                      : working
+                        ? <Loader2 size={9} className="animate-spin text-[#c9a84c]" />
+                        : <span className="w-1.5 h-1.5 rounded-full bg-[#32324a]" />}
+                  </div>
+                  <span className={clsx(
+                    'text-[7px] font-mono whitespace-nowrap',
+                    working ? 'text-[#c9a84c]' : done ? 'text-[#22c55e]' : 'text-[#3a3a50]',
+                  )}>
+                    {a.label.split(' ')[0]}
+                  </span>
+                </div>
+                {i < agents.length - 1 && (
+                  <div className={clsx(
+                    'w-5 h-px shrink-0',
+                    done ? 'bg-[#22c55e]/30' : 'bg-[#1e1e2a]',
+                  )} />
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

@@ -202,10 +202,7 @@ function jobHasStoryboard(job) {
 function resolveReelResumePhase(job) {
   if (job.storyboard_approved || job.pipeline_ui_phase === 'production') return 'production'
   const cp = job.checkpoint_phase ?? 0
-  if (cp >= 55) {
-    if (job.status === 'awaiting_storyboard') return 'storyboard'
-    return 'production'
-  }
+  if (cp >= 55) return 'storyboard'
   return 'full'
 }
 
@@ -455,6 +452,7 @@ const DEFAULT_CONFIG = {
   allow_ffmpeg_fallback: false,
   txt2img_workflow: 'z_image_turbo_txt2img',
   img2video_workflow: 'ltx_img2video',
+  img_audio2video_workflow: 'ltx_img_audio2video',
 }
 
 function ReelStyleImprover({ title, description, currentStyle, onApply }) {
@@ -842,6 +840,71 @@ function GhostBtn({ children, onClick, disabled, className = '' }) {
     >
       {children}
     </button>
+  )
+}
+
+function WorkflowSelector({ config, setConfig, hasAudio }) {
+  const [workflows, setWorkflows] = useState(null)
+
+  useEffect(() => {
+    fetch(`${BACKEND_ORIGIN}/api/reel/workflows`)
+      .then(r => r.json())
+      .then(setWorkflows)
+      .catch(() => {})
+  }, [])
+
+  if (!workflows) return null
+
+  const selectClass = 'w-full bg-[#0f0f18] border border-[#252533] rounded px-2 py-1.5 text-[11px] font-mono text-[#e8e4dd] focus:outline-none focus:border-[#c9a84c]/50'
+
+  return (
+    <ReelSettingsSection
+      title="Workflow ComfyUI"
+      hint="Scegli quale workflow usare per ogni fase di generazione."
+    >
+      <div className="space-y-3">
+        <div>
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1">Immagine (txt2img)</label>
+          <select
+            value={config.txt2img_workflow}
+            onChange={e => setConfig(c => ({ ...c, txt2img_workflow: e.target.value }))}
+            className={selectClass}
+          >
+            {workflows.txt2img.map(wf => (
+              <option key={wf.id} value={wf.id}>{wf.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-mono text-[#9090a8] block mb-1">Video (img2video)</label>
+          <select
+            value={config.img2video_workflow}
+            onChange={e => setConfig(c => ({ ...c, img2video_workflow: e.target.value }))}
+            className={selectClass}
+          >
+            {workflows.img2video.map(wf => (
+              <option key={wf.id} value={wf.id}>{wf.name}</option>
+            ))}
+          </select>
+        </div>
+        {hasAudio && (
+          <div>
+            <label className="text-[10px] font-mono text-[#9090a8] block mb-1">
+              Video + Audio (img+audio→video)
+            </label>
+            <select
+              value={config.img_audio2video_workflow}
+              onChange={e => setConfig(c => ({ ...c, img_audio2video_workflow: e.target.value }))}
+              className={selectClass}
+            >
+              {workflows.img_audio2video.map(wf => (
+                <option key={wf.id} value={wf.id}>{wf.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+    </ReelSettingsSection>
   )
 }
 
@@ -2336,71 +2399,124 @@ function GeneratingView({
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* ── Header ── */}
-      <div className="px-6 py-4 border-b border-[#252533] bg-[#07070d] shrink-0">
-        <div className="flex items-center gap-3 mb-3">
-          <Clapperboard className="text-[#c9a84c]" size={20} />
-          <h1 className="font-['Playfair_Display'] text-lg">
+      {/* ── Production Console Header ── */}
+      <div className="border-b border-[#252533] bg-[#07070d] shrink-0">
+
+        {/* Top bar: REC indicator + title + clip fraction + progress */}
+        <div className="flex items-center gap-3 px-6 py-3">
+          {view === 'generating' && !pipelineInterrupted ? (
+            <span className="flex items-center gap-1.5 shrink-0">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ef4444] opacity-60" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#ef4444]" />
+              </span>
+              <span className="text-[9px] font-mono text-[#ef4444] tracking-widest uppercase">REC</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 shrink-0">
+              <Clapperboard size={15} className={view === 'done' ? 'text-[#22c55e]' : 'text-[#f59e0b]'} />
+            </span>
+          )}
+
+          <h1 className="font-['Playfair_Display'] text-base text-[#e8e4dd] leading-tight">
             {view === 'done'
               ? 'Reel completato'
               : pipelineInterrupted
                 ? 'Pipeline interrotta'
-                : 'Generazione in corso…'}
+                : 'Produzione in corso'}
           </h1>
-          {view === 'generating' && !pipelineInterrupted && (
-            <Loader2 size={16} className="animate-spin text-[#c9a84c]" />
+
+          {/* Clip fraction badge */}
+          {view === 'generating' && clips.length > 0 && (
+            <span className="ml-1 text-[10px] font-mono px-2 py-0.5 rounded bg-[#1e1e2a] border border-[#32324a] text-[#9090a8]">
+              {clips.filter(c => c.status === 'done').length}/{clips.length} clip
+            </span>
           )}
-          <span className="text-[10px] font-mono text-[#c9a84c] ml-auto">{globalPct}%</span>
-          {view === 'generating' && (
-            <div className="flex items-center gap-2">
-              {canContinue && onContinue && (
-                <GoldBtn onClick={onContinue}>
-                  <RotateCcw size={12} /> Riprendi pipeline
-                </GoldBtn>
-              )}
-              {!staleRunning && jobPaused && onResumePause && (
-                <GhostBtn onClick={onResumePause} className="border-[#c9a84c]/40 text-[#c9a84c]">
-                  Riprendi
+
+          <div className="ml-auto flex items-center gap-3">
+            <span className="text-sm font-mono font-semibold text-[#c9a84c]">{globalPct}%</span>
+
+            {view === 'generating' && (
+              <div className="flex items-center gap-2">
+                {canContinue && onContinue && (
+                  <GoldBtn onClick={onContinue}>
+                    <RotateCcw size={12} /> Riprendi pipeline
+                  </GoldBtn>
+                )}
+                {!staleRunning && jobPaused && onResumePause && (
+                  <GhostBtn onClick={onResumePause} className="border-[#c9a84c]/40 text-[#c9a84c]">
+                    Riprendi
+                  </GhostBtn>
+                )}
+                {!staleRunning && !jobPaused && onPause && (
+                  <GhostBtn onClick={onPause} className="border-[#3b82f6]/40 text-[#3b82f6]">
+                    Pausa
+                  </GhostBtn>
+                )}
+                <GhostBtn onClick={onStop} className="border-red-500/40 text-red-400 hover:text-red-300">
+                  <Square size={12} /> Ferma
                 </GhostBtn>
-              )}
-              {!staleRunning && !jobPaused && onPause && (
-                <GhostBtn onClick={onPause} className="border-[#3b82f6]/40 text-[#3b82f6]">
-                  Pausa
-                </GhostBtn>
-              )}
-              <GhostBtn onClick={onStop} className="border-red-500/40 text-red-400 hover:text-red-300">
-                <Square size={12} /> Ferma
-              </GhostBtn>
-            </div>
-          )}
-          {view === 'done' && (
-            <>
-              <GhostBtn onClick={onGoList}>Torna alla lista</GhostBtn>
-              <GoldBtn onClick={onNew}><Sparkles size={13} />Nuovo reel</GoldBtn>
-            </>
-          )}
+              </div>
+            )}
+            {view === 'done' && (
+              <>
+                <GhostBtn onClick={onGoList}>Torna alla lista</GhostBtn>
+                <GoldBtn onClick={onNew}><Sparkles size={13} />Nuovo reel</GoldBtn>
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="h-1.5 bg-[#16161f] rounded-full mb-3">
-          <div className="h-full bg-[#c9a84c] rounded-full transition-all" style={{ width: `${globalPct}%` }} />
+        {/* Progress bar — taller, gold */}
+        <div className="mx-6 mb-3">
+          <div className="h-1.5 bg-[#16161f] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#c9a84c] rounded-full transition-all duration-500"
+              style={{ width: `${globalPct}%` }}
+            />
+          </div>
         </div>
 
-        {(storageProjectId || projectDir) && (
-          <ProjectDirBanner storageProjectId={storageProjectId} jobId={activeJobId} projectDir={projectDir} storageApi="reel" />
+        {/* Phase chips — bigger + clearer */}
+        <div className="flex flex-wrap gap-2 px-6 mb-3">
+          {PHASES.map(p => {
+            const isDone   = phaseStatus[p.id] === 'done'
+            const isActive = phaseStatus[p.id] === 'active'
+            return (
+              <span key={p.id} className={clsx(
+                'flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-md border transition-colors',
+                isDone   ? 'bg-[#22c55e]/12 border-[#22c55e]/30 text-[#22c55e]'
+                : isActive ? 'bg-[#c9a84c]/12 border-[#c9a84c]/40 text-[#c9a84c]'
+                : 'bg-[#16161f] border-[#252533] text-[#555568]',
+              )}>
+                {isDone && <Check size={9} />}
+                {isActive && <Loader2 size={9} className="animate-spin" />}
+                {p.label}
+              </span>
+            )
+          })}
+        </div>
+
+        {/* Agent activity line */}
+        {systemActivity?.msg && view === 'generating' && (
+          <div className="flex items-center gap-2 mx-6 mb-3 px-3 py-2 rounded-lg bg-[#16161f] border border-[#252533]">
+            <Cpu size={11} className="text-[#9090a8] shrink-0" />
+            <span className="text-[10px] font-mono text-[#9090a8] truncate">
+              <span className="text-[#c9a84c]">{systemActivity.agent_label || 'Agente'}</span>
+              {' — '}
+              {systemActivity.msg}
+              {systemActivity.clip_index != null && systemActivity.clip_total != null && (
+                <span className="ml-1 text-[#555568]">· clip {systemActivity.clip_index}/{systemActivity.clip_total}</span>
+              )}
+            </span>
+          </div>
         )}
 
-        <div className="flex flex-wrap gap-2 mt-3">
-          {PHASES.map(p => (
-            <span key={p.id} className={clsx(
-              'text-[9px] font-mono px-2 py-0.5 rounded',
-              phaseStatus[p.id] === 'done'   ? 'bg-[#22c55e]/20 text-[#22c55e]'
-              : phaseStatus[p.id] === 'active' ? 'bg-[#c9a84c]/20 text-[#c9a84c]'
-              : 'bg-[#16161f] text-[#555568]',
-            )}>
-              {p.label}
-            </span>
-          ))}
-        </div>
+        {(storageProjectId || projectDir) && (
+          <div className="px-6 pb-3">
+            <ProjectDirBanner storageProjectId={storageProjectId} jobId={activeJobId} projectDir={projectDir} storageApi="reel" />
+          </div>
+        )}
       </div>
 
       {error && (
@@ -2604,11 +2720,12 @@ export default function CreateReelScreen() {
     storyboard_steps: config.storyboard_steps,
     hd_frame_steps: config.hd_frame_steps,
     max_clip_sec: config.max_clip_sec,
-    concurrent_jobs: config.concurrent_jobs,
+    concurrent_jobs: 1,
     clip_backend: config.clip_backend,
     allow_ffmpeg_fallback: config.allow_ffmpeg_fallback,
     txt2img_workflow: config.txt2img_workflow,
     img2video_workflow: config.img2video_workflow,
+    img_audio2video_workflow: config.img_audio2video_workflow,
     phase,
     resume_job_id: resumeJobId,
     model_overrides: modelOverrides || undefined,
@@ -2887,6 +3004,9 @@ export default function CreateReelScreen() {
               ...c,
               comfyuiPct: clipPct,
               comfyuiMsg: data.msg || liveMsg,
+              comfyuiStep: data.comfyui_value ?? c.comfyuiStep,
+              comfyuiStepMax: data.comfyui_max ?? c.comfyuiStepMax,
+              comfyuiKind: data.kind ?? c.comfyuiKind,
               status: 'generating',
               ...(phase ? { clip_phase: phase } : {}),
             }
@@ -2973,6 +3093,13 @@ export default function CreateReelScreen() {
       setView('storyboard')
       setListRefreshKey(k => k + 1)
       addLog('Storyboard pronto — in attesa di approvazione')
+    }
+    if (data.event === 'last_frame_ready' && data.clip_id) {
+      setClips(prev => prev.map(c =>
+        c.clip_id === data.clip_id
+          ? { ...c, last_frame_path: data.last_frame_path || c.last_frame_path }
+          : c,
+      ))
     }
     if (data.event === 'clip_done') {
       const clipUrl = resolveBackendUrl(data.url) || data.url
@@ -3106,7 +3233,6 @@ export default function CreateReelScreen() {
       }
       const prodReady = resumePhaseRef.current === 'production'
         || data.storyboard_approved
-        || (data.checkpoint_phase ?? 0) >= 55
       const canAuto = prodReady
         && data.all_clips_ready
         && !jobControlRef.current.taskRunning
@@ -3474,6 +3600,12 @@ export default function CreateReelScreen() {
             vision_analysis: 'done',
           }))
         }
+        if (
+          hydrated.status === 'awaiting_storyboard'
+          || (hydrated.pipeline_ui_phase === 'storyboard' && !hydrated.storyboard_approved)
+        ) {
+          setView('storyboard')
+        }
       } catch { /* ignore */ }
     }
     poll()
@@ -3539,29 +3671,64 @@ export default function CreateReelScreen() {
   }
 
   if (view === 'storyboard') {
+    const sbWithPreview = clips.filter(c => c.storyboard_ok !== false && !c.storyboard_placeholder && (c.frame_url || c.storyboard_path)).length
     return (
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="px-6 py-4 border-b border-[#252533] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <LayoutGrid className="text-[#c9a84c]" size={18} />
-            <h1 className="font-['Playfair_Display'] text-lg">CreateReel — Revisione storyboard</h1>
-          </div>
-          <div className="flex gap-2">
-            <GhostBtn onClick={handleGoList}>
-              <X size={12} /> Lista
-            </GhostBtn>
-            <GhostBtn onClick={handleRegenerateStoryboard}>
-              <RefreshCw size={12} /> Rigenera storyboard
-            </GhostBtn>
-            <div className="flex items-center gap-2">
-              <GoldBtn onClick={handleApprove}>
-                <Check size={14} /> Approva e genera HD + Video
-              </GoldBtn>
+      <div className="flex-1 flex flex-col overflow-hidden bg-[#07070d]">
+
+        {/* ── LIGHTBOARD header ── */}
+        <header className="border-b border-[#252533] bg-[#0f0f18] shrink-0">
+
+          {/* Top row: slate + title + clip count + approve */}
+          <div className="flex items-center gap-3 px-6 py-3">
+            <div className="flex items-center justify-center w-8 h-8 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 shrink-0">
+              <LayoutGrid size={15} className="text-[#c9a84c]" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="font-['Playfair_Display'] text-base text-[#e8e4dd] leading-tight">Revisione Storyboard</h1>
+              <p className="text-[9px] font-mono text-[#555568]">
+                {sbWithPreview} / {clips.length} anteprime pronte
+              </p>
+            </div>
+
+            {/* Phase chips mini */}
+            <div className="hidden md:flex items-center gap-1.5 ml-2">
+              {[
+                { id: 'vision_analysis', label: 'Vision' },
+                { id: 'reel_director',   label: 'Regia' },
+                { id: 'prompt_generator', label: 'Prompt' },
+                { id: 'storyboard',      label: 'Storyboard' },
+              ].map(p => (
+                <span key={p.id} className="flex items-center gap-1 text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#22c55e]/10 border border-[#22c55e]/20 text-[#22c55e]">
+                  <Check size={8} /> {p.label}
+                </span>
+              ))}
+              <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 text-[#c9a84c]">
+                HD+Video —
+              </span>
+            </div>
+
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              <GhostBtn onClick={handleGoList}>
+                <ChevronRight size={12} className="rotate-180" /> Lista
+              </GhostBtn>
+              <GhostBtn onClick={handleRegenerateStoryboard}>
+                <RefreshCw size={12} /> Rigenera
+              </GhostBtn>
               <GenQueueBadge kind="video" workflow={config.img2video_workflow || 'ltx_img2video'} />
+              <button
+                type="button"
+                onClick={handleApprove}
+                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-[#c9a84c] text-[#07070d] text-sm font-semibold hover:bg-[#e6c46a] transition-colors shadow-[0_0_16px_#c9a84c30]"
+              >
+                <Check size={14} />
+                Approva e Produci HD+Video
+              </button>
             </div>
           </div>
         </header>
-        <div className="px-6 py-2 border-b border-[#252533]/50 shrink-0 space-y-2">
+
+        {/* Director narrative + project dir */}
+        <div className="px-6 py-3 border-b border-[#252533]/50 shrink-0 space-y-2 bg-[#0a0a12]">
           <ProjectDirBanner
             storageProjectId={storageProjectId}
             jobId={activeJobId}
@@ -3569,9 +3736,12 @@ export default function CreateReelScreen() {
             storageApi="reel"
           />
           {visionSummary && (
-            <p className="text-[10px] font-mono text-[#9090a8]">Vision: {visionSummary}</p>
+            <p className="text-[9px] font-mono text-[#9090a8]">
+              <span className="text-[#555568] uppercase tracking-wider">Vision </span>
+              {visionSummary}
+            </p>
           )}
-          <DirectorNarrativeCard narrative={directorNarrative} />
+          {directorNarrative && <DirectorNarrativeCard narrative={directorNarrative} />}
         </div>
         <div className="flex-1 overflow-y-auto p-6">
           <ReelClipPlanGrid
@@ -3644,15 +3814,25 @@ export default function CreateReelScreen() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="flex-1 flex flex-col overflow-hidden bg-[#07070d]">
+
+      {/* ── STICKY DIRECTOR HEADER ── */}
+      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-3 border-b border-[#252533] bg-[#0f0f18] shrink-0">
         <div className="flex items-center gap-3">
-          <Film className="text-[#c9a84c]" size={24} />
+          <div className="flex items-center justify-center w-8 h-8 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 shrink-0">
+            <Clapperboard size={16} className="text-[#c9a84c]" />
+          </div>
           <div>
-            <h1 className="font-['Playfair_Display'] text-2xl text-[#e8e4dd]">Nuovo reel</h1>
-            <p className="text-[11px] font-mono text-[#9090a8]">
-              Vision LLM → storyboard LD → approvazione → HD + video
-            </p>
+            <h1 className="font-['Playfair_Display'] text-base text-[#e8e4dd] leading-tight">Director's Studio</h1>
+            <p className="text-[9px] font-mono text-[#555568]">Nuovo reel cinematografico</p>
+          </div>
+          <div className="hidden md:flex items-center gap-1 ml-4">
+            {['Vision', 'Regia', 'Prompt', 'Storyboard', 'HD+Video'].map((step, i, arr) => (
+              <span key={step} className="flex items-center gap-1">
+                <span className="text-[9px] font-mono text-[#555568]">{step}</span>
+                {i < arr.length - 1 && <ChevronRight size={10} className="text-[#32324a]" />}
+              </span>
+            ))}
           </div>
         </div>
         <GhostBtn onClick={handleGoList}>
@@ -3661,70 +3841,149 @@ export default function CreateReelScreen() {
         </GhostBtn>
       </div>
 
-      <label className="block mb-4">
-        <span className="text-[10px] font-mono text-[#9090a8] uppercase tracking-wider">Titolo (opzionale)</span>
-        <input
-          value={title}
-          onChange={e => setTitle(e.target.value)}
-          className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-3 py-2 text-sm text-[#e8e4dd]"
-          placeholder="Il mio reel"
-        />
-      </label>
+      {/* ── SCROLLABLE BODY ── */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-6 py-8 space-y-5">
 
-      <label className="block mb-4">
-        <span className="text-[10px] font-mono text-[#9090a8] uppercase tracking-wider">
-          Descrizione del video *
-        </span>
-        <textarea
-          value={description}
-          onChange={e => setDescription(e.target.value)}
-          rows={6}
-          className="mt-1 w-full bg-[#16161f] border border-[#252533] rounded px-3 py-2 text-sm text-[#e8e4dd] resize-y"
-          placeholder="Descrivi la storia, i personaggi, l'atmosfera, il ritmo e cosa deve succedere in ogni momento…"
-        />
-      </label>
+          {/* BRIEF DEL REGISTA */}
+          <div className="rounded-xl border border-[#252533] bg-[#16161f] overflow-hidden">
+            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#252533] bg-[#0f0f18]">
+              <div className="w-2 h-2 rounded-full bg-[#ef4444] shrink-0" />
+              <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-widest">Brief del Regista</span>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="block text-[10px] font-mono text-[#9090a8] uppercase tracking-wider mb-1.5">
+                  Titolo (opzionale)
+                </label>
+                <input
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  className="w-full bg-[#0f0f18] border border-[#252533] rounded-lg px-3 py-2.5 text-sm text-[#e8e4dd] placeholder-[#3a3a50] focus:outline-none focus:border-[#c9a84c]/50 transition-colors"
+                  placeholder="Titolo del reel"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono text-[#9090a8] uppercase tracking-wider mb-1.5">
+                  Descrizione del video <span className="text-[#ef4444]">*</span>
+                </label>
+                <textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  rows={8}
+                  className="w-full bg-[#0f0f18] border border-[#252533] rounded-lg px-3 py-2.5 text-sm text-[#e8e4dd] placeholder-[#3a3a50] resize-y focus:outline-none focus:border-[#c9a84c]/50 transition-colors leading-relaxed"
+                  placeholder="Una donna cammina da sola nelle strade notturne di una metropoli. I neon colorati si riflettono sul marciapiede bagnato dalla pioggia. La camera segue i suoi movimenti con lenta eleganza cinematografica, stringendosi sul suo viso quando si ferma ad ascoltare la musica nel silenzio della notte…"
+                />
+                <p className="mt-1.5 text-[9px] font-mono text-[#555568]">
+                  Descrivi storia, personaggi, atmosfera, ritmo e cosa accade in ogni momento. Min. 20 caratteri.
+                </p>
+              </div>
+            </div>
+          </div>
 
-      <ReferenceDropZone
-        refs={refs}
-        onAddPaths={addRefsFromPaths}
-        onRemove={(path) => setRefs(prev => prev.filter(x => x.path !== path))}
-        onPick={handlePickImages}
-        onPickFromLibrary={() => setShowMediaPicker(true)}
-        uploadError={refUploadError}
-      />
+          {/* STILE VISIVO */}
+          <div className="rounded-xl border border-[#252533] bg-[#16161f] overflow-hidden">
+            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#252533] bg-[#0f0f18]">
+              <div className="w-2 h-2 rounded-full bg-[#3b82f6] shrink-0" />
+              <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-widest">Stile Visivo</span>
+            </div>
+            <div className="p-4">
+              <textarea
+                value={config.style}
+                onChange={e => setConfig(c => ({ ...c, style: e.target.value }))}
+                rows={3}
+                placeholder="cinematic, photorealistic, teal-orange grade, soft rim light, 35mm grain…"
+                className="w-full bg-[#0f0f18] border border-[#252533] rounded-lg px-3 py-2.5 text-sm text-[#e8e4dd] placeholder-[#3a3a50] resize-y focus:outline-none focus:border-[#c9a84c]/50 transition-colors"
+              />
+              <p className="mt-1.5 mb-3 text-[9px] font-mono text-[#555568]">
+                Inviato alla pipeline insieme alla descrizione — usa l&apos;AI per allinearlo al brief.
+              </p>
+              <ReelStyleImprover
+                title={title}
+                description={description}
+                currentStyle={config.style}
+                onApply={style => setConfig(c => ({ ...c, style }))}
+              />
+            </div>
+          </div>
 
-      <CharacterReelSelector
-        mode={characterMode}
-        setMode={setCharacterMode}
-        selectedId={selectedCharacterId}
-        setSelectedId={setSelectedCharacterId}
-      />
+          {/* REFERENCE IMAGES */}
+          <ReferenceDropZone
+            refs={refs}
+            onAddPaths={addRefsFromPaths}
+            onRemove={(path) => setRefs(prev => prev.filter(x => x.path !== path))}
+            onPick={handlePickImages}
+            onPickFromLibrary={() => setShowMediaPicker(true)}
+            uploadError={refUploadError}
+          />
 
-      <ReelAudioSection
-        audioFile={audioFile}
-        setAudioFile={(f) => {
-          setAudioFile(f)
-          if (f) {
-            setConfig(c => (
-              c.img2video_workflow === 'ltx_img2video' || !c.img2video_workflow
-                ? { ...c, img2video_workflow: 'ltx_img_audio2video' }
-                : c
-            ))
-          } else {
-            setConfig(c => (
-              c.img2video_workflow === 'ltx_img_audio2video'
-                ? { ...c, img2video_workflow: 'ltx_img2video' }
-                : c
-            ))
-          }
-        }}
-        audioStartSec={audioStartSec}
-        setAudioStartSec={setAudioStartSec}
-        reelDurationSec={config.duration_sec}
-        lyrics={lyrics}
-        setLyrics={setLyrics}
-        onAnalysis={setAudioAnalysis}
-      />
+          {/* CHARACTER */}
+          <CharacterReelSelector
+            mode={characterMode}
+            setMode={setCharacterMode}
+            selectedId={selectedCharacterId}
+            setSelectedId={setSelectedCharacterId}
+          />
+
+          {/* AUDIO */}
+          <ReelAudioSection
+            audioFile={audioFile}
+            setAudioFile={setAudioFile}
+            audioStartSec={audioStartSec}
+            setAudioStartSec={setAudioStartSec}
+            reelDurationSec={config.duration_sec}
+            lyrics={lyrics}
+            setLyrics={setLyrics}
+            onAnalysis={setAudioAnalysis}
+          />
+
+          {/* PROJECT SETTINGS */}
+          <ReelProjectSettings config={config} setConfig={setConfig} />
+
+          {/* WORKFLOW + MODEL OVERRIDES */}
+          <ModelOverridesSection config={config} onChange={setModelOverrides} />
+          <WorkflowSelector config={config} setConfig={setConfig} hasAudio={Boolean(audioFile)} />
+
+          {/* ACTION BAR */}
+          <div className="rounded-xl border border-[#c9a84c]/25 bg-[#c9a84c]/[0.04] overflow-hidden">
+            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#c9a84c]/20">
+              <div className="w-2 h-2 rounded-full bg-[#c9a84c] shrink-0 animate-pulse" />
+              <span className="text-[9px] font-mono text-[#c9a84c] uppercase tracking-widest">Avvia Produzione</span>
+            </div>
+            <div className="p-4">
+              {error && (
+                <div className="mb-4 flex items-start gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/8 px-3 py-2.5">
+                  <AlertCircle size={13} className="text-[#ef4444] mt-0.5 shrink-0" />
+                  <p className="text-xs font-mono text-[#ef4444]">{error}</p>
+                </div>
+              )}
+              <div className="flex items-center gap-4 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={!description.trim()}
+                  className={clsx(
+                    'flex items-center gap-2.5 px-6 py-3 rounded-lg text-sm font-semibold transition-all',
+                    'bg-[#c9a84c] text-[#07070d] hover:bg-[#e6c46a] disabled:opacity-40 disabled:cursor-not-allowed',
+                    'shadow-[0_0_20px_#c9a84c28]',
+                  )}
+                >
+                  <Sparkles size={15} />
+                  Genera Storyboard
+                </button>
+                <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
+              </div>
+              <p className="mt-3 text-[9px] font-mono text-[#555568] leading-relaxed">
+                Fase 1: Vision LLM — analisi reference e stile.
+                Fase 2–3: Regia narrativa e prompt sincronizzati a musica e lirica.
+                Fase 4: Anteprime ComfyUI a bassa risoluzione — revisione e approvazione prima di HD e clip LTX.
+                Configura il ruolo LLM <strong>vision_analyst</strong> in Servizi (es. gpt-4o o claude-sonnet).
+              </p>
+            </div>
+          </div>
+
+        </div>
+      </div>
 
       {showMediaPicker && (
         <MediaLibraryPicker
@@ -3735,51 +3994,6 @@ export default function CreateReelScreen() {
           onClose={() => setShowMediaPicker(false)}
         />
       )}
-
-      <ReelProjectSettings config={config} setConfig={setConfig} />
-
-      <label className="block mb-6">
-        <span className="text-[10px] font-mono text-[#9090a8] uppercase tracking-wider">
-          Stile visivo
-        </span>
-        <p className="text-[9px] font-mono text-[#555568] mt-0.5 mb-1">
-          Inviato alla pipeline insieme alla descrizione; usa l&apos;AI per allinearlo al brief.
-        </p>
-        <textarea
-          value={config.style}
-          onChange={e => setConfig(c => ({ ...c, style: e.target.value }))}
-          rows={3}
-          placeholder="cinematic, photorealistic, teal-orange grade, soft rim light, 35mm grain…"
-          className="w-full bg-[#16161f] border border-[#252533] rounded px-3 py-2 text-sm text-[#e8e4dd] resize-y"
-        />
-        <ReelStyleImprover
-          title={title}
-          description={description}
-          currentStyle={config.style}
-          onApply={style => setConfig(c => ({ ...c, style }))}
-        />
-      </label>
-
-      <ModelOverridesSection config={config} onChange={setModelOverrides} />
-
-      {error && (
-        <p className="mb-4 text-xs text-[#ef4444] font-mono">{error}</p>
-      )}
-
-      <div className="flex items-center gap-3">
-        <GoldBtn onClick={handleGenerate} disabled={!description.trim()}>
-          <Sparkles size={14} />
-          Genera storyboard
-        </GoldBtn>
-        <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
-      </div>
-
-      <p className="mt-4 text-[9px] font-mono text-[#555568] leading-relaxed">
-        Con audio: analisi traccia e timing lirica (manuale se incolli il testo). Fase 1: vision.
-        Fase 2–3: regia e prompt sincronizzati a musica e lirica.
-        Fase 4: anteprime ComfyUI a bassa risoluzione — dovrai approvare prima di HD e clip LTX.
-        Configura il ruolo LLM <strong>vision_analyst</strong> in Servizi (es. gpt-4o o claude-sonnet).
-      </p>
     </div>
   )
 }
