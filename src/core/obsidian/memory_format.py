@@ -31,6 +31,7 @@ def format_project_brief(inp: dict[str, Any]) -> str:
                 f"- Wardrobe: {c.get('wardrobe', '')}\n"
                 f"- Anchor: {c.get('visual_anchor', '')}\n"
             )
+    _none_chars = "\n_(nessuno)_\n"
     return (
         f"# Brief produzione\n\n"
         f"## Identità\n"
@@ -42,7 +43,7 @@ def format_project_brief(inp: dict[str, Any]) -> str:
         f"## Stile & mood\n"
         f"- Riferimenti stile: {', '.join(inp.get('style_references') or []) or '—'}\n"
         f"- Mood: {', '.join(inp.get('mood_references') or []) or '—'}\n\n"
-        f"## Personaggi{char_block or '\n_(nessuno)_\n'}\n"
+        f"## Personaggi{char_block or _none_chars}\n"
         f"## Lyrics (estratto)\n```\n{(inp.get('lyrics') or '')[:2000]}\n```\n"
     )
 
@@ -180,7 +181,7 @@ def format_shot_regia_md(shot: dict[str, Any]) -> str:
     for ch in chars[:6]:
         if isinstance(ch, dict):
             char_txt += f"- {ch.get('name', '?')}: {ch.get('action', '')} ({ch.get('expression', '')})\n"
-
+    _none_chars2 = "- _(nessuno)_\n"
     return (
         f"# Shot `{shot.get('shot_id', '')}`\n\n"
         f"## Regia\n"
@@ -198,7 +199,7 @@ def format_shot_regia_md(shot: dict[str, Any]) -> str:
         f"- Sources: {', '.join(light.get('sources') or [])}\n\n"
         f"## Transizioni\n"
         f"- In: {shot.get('transition_in', '')} | Out: {shot.get('transition_out', '')}\n\n"
-        f"## Personaggi\n{char_txt or '- _(nessuno)_\n'}\n"
+        f"## Personaggi\n{char_txt or _none_chars2}\n"
         f"## Continuity notes\n{_bullet_list(shot.get('continuity_notes') or [])}\n"
         f"## Prompts\n"
         f"### First frame (seed {ff.get('seed', '')})\n{ff.get('prompt', '')}\n\n"
