@@ -31,7 +31,7 @@ $Python = $null
 foreach ($candidate in $PythonCandidates) {
     try {
         $ver = & $candidate --version 2>&1
-        if ($ver -match "Python 3\.(1[0-9]|[89])") {
+        if ($ver -match 'Python 3\.1[0-9]') {
             $Python = $candidate
             Write-Ok "Python trovato: $candidate ($ver)"
             break
