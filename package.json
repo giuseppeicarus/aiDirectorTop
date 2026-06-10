@@ -7,9 +7,9 @@
   "scripts": {
     "predev": "node scripts/ensure-dev-ports.mjs",
     "dev:clean": "node scripts/ensure-dev-ports.mjs",
-    "dev": "concurrently -n backend,vite,electron -c blue,green,magenta --kill-others-on-fail \"npm run dev:backend\" \"npm run dev:vite\" \"npm run dev:electron\"",
-    "dev:electron": "npx -y wait-on http://127.0.0.1:5300 -t 180000 -v && electron .",
-    "dev:vite": "vite",
+    "dev": "npx --no-install concurrently -n backend,vite,electron -c blue,green,magenta --kill-others-on-fail \"npm run dev:backend\" \"npm run dev:vite\" \"npm run dev:electron\"",
+    "dev:electron": "npx --no-install wait-on http://127.0.0.1:5300 -t 180000 -v && npx --no-install electron .",
+    "dev:vite": "npx --no-install vite",
     "dev:backend": "python -m uvicorn src.core.main:app --reload --reload-dir src/core --reload-delay 2 --port 8123 --host 127.0.0.1",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
