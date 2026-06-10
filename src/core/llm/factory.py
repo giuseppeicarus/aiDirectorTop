@@ -34,8 +34,8 @@ def get_llm_adapter(config: Optional[LLMConfig] = None) -> BaseLLMAdapter:
         return AnthropicAdapter(cfg)
 
     if provider == "ollama":
-        from src.core.llm.ollama_adapter import OllamaAdapter
-        return OllamaAdapter(cfg)
+        from src.core.llm.openai_adapter import OpenAIAdapter
+        return OpenAIAdapter(cfg)
 
     if provider in ("lmstudio", "lm_studio"):
         from src.core.llm.openai_adapter import OpenAIAdapter

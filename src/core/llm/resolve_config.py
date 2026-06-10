@@ -8,11 +8,11 @@ from src.core.config import LLMConfig, get_config
 
 PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "lmstudio": "http://127.0.0.1:1234/v1",
-    "ollama": "http://127.0.0.1:11434",
-    "openai": "https://api.openai.com/v1",
-    "groq": "https://api.groq.com/openai/v1",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta",
-    "google": "https://generativelanguage.googleapis.com/v1beta",
+    "ollama":   "http://127.0.0.1:11434/v1",
+    "openai":   "https://api.openai.com/v1",
+    "groq":     "https://api.groq.com/openai/v1",
+    "gemini":        "https://generativelanguage.googleapis.com/v1beta",
+    "google":        "https://generativelanguage.googleapis.com/v1beta",
     "google_gemini": "https://generativelanguage.googleapis.com/v1beta",
 }
 
@@ -31,7 +31,7 @@ def normalize_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
     if not url:
         return PROVIDER_DEFAULT_BASE_URL.get(p)
 
-    if p in ("lmstudio", "openai", "groq"):
+    if p in ("lmstudio", "openai", "groq", "ollama"):
         u = url.rstrip("/")
         if not u.endswith("/v1"):
             u = f"{u}/v1"

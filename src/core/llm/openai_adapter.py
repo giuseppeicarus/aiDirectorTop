@@ -58,8 +58,9 @@ class OpenAIAdapter(BaseLLMAdapter):
         self._max_tokens = cfg.max_tokens
         self._config = cfg
         self._provider = (cfg.provider or "").lower()
-        # Local endpoints (LM Studio, Ollama proxy, etc.) don't support json_object mode
-        self._use_json_format = cfg.base_url is None
+        # json_object mode: supported by openai, groq, ollama; not by lmstudio or unknown proxies
+        _p = (cfg.provider or "").lower()
+        self._use_json_format = _p in ("openai", "groq", "ollama") or cfg.base_url is None
 
     @asynccontextmanager
     async def _lmstudio_lock(self):

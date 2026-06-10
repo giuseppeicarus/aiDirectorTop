@@ -11,6 +11,14 @@ from src.core.llm.base import StoryboardRequest
 from src.core.llm.resolve_config import resolve_llm_config
 from src.core.config import get_config, reload_config, LLMConfig, save_roles_config, save_llm_config, save_language_config
 
+def _ollama_root(base_url: str) -> str:
+    """Ritorna il root di Ollama senza /v1, necessario per /api/tags e /api/pull."""
+    u = base_url.rstrip("/")
+    if u.endswith("/v1"):
+        u = u[:-3]
+    return u
+
+
 ANTHROPIC_MODELS = [
     "claude-opus-4-7",
     "claude-sonnet-4-6",
@@ -70,7 +78,7 @@ async def _fetch_provider_models(provider: str, base_url: str, api_key: str) -> 
 
     async with httpx.AsyncClient(timeout=8.0) as client:
         if p == "ollama":
-            url = base_url.rstrip("/") + "/api/tags"
+            url = _ollama_root(base_url) + "/api/tags"
             r = await client.get(url)
             r.raise_for_status()
             return [m["name"] for m in r.json().get("models", [])]
@@ -674,10 +682,10 @@ async def improve_style(req: ImproveStyleRequest):
 async def list_ollama_models():
     """Elenca i modelli Ollama installati localmente."""
     cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
-            r = await client.get(base.rstrip("/") + "/api/tags")
+            r = await client.get(_ollama_root(base) + "/api/tags")
             r.raise_for_status()
             models = [m["name"] for m in r.json().get("models", [])]
             return {"ok": True, "models": models, "base_url": base}
@@ -693,11 +701,11 @@ class OllamaPullRequest(BaseModel):
 async def pull_ollama_model(req: OllamaPullRequest):
     """Avvia il download di un modello Ollama (bloccante fino al completamento)."""
     cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(
-                base.rstrip("/") + "/api/pull",
+                _ollama_root(base) + "/api/pull",
                 json={"name": req.model, "stream": False},
             )
             r.raise_for_status()
@@ -718,14 +726,14 @@ async def pull_ollama_model_stream(model: str):
     import json as _json
 
     cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
 
     async def _stream():
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=1200, write=30, pool=30)) as client:
                 async with client.stream(
                     "POST",
-                    base.rstrip("/") + "/api/pull",
+                    _ollama_root(base) + "/api/pull",
                     json={"name": model, "stream": True},
                 ) as resp:
                     resp.raise_for_status()
