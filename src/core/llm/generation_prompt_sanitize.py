@@ -48,13 +48,29 @@ _VISUAL_START_RE = re.compile(
 
 # Negative condiviso — riduce testo illeggibile e malformazioni su Z-Image / SDXL
 CINEMATIC_NEGATIVE_PROMPT = (
-    "ugly, deformed, blurry, low quality, watermark, logo, brand mark, "
-    "text, letters, words, numbers, typography, caption, subtitle, speech bubble, "
-    "signage with text, billboard text, screen text, UI overlay, gibberish writing, "
-    "unreadable text, scrambled letters, misspelled words, "
-    "extra fingers, extra limbs, malformed hands, fused fingers, "
-    "distorted face, asymmetrical eyes, crossed eyes, bad anatomy, disfigured, "
-    "cartoon, anime, illustration, painting, CGI, 3d render, plastic skin, oversaturated"
+    # Anatomy
+    "deformed, mutated, extra limbs, extra legs, extra arms, extra fingers, "
+    "missing limbs, missing fingers, fused fingers, too many fingers, "
+    "three legs, six fingers, malformed hands, malformed feet, "
+    "bad anatomy, wrong anatomy, disfigured, mutilated, "
+    # Quality
+    "blurry, low quality, low resolution, jpeg artifacts, compression artifacts, "
+    "pixelated, grainy, noisy, overexposed, underexposed, "
+    # Composition
+    "bad composition, cropped, out of frame, cut off, "
+    "watermark, text, signature, logo, username, "
+    "signage with text, billboard text, screen text, UI overlay, "
+    "gibberish writing, unreadable text, scrambled letters, "
+    # Unwanted style
+    "cartoon, anime, illustration, painting, drawing, sketch, "
+    "3d render, cgi, plastic, fake, artificial, "
+    # Face
+    "ugly face, deformed face, asymmetrical face, cross-eyed, "
+    "bad eyes, extra eyes, missing eyes, "
+    # Duplicates
+    "duplicate, clone, multiple instances of same person, "
+    # Technical
+    "nsfw, nude, explicit"
 )
 
 _VISUAL_QUALITY_SUFFIX = ", photorealistic cinematic realism, natural skin texture"
@@ -412,7 +428,7 @@ def sanitize_trailer_clip_prompts(
         "motion_prompt": sanitize_motion_prompt(
             pdata.get("motion_prompt"),
             fallback=motion_fb,
-            max_len=120,
+            max_len=180,
         ),
         "negative_prompt": sanitize_generation_prompt(
             pdata.get("negative_prompt"),
@@ -421,7 +437,7 @@ def sanitize_trailer_clip_prompts(
             max_len=400,
         ) or neg_default,
         "ltx_video_prompt": sanitize_generation_prompt(
-            ltx_final, fallback=ltx_final, min_len=60, max_len=950,
+            ltx_final, fallback=ltx_final, min_len=80, max_len=1400,
         ) or ltx_final,
     }
 

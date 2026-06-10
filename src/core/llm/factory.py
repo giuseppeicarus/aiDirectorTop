@@ -45,7 +45,11 @@ def get_llm_adapter(config: Optional[LLMConfig] = None) -> BaseLLMAdapter:
         from src.core.llm.openai_adapter import OpenAIAdapter
         return OpenAIAdapter(cfg)
 
+    if provider in ("gemini", "google", "google_gemini"):
+        from src.core.llm.gemini_adapter import GeminiAdapter
+        return GeminiAdapter(cfg)
+
     raise ValueError(
         f"Provider LLM non supportato: '{provider}'. "
-        f"Scegli tra: openai, anthropic, ollama, lmstudio, groq"
+        f"Scegli tra: openai, anthropic, ollama, lmstudio, groq, gemini"
     )

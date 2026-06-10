@@ -1,7 +1,7 @@
 /**
  * Sorgenti immagine/audio per Tools: upload su Media Library + URL anteprima HTTP.
  */
-import { mediaFileUrl, mediaThumbUrl } from './mediaUrl'
+import { BACKEND_ORIGIN, mediaFileUrl, mediaThumbUrl } from './mediaUrl'
 
 /** Normalizza risposta GET /api/media/ */
 export function normalizeMediaList(data) {
@@ -44,6 +44,33 @@ export async function uploadDiskFileToToolsMedia(filePath, name, kind = 'image')
     tags: `tools,${kind}`,
     description: `Tools — ${name || kind}`,
   })
+  const src = buildToolsSourceFromMediaRecord(result)
+  if (!src?.path) {
+    throw new Error('Upload completato ma percorso file mancante')
+  }
+  return src
+}
+
+/** Browser fallback: carica un File via multipart direttamente al backend. */
+export async function uploadBrowserFileToToolsMedia(file, kind = 'image') {
+  if (!file) {
+    throw new Error('Nessun file selezionato')
+  }
+  const form = new FormData()
+  form.append('file', file)
+  form.append('project_id', '__library__')
+  form.append('tags', `tools,${kind}`)
+  form.append('description', `Tools - ${file.name || kind}`)
+
+  const res = await fetch(`${BACKEND_ORIGIN}/api/media/upload`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(text || `Upload media fallito (${res.status})`)
+  }
+  const result = await res.json()
   const src = buildToolsSourceFromMediaRecord(result)
   if (!src?.path) {
     throw new Error('Upload completato ma percorso file mancante')

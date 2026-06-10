@@ -35,21 +35,31 @@ LTX23_IMG2VIDEO_CONTEXTS = frozenset({
 
 LTX23_ENHANCE_SYSTEM_BLOCK = """
 LTX 2.3 VIDEO PROMPT RULES (mandatory for enhanced output):
-- Output ONE flowing English paragraph, present tense, 4–8 sentences (70–130 words).
-- Order: (1) shot type + subject + setting, (2) lighting + mood atmosphere,
-  (3) ONE camera move + lens mm, (4) timed physical action across clip duration,
-  (5) environment micro-motion, (6) final sentence starting with "Sound: " (once only).
-- TIMED ACTION BEATS (mandatory for img2video / img_audio2video):
-  Embed second-by-second temporal beats inline in the action sentence, using this format:
-  "1s [action happens], 2s [next action], 3s [next]..." up to the full CLIP DURATION (seconds).
-  Derive each beat from the user's description — if vague, infer logical progression.
-  Example for 6s: "1s the hand lowers slowly, 2s she turns to face camera, 3s eyes close gently,
-  4s a soft smile forms, 5s hair shifts with the breeze, 6s stillness holds."
-- img2video / ltx_video_prompt: describe MOTION and CHANGES only — do NOT re-describe the static reference image.
-- txt2video: you may describe the full scene in sentence 1 (no reference frame).
-- img_audio2video: align Sound: with music/vocal energy from context.
-- FORBIDDEN: keyword dumps, duplicate camera lines, "The scene shows...", truncated phrases,
-  trailing photorealistic/8k/skin texture tags (those belong to still image prompts).
+
+KEY PRINCIPLE — SPECIFICITY WINS: LTX 2.3 handles complex, detailed prompts better than simple ones.
+Do NOT simplify. Spatial positions, material textures, multiple overlapping actions — all improve output.
+VERBS DRIVE MOVEMENT: static-sounding descriptions produce frozen frames. Every prompt needs ≥2 subject verbs.
+
+- Output ONE flowing English paragraph, present tense, 5–9 sentences (120–200 words).
+- Order: (1) shot type + FULL subject description + spatial position (LEFT/RIGHT/foreground/background) + setting,
+  (2) lighting: quality, direction, color temperature, mood atmosphere,
+  (3) ONE camera move verb + lens mm + direction (dolly FORWARD/BACKWARD, track LEFT/RIGHT, orbit),
+  (4) VERB-DRIVEN temporal action: WHO moves + WHAT body part + HOW (raises hand, turns head, steps forward).
+     Use second-by-second beats for img2video: "1s [verb action], 2s [next verb]..."
+     Include ≥2 distinct physical verbs. Camera verb must differ from subject verb.
+  (5) Material/texture in motion: fabric ripple, hair strands catching light, rain on glass, surface detail,
+  (6) ONE environment micro-motion (haze, flicker, crowd blur, smoke drift),
+  (7) [9:16 portrait only] compose top-to-bottom, subject centered vertically,
+  (8) Final sentence MUST start with "Sound: " — describe ambient tone, intensity, and audio quality specifically
+      (NOT "ambient sound" but "low café hum, ceramic clinking, muffled rain against glass").
+
+SPATIAL DIRECTION (mandatory):
+- Name WHERE subjects stand: "to the LEFT of frame", "centered", "in the far RIGHT background"
+- Name facing direction: "facing camera", "turned away", "facing subject B on her right"
+- Name distances: "two steps apart", "half-meter gap", "three meters behind"
+
+FORBIDDEN: keyword dumps, duplicate camera lines, "The scene shows...", truncated phrases,
+trailing photorealistic/8k/skin texture tags, bare emotion labels, static descriptions with no action verbs.
 Return the improved text as the single string in JSON field "enhanced".
 """
 
@@ -152,7 +162,7 @@ def _lighting_phrase(dop: dict, mood: str) -> str:
 
 
 def _subject_clause(dop: dict, visual_hint: str) -> str:
-    """Soggetto + setting minimo (il frame statico è già nell'immagine di riferimento)."""
+    """Soggetto + setting + spatial position (img2video: il frame statico è già nell'immagine)."""
     raw = (
         dop.get("primary_visual_focus")
         or dop.get("first_frame_state")
@@ -160,11 +170,19 @@ def _subject_clause(dop: dict, visual_hint: str) -> str:
         or visual_hint
         or "the main subject"
     )
-    clause = _clean_clause(str(raw), 160)
-    # Evita doppio "wide shot" nel soggetto
+    clause = _clean_clause(str(raw), 200)
+    # Remove stray shot type labels from subject clause
     clause = re.sub(r"\b(?:wide|medium|close[- ]?up)\s+shot\b", "", clause, flags=re.I)
     clause = re.sub(r"\s+", " ", clause).strip(" ,.")
-    setting = _clean_clause(dop.get("location") or dop.get("environment") or "", 80)
+    setting = _clean_clause(dop.get("location") or dop.get("environment") or "", 100)
+    # Add spatial position if not already present
+    comp = (dop.get("composition") or "").lower()
+    if comp and not any(k in clause.lower() for k in ("left", "right", "center", "background", "foreground")):
+        # Extract any spatial token from composition field
+        for token in ("left", "right", "center", "foreground", "background", "centered"):
+            if token in comp:
+                clause = clause.rstrip(".") + f", positioned {token} of frame"
+                break
     if setting and setting.lower() not in clause.lower():
         return f"{clause} in {setting.rstrip('.')}"
     return clause
@@ -203,22 +221,54 @@ def _action_timeline(
     duration_sec: float = 5.0,
     brief: str = "",
 ) -> str:
-    """Azione fisica con progressione temporale (LTX: cosa accade nel clip)."""
+    """Azione fisica verb-driven con progressione temporale.
+    LTX 2.3: movement driven by verbs — WHO moves, WHAT body part, HOW.
+    """
     motion = (dop.get("motion_intent") or dop.get("subject_action") or "").strip()
     if not motion and brief:
         motion = brief.strip()
     if not motion:
-        motion = "the subject completes one clear gesture toward camera"
+        # Fallback: generate a minimal verb-driven action from scene context
+        subject_hint = dop.get("primary_visual_focus") or dop.get("scene_description") or "the subject"
+        motion = f"{subject_hint[:80]} turns their head, shifts their weight, and glances toward camera"
 
-    motion = _clean_clause(motion, 300).rstrip(".")
+    motion = _clean_clause(motion, 350).rstrip(".")
     d = max(3.0, min(15.0, float(duration_sec or 5.0)))
 
-    # For short clips keep it compact
+    # Short clips: compact but still verb-driven
     if d <= 3.5:
-        return f"Over the clip, {motion}, with deliberate pacing and visible weight shift."
+        # Ensure the sentence has at least one strong verb
+        if not re.search(r"\b(?:raises|turns|steps|lifts|leans|reaches|looks|glances|"
+                         r"exhales|smiles|tilts|shifts|moves|extends|rotates)\b", motion.lower()):
+            motion = motion.rstrip(".") + ", turns slightly and exhales"
+        return f"Over the clip, {motion}, with deliberate pacing."
 
-    # Generate second-by-second beats from the motion description
+    # Full second-by-second beats for longer clips
     return _generate_second_beats(motion, d)
+
+
+def _texture_phrase(dop: dict) -> str:
+    """LTX 2.3: material/texture details in motion improve sharpness and definition."""
+    notes = (dop.get("texture_notes") or "").strip()
+    if notes:
+        return _clean_clause(notes, 120).rstrip(".") + "."
+    # Derive from shot scale and scene description
+    shot = (dop.get("shot_type") or "medium").lower()
+    scene = (dop.get("scene_description") or dop.get("first_frame_state") or "").lower()
+    hints = []
+    if any(k in scene for k in ("rain", "wet", "glass")):
+        hints.append("rain streaks on the glass surface catch the light")
+    if any(k in scene for k in ("hair", "strand", "curl")):
+        hints.append("fine hair strands drift in the ambient air current")
+    if any(k in scene for k in ("fabric", "coat", "shirt", "jacket", "linen", "wool", "silk")):
+        hints.append("fabric folds shift with each movement")
+    if any(k in scene for k in ("smoke", "haze", "mist", "fog")):
+        hints.append("haze drifts in soft layers through the light beam")
+    if "extreme_close" in shot or "close_up" in shot:
+        hints.append("skin texture and individual facial features resolve in sharp detail")
+    if not hints:
+        hints.append("surface materials and edge details stay crisp as the subject moves")
+    return hints[0] + "."
 
 
 def _environment_motion(dop: dict) -> str:
@@ -272,8 +322,10 @@ def normalize_ltx23_prompt(text: str) -> str:
 
 
 def is_ltx_prompt_well_formed(text: str) -> bool:
-    """True se il prompt sembra già strutturato (non serve rebuild completo)."""
-    if not text or _word_count(text) < 55:
+    """True se il prompt sembra già strutturato (non serve rebuild completo).
+    Threshold raised to 80 words — LTX 2.3 rewards specificity, short prompts are underdirected.
+    """
+    if not text or _word_count(text) < 80:
         return False
     low = text.lower()
     if "the scene shows" in low or "every surface and object" in low:
@@ -284,8 +336,14 @@ def is_ltx_prompt_well_formed(text: str) -> bool:
         return False
     if re.search(r"establishing the s\b", low):
         return False
+    # Reject prompts with no action verbs (static)
+    action_verbs = re.findall(r"\b(?:raises|turns|steps|walks|lifts|drifts|leans|reaches|"
+                               r"looks|glances|exhales|smiles|gestures|tilts|shifts|opens|"
+                               r"closes|extends|moves|rotates|approaches|retreats)\b", low)
+    if len(action_verbs) < 1:
+        return False
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-    return 4 <= len(sentences) <= 10
+    return 4 <= len(sentences) <= 12
 
 
 def project_context_to_dop(ctx: Optional[dict[str, Any]]) -> dict:
@@ -330,16 +388,18 @@ def build_ltx23_txt2video_prompt(
     action = _action_timeline(dop, duration_sec=duration_sec, brief=brief)
     env = _environment_motion(dop)
     audio = _audio_line(brief, mood_use)
+    texture = _texture_phrase(dop)
     sentences = [
         f"{shot} of {scene}.",
         lighting,
         camera,
         action,
+        texture,
         env,
         audio,
     ]
     paragraph = " ".join(s.rstrip() for s in sentences if s)
-    return re.sub(r"\s+", " ", paragraph).strip()[:950]
+    return re.sub(r"\s+", " ", paragraph).strip()[:1200]
 
 
 def build_ltx23_video_prompt(
@@ -379,18 +439,20 @@ def build_ltx23_video_prompt(
     env = _environment_motion(dop)
     audio = _audio_line(brief, mood_use)
 
+    texture = _texture_phrase(dop)
     sentences = [
         f"{shot} of {subject}.",
         lighting,
         camera,
         action,
+        texture,
         env,
         audio,
     ]
     paragraph = " ".join(s.rstrip() for s in sentences if s)
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
-    if len(paragraph) > 950:
-        paragraph = paragraph[:947].rsplit(" ", 1)[0] + "."
+    if len(paragraph) > 1200:
+        paragraph = paragraph[:1197].rsplit(" ", 1)[0] + "."
     return paragraph
 
 

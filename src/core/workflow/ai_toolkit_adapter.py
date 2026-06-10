@@ -154,8 +154,8 @@ def build_lora_config(record: CharacterRecord, dataset_dir: Path, *, container_p
                     "trigger_word": trigger_word(record),
                     "network": {
                         "type": "lora",
-                        "linear": 16 if record.profile == "Low" else 32,
-                        "linear_alpha": 16 if record.profile == "Low" else 32,
+                        "linear": 32,
+                        "linear_alpha": 32,
                     },
                     "save": {
                         "dtype": "float16",
@@ -189,6 +189,7 @@ def build_lora_config(record: CharacterRecord, dataset_dir: Path, *, container_p
                         "quantize": True,
                         "quantize_te": True,
                         "low_vram": True,
+                        "layer_offloading": True,
                     },
                     "sample": {
                         "sample_every": save_every,
@@ -207,6 +208,201 @@ def build_lora_config(record: CharacterRecord, dataset_dir: Path, *, container_p
     config_path = config_dir / f"{name}.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return config_path
+
+
+def build_continue_lora_config(
+    record: "CharacterRecord",
+    checkpoint_path: Path,
+    additional_steps: int,
+    cont_index: int = 1,
+    lr: float = 5e-5,
+    noise_offset: Optional[float] = None,
+) -> Path:
+    """Build a YAML config for continuing training from an existing checkpoint."""
+    cfg = get_config().ai_toolkit
+    job_dir = training_root() / record.id
+    config_dir = job_dir / "config"
+    output_dir = job_dir / "output"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = f"character_{record.id}_{record.profile.lower()}"
+    cont_name = f"{base_name}_cont{cont_index}"
+    resolution = max(256, int(profile_resolution(record.profile)))
+
+    save_every = 250
+    if additional_steps <= 600:
+        save_every = 200
+    elif additional_steps <= 1500:
+        save_every = 350
+    else:
+        save_every = 500
+    save_every = min(save_every, additional_steps)
+
+    # Look for optimizer.pt from the previous run (enables better optimizer state restore)
+    optimizer_path = output_dir / base_name / "optimizer.pt"
+
+    payload = {
+        "job": "extension",
+        "config": {
+            "name": cont_name,
+            "process": [
+                {
+                    "type": "sd_trainer",
+                    "training_folder": str(output_dir),
+                    "device": cfg.device,
+                    "trigger_word": trigger_word(record),
+                    "network": {
+                        "type": "lora",
+                        "linear": 32,
+                        "linear_alpha": 32,
+                        "init_lora": str(checkpoint_path),
+                    },
+                    "save": {
+                        "dtype": "float16",
+                        "save_every": save_every,
+                        "max_step_saves_to_keep": 20,
+                    },
+                    "datasets": [
+                        {
+                            "folder_path": str(training_root() / record.id / "dataset"),
+                            "caption_ext": "txt",
+                            "caption_dropout_rate": 0.05,
+                            "shuffle_tokens": False,
+                            "cache_latents_to_disk": True,
+                            "resolution": [resolution],
+                        }
+                    ],
+                    "train": {
+                        "batch_size": 1,
+                        "steps": additional_steps,
+                        "gradient_accumulation": 1,
+                        "train_unet": True,
+                        "train_text_encoder": False,
+                        "gradient_checkpointing": True,
+                        "noise_scheduler": "flowmatch",
+                        "optimizer": "adamw8bit",
+                        "lr": lr,
+                        **({"noise_offset": noise_offset} if noise_offset is not None else {}),
+                    },
+                    "model": {
+                        "name_or_path": cfg.base_model,
+                        "arch": cfg.model_arch,
+                        "quantize": True,
+                        "quantize_te": True,
+                        "low_vram": True,
+                        "layer_offloading": True,
+                    },
+                    "sample": {
+                        "sample_every": save_every,
+                        "width": resolution,
+                        "height": resolution,
+                        "prompts": [f"{trigger_word(record)}, cinematic portrait"],
+                        "seed": 42,
+                        "sample_steps": 8,
+                        "guidance_scale": 3.5,
+                    },
+                }
+            ],
+        },
+        "meta": {"name": "[name]"},
+    }
+
+    # Add resume if optimizer.pt exists (restores optimizer momentum)
+    if optimizer_path.is_file():
+        payload["config"]["process"][0]["save"]["resume"] = str(optimizer_path)
+
+    config_path = config_dir / f"{cont_name}.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return config_path
+
+
+async def run_continue_lora(
+    record: "CharacterRecord",
+    checkpoint_path: Path,
+    additional_steps: int,
+    cont_index: int = 1,
+    lr: float = 5e-5,
+    noise_offset: Optional[float] = None,
+    phase_name: str = "",
+) -> "AiToolkitRunResult":
+    """Continue training from a checkpoint for additional_steps."""
+    from src.core.workflow.character_service import save_record
+
+    cfg = get_config().ai_toolkit
+    config_path = build_continue_lora_config(
+        record, checkpoint_path, additional_steps, cont_index,
+        lr=lr, noise_offset=noise_offset,
+    )
+    output_dir = training_root() / record.id / "output"
+
+    if cfg.backend == "docker":
+        return AiToolkitRunResult(
+            ok=False,
+            status="unsupported",
+            command=[],
+            config_path=str(config_path),
+            dataset_dir="",
+            output_dir=str(output_dir),
+            error="Continue training non supportato in modalità Docker",
+        )
+
+    toolkit_dir = discover_toolkit_dir()
+    python_exe = cfg.python_executable or sys.executable
+    command = [python_exe, "run.py", str(config_path)]
+
+    if toolkit_dir is None:
+        return AiToolkitRunResult(
+            ok=False,
+            status="missing",
+            command=command,
+            config_path=str(config_path),
+            dataset_dir="",
+            output_dir=str(output_dir),
+            error="ai-toolkit non trovato",
+        )
+
+    proc = await create_subprocess_exec_compatible(
+        command[0],
+        *command[1:],
+        cwd=str(toolkit_dir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    _ACTIVE_PROCESSES[record.id] = proc
+    record.status = "in_creazione"
+    record.progress = 0
+    phase_label = f" [{phase_name}]" if phase_name else ""
+    record.logs.append(f"Continuazione training{phase_label} (cont{cont_index}, {additional_steps} step, lr={lr})")
+    save_record(record)
+
+    try:
+        stdout_text, stderr_text = await stream_subprocess_logs(proc, record)
+        await proc.wait()
+    finally:
+        _ACTIVE_PROCESSES.pop(record.id, None)
+
+    lora = find_lora_output(output_dir)
+    ok = proc.returncode == 0
+    record.status = "completato" if ok else "errore"
+    record.progress = 100 if ok else record.progress
+    if not ok:
+        record.error = f"Continuazione training fallita (exit {proc.returncode})"
+    save_record(record)
+
+    return AiToolkitRunResult(
+        ok=ok,
+        status="completed" if ok else "failed",
+        command=command,
+        config_path=str(config_path),
+        dataset_dir="",
+        output_dir=str(output_dir),
+        lora_path=str(lora) if lora else None,
+        stdout_tail=stdout_text[-2000:],
+        stderr_tail=stderr_text[-2000:],
+        error=None if ok else f"exit code {proc.returncode}",
+    )
 
 
 def create_remote_bundle(record: CharacterRecord) -> Path:
@@ -553,7 +749,7 @@ async def run_local_lora(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    
+
     if smoke_test:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=max(5, cfg.max_start_seconds))
@@ -665,7 +861,7 @@ async def run_docker_lora(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    
+
     if smoke_test:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=max(5, cfg.max_start_seconds))
@@ -857,4 +1053,3 @@ async def resume_training_process(character_id: str) -> bool:
             print(f"Error unpausing docker container: {e}")
 
     return True
-

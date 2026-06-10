@@ -42,7 +42,7 @@ async def analyze_story(
             system=STORY_ANALYST_SYSTEM,
             user=user_prompt,
             temperature=getattr(role_cfg, "temperature", 0.85),
-            max_tokens=2000,
+            max_tokens=getattr(role_cfg, "max_tokens", 2000),
         )
     except Exception as e:
         log.error("story_analyst_llm_failed", error=str(e),

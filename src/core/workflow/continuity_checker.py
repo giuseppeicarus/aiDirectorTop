@@ -42,7 +42,7 @@ async def check_continuity(
             system=CONTINUITY_CHECKER_SYSTEM,
             user=(vault_context or "") + build_continuity_checker_prompt(chunk_dicts),
             temperature=getattr(role_cfg, "temperature", 0.20),
-            max_tokens=3000,
+            max_tokens=getattr(role_cfg, "max_tokens", 3000),
         )
 
         if not isinstance(raw, dict):

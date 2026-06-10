@@ -44,6 +44,7 @@ function _findPythonExe() {
 }
 
 function startBackend() {
+  const fs = require('fs')
   const backendDir = isDev
     ? path.join(__dirname, '..', '..')
     : path.join(process.resourcesPath, 'backend')
@@ -57,11 +58,16 @@ function startBackend() {
     ? ['-m', 'uvicorn', 'src.core.main:app', '--port', String(BACKEND_PORT), '--host', '127.0.0.1', '--workers', '1']
     : []
 
-  log.info('Starting backend', { pythonExe, args, cwd: backendDir })
+  if (!isDev && !fs.existsSync(pythonExe)) {
+    log.error('Backend exe not found', { pythonExe })
+    return
+  }
+
+  log.info('Starting backend', { pythonExe, args, cwd: backendDir, port: BACKEND_PORT })
 
   backendProcess = spawn(pythonExe, args, {
     cwd: isDev ? path.join(__dirname, '..', '..') : backendDir,
-    env: { ...process.env },
+    env: { ...process.env, CINEMATIC_BACKEND_PORT: String(BACKEND_PORT) },
   })
 
   backendProcess.stdout.on('data', (d) => log.info('[backend]', d.toString().trim()))
@@ -131,6 +137,20 @@ async function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_ev, code, desc, url) => {
     log.error('Renderer failed to load', { code, desc, url })
+  })
+
+  mainWindow.webContents.on('console-message', (_ev, level, msg, line, src) => {
+    if (level >= 2) log.warn(`[renderer] ${msg}`, { line, src })
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_ev, details) => {
+    log.error('Renderer process gone', details)
+  })
+
+  // F12 opens DevTools in any mode — useful for production debugging
+  const { globalShortcut } = require('electron')
+  globalShortcut.register('F12', () => {
+    if (mainWindow) mainWindow.webContents.toggleDevTools()
   })
 
   try {
@@ -621,7 +641,11 @@ function registerIpcHandlers() {
         const flushSseLine = (line) => {
           if (!line.startsWith('data: ')) return
           try {
-            const data = JSON.parse(line.slice(6))
+            const data = {
+              title: params.title || '',
+              catalog_project_id: params.project_id || 'trailer_standalone',
+              ...JSON.parse(line.slice(6)),
+            }
             if (isTrailerSseTerminal(data)) streamTerminal = true
             if (!event.sender.isDestroyed()) event.sender.send('trailer:progress', data)
           } catch {}
@@ -776,7 +800,11 @@ function registerIpcHandlers() {
         const flushSseLine = (line) => {
           if (!line.startsWith('data: ')) return
           try {
-            const data = JSON.parse(line.slice(6))
+            const data = {
+              title: params.title || '',
+              catalog_project_id: params.project_id || 'reel_standalone',
+              ...JSON.parse(line.slice(6)),
+            }
             if (isReelSseTerminal(data)) streamTerminal = true
             if (!event.sender.isDestroyed()) event.sender.send('reel:progress', data)
           } catch {}
@@ -927,8 +955,8 @@ function registerIpcHandlers() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
+// GPU compositing: keep defaults for Electron 32 on Windows 11.
+// Disabling VizDisplayCompositor causes black screen with frameless + file:// on modern hardware.
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
@@ -990,4 +1018,6 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   if (backendProcess) backendProcess.kill()
+  const { globalShortcut } = require('electron')
+  globalShortcut.unregisterAll()
 })

@@ -9,7 +9,7 @@ from typing import Optional
 
 import structlog
 
-from src.core.comfyui.client import ComfyUIClient
+from src.core.comfyui.client import ComfyUIClient, ComfyUIExecutionInterrupted
 from src.core.comfyui.execution_watchdog import resolve_execution_timeouts
 from src.core.config import get_config, ComfyUINodeConfig
 
@@ -243,8 +243,13 @@ class ComfyUINodePool:
             elif self._has_primary():
                 log.info("comfyui_fallback_attempt", node=entry.config.name)
 
-            try:
-                from src.core.comfyui.model_check import validate_workflow_models
+            _interrupted_retries = 0
+            while True:
+              try:
+                from src.core.comfyui.model_check import (
+                    bypass_missing_loras,
+                    validate_workflow_models,
+                )
                 from src.core.comfyui.workflow_builder import (
                     extract_history_error,
                     extract_output_files,
@@ -253,6 +258,17 @@ class ComfyUINodePool:
                 try:
                     oi = await entry.client.get_object_info()
                     check = validate_workflow_models(oi, workflow)
+                    removed_loras = bypass_missing_loras(
+                        workflow,
+                        check.get("missing", []),
+                    )
+                    if removed_loras:
+                        log.warning(
+                            "comfyui_optional_loras_bypassed",
+                            node=entry.config.name,
+                            loras=removed_loras,
+                        )
+                        check = validate_workflow_models(oi, workflow)
                     if not check.get("ok"):
                         missing = ", ".join(
                             f"{m['kind']}:{m['name']}" for m in check.get("missing", [])
@@ -302,9 +318,23 @@ class ComfyUINodePool:
                     node_name=entry.config.name,
                     prompt_id=prompt_id,
                 )
-            except Exception as e:
+              except ComfyUIExecutionInterrupted as e:
+                if _interrupted_retries < 1:
+                    _interrupted_retries += 1
+                    log.warning(
+                        "comfyui_job_interrupted_retrying",
+                        node=node_url,
+                        error=str(e),
+                        retry=_interrupted_retries,
+                    )
+                    await asyncio.sleep(3)
+                    continue
+                log.error("comfyui_job_interrupted_giving_up", node=node_url, error=str(e))
+                break
+              except Exception as e:
                 log.error("comfyui_node_failed", node=node_url, error=str(e))
                 entry.quarantine()
+                break
 
         raise RuntimeError("Tutti i nodi ComfyUI hanno fallito l'esecuzione del workflow.")
 

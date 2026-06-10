@@ -196,6 +196,23 @@ def force_stop_job(job_id: str) -> dict:
     return {"cancelled": cancelled, "task_was_running": cancelled}
 
 
+async def cancel_all_jobs() -> int:
+    """Cancel and remove every active reel/trailer task."""
+    tasks = [task for task in _tasks.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    count = len(_jobs)
+    _jobs.clear()
+    _tasks.clear()
+    for event in _pause_events.values():
+        event.set()
+    _pause_events.clear()
+    _active.clear()
+    return count
+
+
 def get_active_jobs() -> List[dict]:
     """All active reel/trailer jobs."""
     return list(_jobs.values())

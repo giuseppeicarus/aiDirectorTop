@@ -1,0 +1,104 @@
+{
+  "ltx-2.3-22b-dev-fp8.safetensors": {
+    "name": "LTX 2.3 22B Dev FP8",
+    "category": "video",
+    "size_gb": 22.0,
+    "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-dev-fp8.safetensors"
+  },
+  "ltx-2.3-22b-distilled-lora-384.safetensors": {
+    "name": "LTX 2.3 Distilled LoRA 384",
+    "category": "lora",
+    "size_gb": 0.9,
+    "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-lora-384.safetensors"
+  },
+  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors": {
+    "name": "LTX 2.3 Spatial Upscaler x2 v1.1",
+    "category": "upscale",
+    "size_gb": 0.2,
+    "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+  },
+  "ae.safetensors": {
+    "name": "FLUX VAE (ae)",
+    "category": "vae",
+    "size_gb": 0.3,
+    "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors"
+  },
+  "gemma_3_12B_it_fp4_mixed.safetensors": {
+    "name": "Gemma 3 12B IT FP4 (text encoder LTX 2.3)",
+    "category": "text_encoder",
+    "size_gb": 9.5,
+    "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+  },
+  "qwen_3_4b.safetensors": {
+    "name": "Qwen 3 4B (text encoder Z-Image)",
+    "category": "text_encoder",
+    "size_gb": 8.0,
+    "url": "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors"
+  },
+  "ltx-video-2b-v0.9.6.safetensors": {
+    "name": "LTX Video 2B v0.9.6",
+    "category": "video",
+    "size_gb": 5.3,
+    "url": "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltxv-2b-0.9.6-dev-04-25.safetensors"
+  },
+  "ltxv_spatial_upscaler_0.9.7.safetensors": {
+    "name": "LTX Spatial Upscaler v0.9.7",
+    "category": "upscale",
+    "size_gb": 0.15,
+    "url": "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltxv-spatial-upscaler-0.9.7.safetensors"
+  },
+  "RealESRGAN_x2plus.pth": {
+    "name": "RealESRGAN x2+",
+    "category": "upscale",
+    "size_gb": 0.07,
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+  },
+  "t5xxl_fp16.safetensors": {
+    "name": "T5-XXL FP16 (text encoder)",
+    "category": "text_encoder",
+    "size_gb": 9.8,
+    "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
+  },
+  "z_image_bf16.safetensors": {
+    "name": "Z-Image BF16",
+    "category": "checkpoint",
+    "size_gb": 4.2,
+    "url": "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/diffusion_models/z_image_bf16.safetensors"
+  },
+  "z_image_turbo_bf16.safetensors": {
+    "name": "Z-Image Turbo BF16",
+    "category": "checkpoint",
+    "size_gb": 4.2,
+    "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors"
+  },
+  "Ltx2.3-Licon-VBVR-I2V-96000-R32.safetensors": {
+    "name": "LTX 2.3 Licon VBVR LoRA",
+    "category": "lora",
+    "size_gb": 0.9,
+    "url": "https://huggingface.co/LiconStudio/Ltx2.3-VBVR-lora-I2V/resolve/main/Ltx2.3-Licon-VBVR-I2V-96000-R32.safetensors"
+  },
+  "skin/zit_fdpo_v1.safetensors": {
+    "url": "https://huggingface.co/F16/z-image-turbo-flow-dpo/resolve/main/zit_fdpo_v1.safetensors"
+  },
+  "qwen3_4b_fp8_scaled.safetensors": {
+    "url": "https://huggingface.co/jiangchengchengNLP/qwen3-4b-fp8-scaled/resolve/main/qwen3_4b_fp8_scaled.safetensors"
+  },
+  "flux-2-klein-9b-kv-fp8.safetensors": {
+    "name": "FLUX.2 Klein 9B KV FP8",
+    "category": "checkpoint",
+    "size_gb": 9.4,
+    "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv-fp8/resolve/main/flux-2-klein-9b-kv-fp8.safetensors"
+  },
+  "qwen_3_8b_fp8mixed.safetensors": {
+    "name": "Qwen 3 8B FP8 Mixed (FLUX.2 text encoder)",
+    "category": "text_encoder",
+    "size_gb": 8.7,
+    "url": "https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+  },
+  "flux2-vae.safetensors": {
+    "name": "FLUX.2 VAE",
+    "category": "vae",
+    "size_gb": 0.3,
+    "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors"
+  }
+}

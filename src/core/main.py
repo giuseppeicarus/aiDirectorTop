@@ -6,6 +6,7 @@ Avviare con: uvicorn src.core.main:app --port 8765 --reload
 import asyncio
 import io
 import logging
+import os
 import sys
 import warnings
 from contextlib import asynccontextmanager
@@ -48,6 +49,9 @@ from src.core.api.admin_routes import router as admin_router
 from src.core.api.nav_routes import router as nav_router
 from src.core.api.dashboard_routes import router as dashboard_router
 from src.core.api.character_routes import router as character_router
+from src.core.api.music_video_routes import router as music_video_router
+from src.core.api.provisioning_routes import router as provisioning_router
+from src.core.api.comfy_manager_routes import router as comfy_manager_router
 
 log = structlog.get_logger()
 
@@ -67,6 +71,33 @@ async def lifespan(app: FastAPI):
     if n:
         log.info("workflows_synced_from_base", count=n)
     log.info("database_ready")
+
+    # Reset stale "in_creazione" character records — process list is empty on fresh start
+    try:
+        from src.core.workflow.character_service import save_record
+        from src.core.config import get_config as _cfg
+        chars_root = _cfg().app.data_path / "characters"
+        if chars_root.is_dir():
+            for owner_dir in chars_root.iterdir():
+                if not owner_dir.is_dir():
+                    continue
+                for char_dir in owner_dir.iterdir():
+                    manifest = char_dir / "character.json"
+                    if not manifest.is_file():
+                        continue
+                    try:
+                        from src.core.models.character import CharacterRecord
+                        record = CharacterRecord.model_validate_json(manifest.read_text("utf-8"))
+                        if record.status == "in_creazione":
+                            record.status = "errore"
+                            record.error = "Training interrotto (riavvio server)"
+                            save_record(record)
+                            log.info("character_training_reset", character_id=record.id)
+                    except Exception:
+                        pass
+    except Exception as exc:
+        log.warning("character_startup_cleanup_failed", error=str(exc))
+
     obs_cfg = config.obsidian
     if obs_cfg.enabled:
         from src.core.obsidian.vault_manager import get_vault_manager
@@ -102,25 +133,36 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-app.include_router(project_router,  prefix="/api/projects",  tags=["projects"])
-app.include_router(llm_router,      prefix="/api/llm",       tags=["llm"])
-app.include_router(comfyui_router,  prefix="/api/comfyui",   tags=["comfyui"])
-app.include_router(pipeline_router, prefix="/api/pipeline",  tags=["pipeline"])
-app.include_router(media_router,    prefix="/api/media",     tags=["media"])
-app.include_router(services_router, prefix="/api/services",  tags=["services"])
-app.include_router(queue_router,    prefix="/api/queue",     tags=["queue"])
-app.include_router(workflow_router, prefix="/api/workflows", tags=["workflows"])
-app.include_router(tools_router,    prefix="/api/tools",     tags=["tools"])
-app.include_router(director_router, prefix="/api/director",  tags=["director"])
-app.include_router(trailer_router,  prefix="/api/trailer",   tags=["trailer"])
-app.include_router(reel_router,     prefix="/api/reel",      tags=["reel"])
-app.include_router(obsidian_router, prefix="/api/obsidian",  tags=["obsidian"])
-app.include_router(admin_router,    tags=["admin"])
-app.include_router(nav_router,      prefix="/api/nav",      tags=["nav"])
-app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
-app.include_router(character_router, prefix="/api/characters", tags=["characters"])
+app.include_router(project_router,      prefix="/api/projects",      tags=["projects"])
+app.include_router(llm_router,          prefix="/api/llm",           tags=["llm"])
+app.include_router(comfyui_router,      prefix="/api/comfyui",       tags=["comfyui"])
+app.include_router(pipeline_router,     prefix="/api/pipeline",      tags=["pipeline"])
+app.include_router(media_router,        prefix="/api/media",         tags=["media"])
+app.include_router(services_router,     prefix="/api/services",      tags=["services"])
+app.include_router(queue_router,        prefix="/api/queue",         tags=["queue"])
+app.include_router(workflow_router,     prefix="/api/workflows",     tags=["workflows"])
+app.include_router(tools_router,        prefix="/api/tools",         tags=["tools"])
+app.include_router(director_router,     prefix="/api/director",      tags=["director"])
+app.include_router(trailer_router,      prefix="/api/trailer",       tags=["trailer"])
+app.include_router(reel_router,         prefix="/api/reel",          tags=["reel"])
+app.include_router(obsidian_router,     prefix="/api/obsidian",      tags=["obsidian"])
+app.include_router(admin_router,        tags=["admin"])
+app.include_router(nav_router,          prefix="/api/nav",           tags=["nav"])
+app.include_router(dashboard_router,    prefix="/api/dashboard",     tags=["dashboard"])
+app.include_router(character_router,    prefix="/api/characters",    tags=["characters"])
+app.include_router(music_video_router,  prefix="/api/music-video",   tags=["music-video"])
+app.include_router(provisioning_router, prefix="/api",               tags=["provisioning"])
+app.include_router(comfy_manager_router, prefix="/api",              tags=["comfy-manager"])
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "cinematic-ai-studio"}
+
+
+if __name__ == "__main__":
+    # Entry point for PyInstaller exe — uvicorn must be started explicitly.
+    # In dev mode the process is launched by `npm run dev:backend` (uvicorn CLI).
+    import uvicorn
+    _port = int(os.environ.get("CINEMATIC_BACKEND_PORT", get_config().app.backend_port))
+    uvicorn.run(app, host="127.0.0.1", port=_port, log_level="info")

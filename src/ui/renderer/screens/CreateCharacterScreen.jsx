@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  AlertCircle, Download, ImagePlus, Loader2, Pause, Play, PlayCircle, RefreshCw, Trash2,
+  AlertCircle, Download, ImagePlus, Loader2, Pause, Play, PlayCircle, RefreshCw, RotateCcw, Trash2,
   Upload, UserRound, Wand2, X, FolderOpen,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -113,6 +113,20 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
   const [zoomImgUrl, setZoomImgUrl] = useState(null)
   const [zoomStep, setZoomStep] = useState(null)
 
+  const [continueModalOpen, setContinueModalOpen] = useState(false)
+  const [continueFromCp, setContinueFromCp] = useState(null)
+  const [continueSteps, setContinueSteps] = useState(500)
+  const [continueLr, setContinueLr] = useState(5e-5)
+  const [continueNoiseOffset, setContinueNoiseOffset] = useState(null)
+  const [continuePhase, setContinuePhase] = useState('fase2')
+  const [continueLoading, setContinueLoading] = useState(false)
+
+  const TRAINING_PHASES = [
+    { id: 'fase2', label: 'FASE 2 — Refine', desc: 'Rifinisce i dettagli, noise_offset 0.03', steps: 500, lr: 5e-5, noiseOffset: 0.03, color: '#c9a84c' },
+    { id: 'fase3', label: 'FASE 3 — Ultra Detail', desc: 'Massima qualità, LR molto basso', steps: 300, lr: 1e-5, noiseOffset: null, color: '#22c55e' },
+    { id: 'custom', label: 'Custom', desc: 'Parametri personalizzati', steps: 500, lr: 5e-5, noiseOffset: null, color: '#9090a8' },
+  ]
+
   const logsContainerRef = useRef(null)
 
   useEffect(() => {
@@ -198,6 +212,35 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
       alert('Errore di rete durante la ripresa del training')
     } finally {
       setActionLoading(false)
+    }
+  }
+
+  async function handleContinueTraining() {
+    if (!continueFromCp || !record?.id) return
+    setContinueLoading(true)
+    try {
+      const res = await fetch(`${API}/characters/${encodeURIComponent(record.id)}/continue-training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          checkpoint_filename: continueFromCp.filename,
+          additional_steps: Number(continueSteps),
+          lr: Number(continueLr),
+          noise_offset: continueNoiseOffset != null ? Number(continueNoiseOffset) : null,
+          phase_name: continuePhase,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.detail || 'Errore avvio continuazione training')
+        return
+      }
+      setContinueModalOpen(false)
+      onRefresh()
+    } catch {
+      alert('Errore di rete')
+    } finally {
+      setContinueLoading(false)
     }
   }
 
@@ -458,23 +501,46 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
                   <Wand2 size={13} className="text-[#c9a84c]" />
                   Pipeline Checkpoint Live
                 </h2>
-                {checkpointsData.current_step > 0 && (
-                  <span className="text-[10px] font-mono text-[#c9a84c] bg-[#c9a84c]/10 px-2 py-0.5 rounded font-bold">
-                    Step {checkpointsData.current_step} / {checkpointsData.total_steps}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {checkpointsData.current_step > 0 && (
+                    <span className="text-[10px] font-mono text-[#c9a84c] bg-[#c9a84c]/10 px-2 py-0.5 rounded font-bold">
+                      Step {checkpointsData.current_step} / {checkpointsData.total_steps}
+                    </span>
+                  )}
+                  {record.status !== 'in_creazione' && checkpointsData.checkpoints.some(cp => cp.exists) && (
+                    <button
+                      onClick={() => {
+                        const lastCp = [...checkpointsData.checkpoints].reverse().find(cp => cp.exists)
+                        setContinueFromCp(lastCp || null)
+                        // Auto-select phase based on last step
+                        const lastStep = lastCp?.step || 0
+                        const phase = lastStep >= 1750 ? TRAINING_PHASES[1] : TRAINING_PHASES[0]
+                        setContinuePhase(phase.id)
+                        setContinueSteps(phase.steps)
+                        setContinueLr(phase.lr)
+                        setContinueNoiseOffset(phase.noiseOffset)
+                        setContinueModalOpen(true)
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 rounded bg-[#3b82f6]/15 text-[#3b82f6] text-[10px] font-mono hover:bg-[#3b82f6]/30 border border-[#3b82f6]/30 transition"
+                      title="Continua training dal checkpoint"
+                    >
+                      <RotateCcw size={11} />
+                      Continua
+                    </button>
+                  )}
+                </div>
               </div>
-              
+
               <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-thin">
                 {checkpointsData.checkpoints.map((cp, idx) => {
                   const prevStep = idx === 0 ? 0 : checkpointsData.checkpoints[idx-1].step;
                   const isCurrent = checkpointsData.current_step >= prevStep && checkpointsData.current_step < cp.step && record.status === 'in_creazione';
-                  
+
                   return (
                     <div key={cp.step} className={clsx(
                       "flex-shrink-0 w-44 rounded-lg border p-3 flex flex-col justify-between transition-all duration-300",
-                      cp.exists 
-                        ? "border-[#c9a84c]/50 bg-[#1e1e2a]/40 shadow-[0_2px_8px_rgba(201,168,76,0.05)]" 
+                      cp.exists
+                        ? "border-[#c9a84c]/50 bg-[#1e1e2a]/40 shadow-[0_2px_8px_rgba(201,168,76,0.05)]"
                         : isCurrent
                           ? "border-[#c9a84c] bg-[#c9a84c]/5 shadow-[0_0_12px_rgba(201,168,76,0.15)] animate-pulse"
                           : "border-[#252533] bg-[#0f0f18] opacity-50"
@@ -498,14 +564,14 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
                             <span className="text-[8px] font-mono text-[#c9a84c] animate-pulse">In corso</span>
                           )}
                         </div>
-                        
+
                         {/* Sample Image Preview */}
                         <div className="aspect-square rounded bg-black/40 overflow-hidden border border-[#252533]/80 relative group mb-3 flex items-center justify-center">
                           {cp.sample_url ? (
                             <>
-                              <img 
-                                src={cp.sample_url} 
-                                alt={`Sample step ${cp.step}`} 
+                              <img
+                                src={cp.sample_url}
+                                alt={`Sample step ${cp.step}`}
                                 className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 cursor-pointer"
                                 onClick={() => { setZoomImgUrl(cp.sample_url); setZoomStep(cp.step); }}
                               />
@@ -527,7 +593,7 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
                           )}
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center justify-between gap-1 border-t border-[#252533]/50 pt-2 mt-1">
                         <span className="text-[8px] font-mono text-[#9090a8] truncate max-w-[70px]">
                           {cp.exists ? formatBytes(cp.size_bytes) : "In attesa"}
@@ -773,7 +839,7 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
           onClick={() => { setZoomImgUrl(null); setZoomStep(null); }}
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md transition-opacity duration-200"
         >
-          <div 
+          <div
             onClick={e => e.stopPropagation()}
             className="relative max-w-3xl max-h-[85vh] overflow-hidden rounded-xl border border-[#32324a] bg-[#16161f] shadow-2xl flex flex-col"
           >
@@ -784,11 +850,168 @@ function DetailView({ record, onBack, onRefresh, onStart, onDelete }) {
               </button>
             </div>
             <div className="p-4 flex items-center justify-center bg-[#16161f] overflow-auto">
-              <img 
-                src={zoomImgUrl} 
-                alt={`Campione step ${zoomStep}`} 
-                className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-inner" 
+              <img
+                src={zoomImgUrl}
+                alt={`Campione step ${zoomStep}`}
+                className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-inner"
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Continue Training Modal */}
+      {continueModalOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#16161f] border border-[#252533] rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-['Playfair_Display'] text-lg text-[#e8e4dd] flex items-center gap-2">
+                <RotateCcw size={18} className="text-[#3b82f6]" />
+                Continua Training
+              </h3>
+              <button onClick={() => setContinueModalOpen(false)} className="text-[#555568] hover:text-[#9090a8]">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Phase selector */}
+              <div>
+                <label className="text-[10px] font-mono uppercase tracking-wider text-[#9090a8] block mb-2">
+                  Fase di training
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {TRAINING_PHASES.map(ph => (
+                    <button
+                      key={ph.id}
+                      onClick={() => {
+                        setContinuePhase(ph.id)
+                        setContinueSteps(ph.steps)
+                        setContinueLr(ph.lr)
+                        setContinueNoiseOffset(ph.noiseOffset)
+                      }}
+                      className={clsx(
+                        'flex flex-col items-start gap-1 p-2.5 rounded-lg border text-left transition',
+                        continuePhase === ph.id
+                          ? 'border-opacity-70 bg-opacity-10'
+                          : 'border-[#252533] bg-[#0f0f18] hover:border-[#32324a]'
+                      )}
+                      style={continuePhase === ph.id ? {
+                        borderColor: ph.color + 'aa',
+                        backgroundColor: ph.color + '12',
+                      } : {}}
+                    >
+                      <span className="text-[10px] font-mono font-bold leading-tight" style={{ color: continuePhase === ph.id ? ph.color : '#9090a8' }}>
+                        {ph.label}
+                      </span>
+                      <span className="text-[9px] font-mono text-[#555568] leading-tight">{ph.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Checkpoint selector */}
+              <div>
+                <label className="text-[10px] font-mono uppercase tracking-wider text-[#9090a8] block mb-2">
+                  Checkpoint di partenza
+                </label>
+                <select
+                  value={continueFromCp?.filename || ''}
+                  onChange={e => {
+                    const cp = checkpointsData.checkpoints.find(c => c.filename === e.target.value)
+                    setContinueFromCp(cp || null)
+                  }}
+                  className="w-full bg-[#0f0f18] border border-[#252533] rounded px-3 py-2 text-sm text-[#e8e4dd] font-mono focus:outline-none focus:border-[#3b82f6]/50"
+                >
+                  {checkpointsData.checkpoints.filter(cp => cp.exists).map(cp => (
+                    <option key={cp.filename} value={cp.filename}>
+                      Step {cp.step} — {cp.filename}
+                    </option>
+                  ))}
+                </select>
+                {continueFromCp && (
+                  <p className="mt-1 text-[9px] font-mono text-[#555568]">
+                    {(continueFromCp.size_bytes / 1024 / 1024).toFixed(1)} MB
+                    {continueFromCp.created_at && ` · ${new Date(continueFromCp.created_at).toLocaleString()}`}
+                  </p>
+                )}
+              </div>
+
+              {/* Parameters grid */}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] font-mono uppercase tracking-wider text-[#9090a8] block mb-1.5">Step</label>
+                  <input
+                    type="number" min={50} max={5000} step={50}
+                    value={continueSteps}
+                    onChange={e => setContinueSteps(Number(e.target.value))}
+                    className="w-full bg-[#0f0f18] border border-[#252533] rounded px-2 py-1.5 text-sm text-[#e8e4dd] font-mono focus:outline-none focus:border-[#3b82f6]/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase tracking-wider text-[#9090a8] block mb-1.5">LR</label>
+                  <input
+                    type="number" min={1e-6} max={1e-3} step={1e-6}
+                    value={continueLr}
+                    onChange={e => setContinueLr(Number(e.target.value))}
+                    className="w-full bg-[#0f0f18] border border-[#252533] rounded px-2 py-1.5 text-sm text-[#e8e4dd] font-mono focus:outline-none focus:border-[#3b82f6]/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-mono uppercase tracking-wider text-[#9090a8] block mb-1.5">
+                    Noise Offset
+                  </label>
+                  <input
+                    type="number" min={0} max={0.2} step={0.01}
+                    placeholder="none"
+                    value={continueNoiseOffset ?? ''}
+                    onChange={e => setContinueNoiseOffset(e.target.value === '' ? null : Number(e.target.value))}
+                    className="w-full bg-[#0f0f18] border border-[#252533] rounded px-2 py-1.5 text-sm text-[#e8e4dd] font-mono focus:outline-none focus:border-[#3b82f6]/50 placeholder-[#555568]"
+                  />
+                </div>
+              </div>
+
+              {/* Summary */}
+              <div className="rounded-lg bg-[#0f0f18] border border-[#252533] p-3 text-[10px] font-mono text-[#9090a8] space-y-1">
+                <div className="flex justify-between">
+                  <span>rank / alpha</span><span className="text-[#e8e4dd]">32 / 32</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>steps</span><span className="text-[#e8e4dd]">{continueSteps}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>learning rate</span><span className="text-[#e8e4dd]">{continueLr.toExponential(0)}</span>
+                </div>
+                {continueNoiseOffset != null && (
+                  <div className="flex justify-between">
+                    <span>noise offset</span><span className="text-[#c9a84c]">{continueNoiseOffset}</span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span>init from</span>
+                  <span className="text-[#e8e4dd] truncate max-w-[160px]">{continueFromCp ? `step ${continueFromCp.step}` : '—'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setContinueModalOpen(false)}
+                className="flex-1 px-4 py-2 rounded border border-[#252533] text-sm text-[#9090a8] hover:text-[#e8e4dd]"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={handleContinueTraining}
+                disabled={continueLoading || !continueFromCp}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded bg-[#3b82f6] text-white text-sm font-semibold hover:bg-[#2563eb] disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                {continueLoading ? (
+                  <><Loader2 size={14} className="animate-spin" /> Avvio...</>
+                ) : (
+                  <><RotateCcw size={14} /> Avvia Continuazione</>
+                )}
+              </button>
             </div>
           </div>
         </div>

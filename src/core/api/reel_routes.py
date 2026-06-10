@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional
@@ -50,6 +51,8 @@ class ReelGenerateRequest(BaseModel):
     character_mode: str = "none"
     character_id: Optional[str] = None
     character_owner_id: str = "local_user"
+    regen_clip_id: Optional[str] = None      # fase regen_clip: ID clip da rigenerare
+    regen_asset: Optional[str] = None        # first | last | video
 
 
 class ReelAudioAnalyzeRequest(BaseModel):
@@ -57,6 +60,154 @@ class ReelAudioAnalyzeRequest(BaseModel):
     audio_start_sec: float = Field(default=0.0, ge=0.0)
     duration_sec: int = Field(default=30, ge=8, le=180)
     lyrics: Optional[str] = None
+
+
+class WhisperTranscribeRequest(BaseModel):
+    audio_path: str
+    audio_start_sec: float = 0.0
+    duration_sec: float = 30.0
+    model_size: str = "base"
+    language: Optional[str] = None
+
+
+@router.post("/transcribe-whisper")
+async def transcribe_whisper_endpoint(req: WhisperTranscribeRequest):
+    """Trascrive audio con Whisper locale e restituisce SRT + parole + lyrics lines."""
+    import structlog
+
+    log = structlog.get_logger()
+
+    audio_path = Path(req.audio_path)
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail=f"Audio non trovato: {req.audio_path}")
+
+    # Check that whisper is installed before doing any ffmpeg work
+    try:
+        import whisper as _whisper_check  # noqa: F401
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Whisper non installato. Esegui: pip install openai-whisper torch",
+        }
+
+    from src.core.utils.lyrics_align import transcribe_whisper, words_to_srt
+
+    # Determine total duration via ffmpeg probe (best-effort)
+    total_duration: Optional[float] = None
+    try:
+        import subprocess as _sp
+        probe = _sp.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if probe.returncode == 0 and probe.stdout.strip():
+            total_duration = float(probe.stdout.strip())
+    except Exception:
+        pass
+
+    # Determine whether we need to slice the audio
+    needs_slice = req.audio_start_sec > 0.0 or (
+        total_duration is not None and req.duration_sec < total_duration - 0.5
+    )
+
+    work_audio_path: str = str(audio_path)
+    tmp_file = None
+    try:
+        if needs_slice:
+            suffix = audio_path.suffix.lower() or ".wav"
+            tmp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp_path = Path(tmp_file.name)
+            tmp_file.close()
+
+            from src.core.workflow.trailer_pipeline import _run_ffmpeg
+            rc, err = await _run_ffmpeg(
+                "-y",
+                "-ss", f"{req.audio_start_sec:.3f}",
+                "-t", f"{req.duration_sec:.3f}",
+                "-i", str(audio_path),
+                "-ar", "16000",
+                "-ac", "1",
+                str(tmp_path),
+            )
+            if rc != 0 or not tmp_path.exists():
+                log.warning(
+                    "whisper_ffmpeg_slice_failed",
+                    rc=rc,
+                    err=(err or "")[-200:],
+                )
+                # Fall through and transcribe the original file
+            else:
+                work_audio_path = str(tmp_path)
+
+        log.info(
+            "whisper_transcribe_start",
+            path=work_audio_path,
+            model=req.model_size,
+            language=req.language,
+        )
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: transcribe_whisper(
+                work_audio_path,
+                model_size=req.model_size,
+                language=req.language,
+            ),
+        )
+
+        words = result.get("words", [])
+        detected_language = result.get("language", "")
+        srt_string = words_to_srt(words)
+
+        # Build lyrics_lines: one string per SRT segment (text of each block)
+        lyrics_lines: List[str] = []
+        if words:
+            from src.core.utils.lyrics_align import words_to_srt as _w2srt
+            # Re-group words into segments the same way words_to_srt does
+            _max_gap = 1.5
+            _max_words = 8
+            segments: List[List[dict]] = []
+            current: List[dict] = [words[0]]
+            for w in words[1:]:
+                gap = w["start"] - current[-1]["end"]
+                if gap > _max_gap or len(current) >= _max_words:
+                    segments.append(current)
+                    current = [w]
+                else:
+                    current.append(w)
+            if current:
+                segments.append(current)
+            lyrics_lines = [" ".join(w["word"] for w in seg) for seg in segments]
+
+        log.info(
+            "whisper_transcribe_done",
+            words=len(words),
+            language=detected_language,
+            srt_lines=len(lyrics_lines),
+        )
+        return {
+            "ok": True,
+            "srt": srt_string,
+            "words": words,
+            "language": detected_language,
+            "lyrics_lines": lyrics_lines,
+        }
+
+    except Exception as exc:
+        log.warning("whisper_transcribe_error", error=str(exc))
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if tmp_file is not None:
+            try:
+                Path(tmp_file.name).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @router.get("/workflows")
@@ -154,11 +305,16 @@ async def reel_generate(req: ReelGenerateRequest):
     reel_req = ReelRequest(**req_dict)
 
     q: asyncio.Queue = asyncio.Queue()
+    activity_title = (req.title or req.description[:60]).strip() or "Reel"
 
     async def _run() -> None:
         try:
             pipeline = ReelPipeline(reel_req)
             async for event in pipeline.run():
+                if isinstance(event, dict):
+                    event.setdefault("job_id", job_id)
+                    event.setdefault("title", activity_title)
+                    event.setdefault("catalog_project_id", req.project_id)
                 await q.put(event)
                 # Update registry with live progress
                 if isinstance(event, dict):
@@ -183,7 +339,12 @@ async def reel_generate(req: ReelGenerateRequest):
         finally:
             await q.put(None)  # sentinel — stream ends
 
-    pipeline_registry.register_job(job_id, kind="reel", title=req.title or req.description[:60], project_id=req.project_id)
+    pipeline_registry.register_job(
+        job_id,
+        kind="reel",
+        title=activity_title,
+        project_id=req.project_id,
+    )
     task = asyncio.create_task(_run())
     pipeline_registry.register_task(job_id, task)
 
@@ -214,6 +375,87 @@ async def reel_generate(req: ReelGenerateRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/jobs/{project_id}/{job_id}/resume-background")
+async def resume_reel_job_background(project_id: str, job_id: str):
+    """Resume a reel without tying its lifetime to an SSE client connection."""
+    from src.core.workflow.reel_jobs import interrupt_job_everywhere
+    from src.core.workflow.reel_pipeline import ReelPipeline, ReelRequest
+
+    if pipeline_registry.is_task_running(job_id):
+        return {"job_id": job_id, "status": "running", "already_running": True}
+
+    job = _find_reel_job_record(project_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    request_data = dict(job.config)
+    request_data.update(
+        {
+            "project_id": project_id,
+            "resume_job_id": job_id,
+            "phase": "production",
+            "concurrent_jobs": 1,
+        }
+    )
+    reel_request = ReelRequest(**request_data)
+    activity_title = (job.title or job.description[:60]).strip() or "Reel"
+
+    async def _run_background() -> None:
+        terminal_status = "completed"
+        terminal_error = None
+        try:
+            pipeline = ReelPipeline(reel_request)
+            async for event in pipeline.run():
+                if not isinstance(event, dict):
+                    continue
+                pipeline_registry.update_job(
+                    job_id,
+                    stage=event.get("phase", event.get("stage", "")),
+                    progress=(
+                        event.get("progress_pct", 0) / 100
+                        if event.get("progress_pct") is not None
+                        else event.get("progress", event.get("pct", 0))
+                    ),
+                    message=event.get("message", event.get("msg", "")),
+                )
+                if event.get("error") and event.get("event") not in {
+                    "clip_error",
+                    "frame_error",
+                }:
+                    terminal_status = "failed"
+                    terminal_error = str(event["error"])
+                    break
+                if event.get("cancelled"):
+                    terminal_status = "cancelled"
+                    break
+                if event.get("done"):
+                    break
+        except asyncio.CancelledError:
+            terminal_status = "cancelled"
+            interrupt_job_everywhere(job_id, error="Pipeline annullata")
+        except Exception as exc:
+            terminal_status = "failed"
+            terminal_error = str(exc)
+            interrupt_job_everywhere(job_id, error=terminal_error)
+            log.exception("reel_background_resume_failed", job_id=job_id)
+        finally:
+            pipeline_registry.complete_job(
+                job_id,
+                status=terminal_status,
+                error=terminal_error,
+            )
+
+    pipeline_registry.register_job(
+        job_id,
+        kind="reel",
+        title=activity_title,
+        project_id=project_id,
+    )
+    task = asyncio.create_task(_run_background())
+    pipeline_registry.register_task(job_id, task)
+    return {"job_id": job_id, "status": "running", "background": True}
 
 
 @router.post("/upload-references")
@@ -251,11 +493,12 @@ async def upload_references(
 @router.get("/jobs")
 async def list_reel_jobs(project_id: str = "reel_standalone"):
     from src.core.workflow.reel_jobs import load_jobs, job_storage_project_id, upsert_job
+    from src.core import pipeline_registry
 
     jobs = load_jobs(project_id)
     changed = False
     for j in jobs:
-        if j.status == "running":
+        if j.status == "running" and not pipeline_registry.is_task_running(j.job_id):
             j.status = "interrupted"
             j.error = j.error or "Pipeline interrotta (app o backend riavviato)"
             changed = True
@@ -417,7 +660,21 @@ def _hydrate_reel_job_detail(project_id: str, job_id: str) -> dict:
             lf = pipeline._frames_dir / f"{clip.clip_id}_last.png"
             if clip.last_frame_path:
                 lf = Path(clip.last_frame_path)
+            lf_is_distinct = False
             if lf.is_file() and lf.stat().st_size > 4096:
+                try:
+                    import filecmp
+
+                    lf_is_distinct = not (
+                        ff.is_file()
+                        and (
+                            lf.resolve() == ff.resolve()
+                            or filecmp.cmp(str(lf), str(ff), shallow=False)
+                        )
+                    )
+                except Exception:
+                    lf_is_distinct = lf.name.endswith("_last.png") and lf != ff
+            if lf_is_distinct:
                 row["last_frame_path"] = str(lf)
 
             sb = pipeline._resolve_storyboard_file(
@@ -448,9 +705,12 @@ def _hydrate_reel_job_detail(project_id: str, job_id: str) -> dict:
         sb_ok = bool(raw.get("storyboard_approved"))
         out["checkpoint_phase"] = phase_num
         out["storyboard_approved"] = sb_ok
-        if phase_num >= 55 and sb_ok:
+        if sb_ok and phase_num >= 6:
             out["pipeline_ui_phase"] = "production"
-            out["progress_pct"] = max(46, min(99, 46 + max(0, phase_num - 55)))
+            out["progress_pct"] = max(
+                46,
+                min(99, 46 + max(0, phase_num - 55 if phase_num >= 55 else phase_num)),
+            )
         elif phase_num >= 55:
             out["pipeline_ui_phase"] = "storyboard"
             out["progress_pct"] = 45
@@ -479,13 +739,21 @@ def _hydrate_reel_job_detail(project_id: str, job_id: str) -> dict:
         out["can_continue"] = False
 
     if job.status in ("interrupted", "failed"):
-        if raw.get("phase") or pipeline is not None:
-            out["can_continue"] = True
-        elif result.get("clips") or result.get("storyboard"):
-            out["can_continue"] = True
-        out["stale_running"] = out.get("stale_running") or (
-            job.status == "interrupted" and out["can_continue"]
+        resumable = bool(
+            raw.get("phase")
+            or pipeline is not None
+            or result.get("clips")
+            or result.get("storyboard")
         )
+        if task_live:
+            out["can_continue"] = False
+            out["stale_running"] = False
+            out["can_stop"] = True
+            out["can_pause"] = not pipeline_registry.is_job_paused(job_id)
+            out["can_resume_pause"] = pipeline_registry.is_job_paused(job_id)
+        elif resumable:
+            out["can_continue"] = True
+            out["stale_running"] = job.status == "interrupted"
 
     return out
 
@@ -525,10 +793,27 @@ async def resume_pause_reel_job(project_id: str, job_id: str):
 
 @router.delete("/jobs/{project_id}/{job_id}")
 async def delete_reel_job(project_id: str, job_id: str, cleanup: bool = False):
-    from src.core.workflow.reel_jobs import remove_job
+    from src.core.workflow.reel_jobs import remove_job, interrupt_job_everywhere
+    from src.core import pipeline_registry
 
+    # Force-stop any running task before removing the record
+    pipeline_registry.force_stop_job(job_id)
+    interrupt_job_everywhere(job_id, error="Job eliminato dall'utente")
+
+    # Try the given project_id first, then fall back to all candidate directories
     if not remove_job(project_id, job_id, cleanup_files=cleanup):
-        raise HTTPException(status_code=404, detail="Job not found")
+        from src.core.config import get_config as _gc
+        _cfg = _gc()
+        projects_root = _cfg.app.data_path / "projects"
+        removed = False
+        if projects_root.exists():
+            for cat_dir in projects_root.iterdir():
+                if cat_dir.is_dir() and cat_dir.name != project_id:
+                    if remove_job(cat_dir.name, job_id, cleanup_files=cleanup):
+                        removed = True
+                        break
+        if not removed:
+            raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
 
 

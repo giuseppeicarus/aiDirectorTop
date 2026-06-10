@@ -255,7 +255,10 @@ def build_structured_frame_prompt(
     first_state = _complete_sentence(dop.get("first_frame_state") or "")
     last_state = _complete_sentence(dop.get("last_frame_state") or "")
     motion = (dop.get("motion_intent") or "").strip()
-    primary = (dop.get("primary_visual_focus") or dop.get("visual_focus") or "").strip()
+    _raw_primary = (dop.get("primary_visual_focus") or dop.get("visual_focus") or "").strip()
+    # Discard LLM-generated placeholder text that doesn't describe actual appearance
+    _GENERIC_MARKERS = ("described in the brief", "protagonist described", "as described", "preserving wardrobe")
+    primary = "" if any(m in _raw_primary.lower() for m in _GENERIC_MARKERS) else _raw_primary
     secondary = (dop.get("secondary_subject") or "").strip()
     anchors = list(vis.get("character_anchors") or [])[:2]
     env_anchors = list(vis.get("environment_anchors") or [])[:2]
@@ -277,13 +280,19 @@ def build_structured_frame_prompt(
         theme=theme,
     )
 
-    # 2 Main subject
+    # 2 Main subject — always include character from anchors or brief
     main_subject = primary or _first_sentence(
         _join_parts([anchors[0] if anchors else "", first_state, hint]),
         max_words=40,
     )
+    if not main_subject and brief:
+        # Extract character description from brief as last resort
+        main_subject = _first_sentence(brief, max_words=30)
     if not main_subject:
         main_subject = "The primary subject holds the viewer's attention in the foreground."
+    # Ensure anchors are injected into every prompt even when primary_visual_focus is set
+    if anchors and anchors[0] and anchors[0].lower()[:20] not in main_subject.lower():
+        main_subject = f"{anchors[0].rstrip('.')}. {main_subject}"
 
     # 3 Secondary (only wider shots)
     secondary_block = ""
@@ -378,16 +387,40 @@ CAMERA / FOCUS:
 - If shallow depth of field: do NOT write "sharp focus on everything".
 - Write: "subject in focus, background soft bokeh" once only.
 
-PROMPT STRUCTURE (Z-Image / LTX) — use flowing English prose in this order, NOT comma keyword lists:
-1. Scene setup (environment at appropriate scale)
-2. Main subject (visual protagonist — who the camera cares about)
-3. Secondary subject (only if shot scale allows)
-4. Action / pose for this exact frame
-5. Emotional intent (tension, desire, curiosity — not label "X emotion")
-6. Camera (ONE shot type + lens + depth of field)
-7. Lighting (once)
-8. Texture / style (film grain, skin texture — no "8k")
-9. Mood
+SPATIAL DIRECTION (LTX 2.3 — mandatory for video prompts):
+- Specify LEFT vs RIGHT position for every subject and key element.
+- Specify FOREGROUND vs BACKGROUND depth layers.
+- Specify FACING TOWARD vs FACING AWAY from camera or other subjects.
+- Specify DISTANCES between subjects ("half-meter gap", "three steps behind").
+- BLOCK THE SCENE like a director: "Subject A stands to the LEFT, arms at sides; subject B is
+  two steps to the RIGHT, slightly behind, facing subject A."
 
-FORBIDDEN: 8k, keyword stacking, duplicate phrases, truncated sentences ("she is,"), platform names, emotion labels.
+TEXTURE AND MATERIAL (LTX 2.3 — adds definition):
+- Name fabric types: linen shirt, wool coat, leather jacket, silk scarf
+- Name hair texture: fine and curly, thick dark waves, short cropped, loose strands
+- Name surface finishes: worn wood tabletop, condensation on glass, matte concrete, polished marble
+- Name environmental wear: rain streaks on window, chipped paint, dust motes in light beam
+- These details improve sharpness across all resolutions.
+
+VERB-DRIVEN MOVEMENT (LTX 2.3 — prevents frozen output):
+- Always include ≥2 distinct action verbs per clip (raises, turns, steps, exhales, lifts, drifts)
+- Specify WHO performs each verb — not "the scene" or "the camera" but the subject
+- Describe camera movement as a SEPARATE action alongside subject movement
+- BAD: "A man standing at a bar looking thoughtful." (static, no verbs)
+- GOOD: "A man steps forward from the bar entrance, raises his coffee cup, and turns his head toward
+  the window; the camera slowly tracks right to follow his gaze."
+
+PROMPT STRUCTURE (Z-Image / LTX) — flowing English prose in this order, NOT comma keyword lists:
+1. Scene setup with spatial positions (environment at appropriate scale, LEFT/RIGHT, depth)
+2. Main subject (visual protagonist — who, where LEFT/RIGHT, facing direction, fabric/material details)
+3. Secondary subject (only if shot scale allows — include spatial relationship to primary)
+4. Action / pose for this exact frame (verb-driven — what they DO, not what they ARE)
+5. Emotional intent (tension, desire, curiosity — show don't label)
+6. Camera (ONE shot type + lens + depth of field + direction of movement)
+7. Lighting (quality, direction, color temperature — once)
+8. Texture / material in motion (fabric, hair, surface details that move or catch light)
+9. Mood (one sentence — not keyword stack)
+
+FORBIDDEN: 8k, keyword stacking, duplicate phrases, truncated sentences ("she is,"), platform names,
+bare emotion labels, static descriptions with no action verbs, "the scene shows".
 """

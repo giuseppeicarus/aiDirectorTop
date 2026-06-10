@@ -5,6 +5,7 @@ Percorso config: ~/.cinematic-studio/config.yaml (override su config/default.yam
 
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -22,6 +23,14 @@ class AppConfig(BaseModel):
     data_dir: str = "~/.cinematic-studio"
     log_level: str = "INFO"
     backend_port: int = 8123
+    hf_token: Optional[str] = None  # HuggingFace token per download modelli privati/gated
+
+    @field_validator("hf_token", mode="before")
+    @classmethod
+    def _empty_hf_token(cls, v: object) -> Optional[str]:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @property
     def data_path(self) -> Path:
@@ -56,6 +65,13 @@ class ComfyUINodeConfig(BaseModel):
     auth_type: Literal["none", "token", "basic"] = "none"
     auth: Optional[str] = None   # used when auth_type == "basic" (user:password)
     token: Optional[str] = None  # used when auth_type == "token" (?token=)
+    # SSH / Provisioning (non attivi di default)
+    provisioning_enabled: bool = False
+    ssh_port: int = 22
+    ssh_user: str = "root"
+    ssh_password: Optional[str] = None
+    ssh_private_key: Optional[str] = None   # contenuto PEM della chiave privata
+    ssh_comfyui_path: Optional[str] = None  # path ComfyUI sul nodo remoto
 
     @model_validator(mode="after")
     def _normalize_endpoint(self) -> "ComfyUINodeConfig":
@@ -241,9 +257,9 @@ class AiToolkitConfig(BaseModel):
     device: str = "cuda:0"
     trigger_word_prefix: str = "cai"
     max_start_seconds: int = 20
-    low_steps: int = 80
-    medium_steps: int = 400
-    high_steps: int = 1000
+    low_steps: int = 1250
+    medium_steps: int = 1500
+    high_steps: int = 2000
     low_resolution: int = 512
     medium_resolution: int = 768
     high_resolution: int = 1024
@@ -340,8 +356,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
 @lru_cache(maxsize=1)
 def get_config() -> AppSettings:
     """Carica e restituisce la configurazione (singleton con cache)."""
-    project_root = Path(__file__).parent.parent.parent
-    default_path = project_root / "config" / "default.yaml"
+    if getattr(sys, "frozen", False):
+        # PyInstaller bundle: datas are placed relative to sys._MEIPASS
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent.parent.parent))
+    else:
+        base_dir = Path(__file__).parent.parent.parent
+    default_path = base_dir / "config" / "default.yaml"
     user_path = Path("~/.cinematic-studio/config.yaml").expanduser()
 
     base = _load_yaml(default_path)

@@ -9,7 +9,11 @@ import random
 from pathlib import Path
 from typing import Optional
 
+import structlog
+
 from src.core.models.cinematic import FramePrompt, CinematicShot
+
+log = structlog.get_logger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
@@ -91,10 +95,12 @@ def _inject(wf: dict, inject_map: dict, params: dict) -> dict:
         val = params.get(param_key)
         if val is None:
             continue
-        node_id = str(mapping["node"])
-        field = mapping["field"]
-        if node_id in wf:
-            wf[node_id]["inputs"][field] = val
+        mappings = mapping if isinstance(mapping, list) else [mapping]
+        for target in mappings:
+            node_id = str(target["node"])
+            field = target["field"]
+            if node_id in wf:
+                wf[node_id]["inputs"][field] = val
     return wf
 
 
@@ -117,7 +123,7 @@ _VIDEO_MODEL_LOADERS = frozenset({
     "UnetLoader", "UNETLoader",
 })
 _LORA_LOADERS = frozenset({
-    "LoraLoader", "LoRALoader", "LtxvLoraLoader",
+    "LoraLoader", "LoRALoader", "LtxvLoraLoader", "ZImageTurboLoraStackV4",
 })
 
 
@@ -235,14 +241,61 @@ def build_txt2img_workflow(
 ) -> dict:
     meta = _get_wf_meta(workflow_id or "z_image_turbo_txt2img", "txt2img")
     wf   = _load_wf_json(meta)
-    wf   = _inject(wf, meta.get("inject", {}), {
-        "prompt":          frame.prompt,
+    inject_map = meta.get("inject", {})
+    workflow_has_negative_node = "negative_prompt" in inject_map
+    effective_prompt = frame.prompt
+    if frame.negative_prompt and not workflow_has_negative_node:
+        effective_prompt = f"{frame.prompt} --neg {frame.negative_prompt}"
+    wf   = _inject(wf, inject_map, {
+        "prompt":          effective_prompt,
         "negative_prompt": frame.negative_prompt or "",
         "width":           width,
         "height":          height,
         "steps":           steps,
         "cfg":             4.0,
         "seed":            frame.seed if frame.seed is not None else random.randint(0, 2**32),
+    })
+    wf = apply_model_overrides(wf, model_overrides)
+    _set_output_prefixes(wf, meta, output_prefix)
+    return wf
+
+
+def _build_img2img_analysis_prompt(prompt: str) -> str:
+    prompt = (prompt or "").strip()
+    instruction = (
+        "Analyze the reference image and write one concise cinematic generation "
+        "prompt that preserves subject identity, composition, lighting, color "
+        "palette, realism, camera language, and material texture."
+    )
+    if prompt:
+        instruction += f" Merge this requested edit naturally: {prompt}"
+    instruction += " Output only the final prompt."
+    return instruction
+
+
+def build_img2img_workflow(
+    reference_image_name: str,
+    prompt: str,
+    output_prefix: str,
+    steps: int = 25,
+    denoise: float = 0.65,
+    cfg: float = 1.0,
+    seed: Optional[int] = None,
+    negative_prompt: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    model_overrides: Optional[dict] = None,
+) -> dict:
+    """Build the original Z-Image image-to-image workflow, injecting only app inputs."""
+    meta = _get_wf_meta(workflow_id or "z_image_turbo_img2img", "img2img")
+    wf = _load_wf_json(meta)
+    wf = _inject(wf, meta.get("inject", {}), {
+        "reference_image": reference_image_name,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt if negative_prompt else None,
+        "steps": steps,
+        "cfg": cfg,
+        "seed": seed if seed is not None else random.randint(0, 2**32),
+        "denoise": denoise,
     })
     wf = apply_model_overrides(wf, model_overrides)
     _set_output_prefixes(wf, meta, output_prefix)
@@ -309,18 +362,44 @@ def build_img2video_workflow(
     meta = _get_wf_meta(wf_id, wf_type)
     wf   = _load_wf_json(meta)
 
-    # LTX 2.3 "Length" (267:225) è in frame, non secondi
-    length_frames = max(8, int(round(duration_sec * fps)))
+    # LTX 2.3 "Length" (267:225) è in frame, non secondi.
+    # LTX richiede frame = 8k+1 (9,17,25,33,...,97,121,137,145,193,...)
+    def _ltx_frames(n: int) -> int:
+        if n <= 1: return 9
+        k = max(1, (n - 1 + 7) // 8)  # ceil((n-1)/8)
+        return 8 * k + 1
+    length_frames = _ltx_frames(max(2, int(round(duration_sec * fps))))
+
+    # Decide dynamically based on the target node in the workflow JSON
+    inject_map = meta.get("inject", {})
+    duration_mapping = inject_map.get("duration_sec", {})
+    node_id = str(duration_mapping.get("node", ""))
+
+    val_for_duration = length_frames
+    if node_id in wf:
+        node_def = wf[node_id]
+        class_type = node_def.get("class_type", "")
+        title = node_def.get("_meta", {}).get("title", "")
+
+        if class_type in ("PrimitiveFloat", "FloatConstant") or "duration" in title.lower():
+            val_for_duration = duration_sec
+            log.info("workflow_duration_injection", node_id=node_id, class_type=class_type, title=title, val=val_for_duration, unit="seconds")
+        else:
+            log.info("workflow_duration_injection", node_id=node_id, class_type=class_type, title=title, val=val_for_duration, unit="frames")
 
     inject_params: dict = {
         "first_image": first_frame_name,
         "prompt": getattr(shot, 'ltx_video_prompt', None) or shot.motion_prompt or (shot.first_frame.prompt if shot.first_frame else ""),
         "width": width,
         "height": height,
-        "duration_sec": length_frames,
+        "duration_sec": val_for_duration,
         "fps": fps,
         "seed": random.randint(0, 2**32),
     }
+    # Inject last frame when workflow supports it and last_frame_name is provided
+    if last_frame_name and meta.get("supports_last_frame") and "last_image" in meta.get("inject", {}):
+        inject_params["last_image"] = last_frame_name
+        log.info("workflow_last_frame_injection", last_frame=last_frame_name)
     if wants_audio_wf:
         inject_params["audio"] = audio_filename
         inject_params["audio_start_sec"] = audio_start_sec
@@ -336,7 +415,7 @@ def extract_output_files(history: dict) -> list[dict]:
     files: list[dict] = []
     seen: set[str] = set()
 
-    def _add(entry: dict) -> None:
+    def _add(entry: dict, node_id: str | None = None) -> None:
         fn = entry.get("filename")
         if not fn or not isinstance(fn, str):
             return
@@ -348,15 +427,16 @@ def extract_output_files(history: dict) -> list[dict]:
             "filename": fn,
             "subfolder": entry.get("subfolder") or "",
             "type": entry.get("type") or "output",
+            "node_id": node_id or entry.get("node_id") or "",
         })
 
-    for node_output in history.get("outputs", {}).values():
+    for node_id, node_output in history.get("outputs", {}).items():
         if not isinstance(node_output, dict):
             continue
         for media_key in ("images", "videos", "gifs"):
             for item in node_output.get(media_key, []) or []:
                 if isinstance(item, dict):
-                    _add(item)
+                    _add(item, str(node_id))
 
     def _walk(obj) -> None:
         if isinstance(obj, dict):

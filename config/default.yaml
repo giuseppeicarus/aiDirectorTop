@@ -115,41 +115,7 @@ ui:
 # ─── LLM Roles (pipeline cinematografica multi-LLM) ───────────────────────────
 # Ogni ruolo puo usare un provider/modello diverso.
 # Se non specificato, usa la config llm globale sopra.
-llm_roles:
-  story_analyst:
-    provider: "lmstudio"
-    model: "google/gemma-3n-e4b"
-    api_key: "${ANTHROPIC_API_KEY}"
-    temperature: 0.85
-    max_tokens: 2000
-
-  narrative_director:
-    provider: "lmstudio"
-    model: "google/gemma-3n-e4b"
-    api_key: "${ANTHROPIC_API_KEY}"
-    temperature: 0.70
-    max_tokens: 4000
-
-  cinematographer:
-    provider: "lmstudio"
-    model: "google/gemma-3n-e4b"
-    api_key: "${OPENAI_API_KEY}"
-    temperature: 0.55
-    max_tokens: 6000
-
-  prompt_engineer:
-    provider: "lmstudio"
-    model: "google/gemma-3n-e4b"
-    api_key: "${OPENAI_API_KEY}"
-    temperature: 0.65
-    max_tokens: 8000
-
-  continuity_checker:
-    provider: "lmstudio"
-    model: "google/gemma-3n-e4b"
-    api_key: "${OPENAI_API_KEY}"
-    temperature: 0.20
-    max_tokens: 3000
+llm_roles: {}
 
 # ─── LTX Director 2.3 (WhatDreamsCost ComfyUI plugin) ────────────────────────
 # Set enabled: true once the following are installed in ComfyUI:

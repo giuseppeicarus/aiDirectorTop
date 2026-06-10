@@ -726,6 +726,7 @@ function DataManagementSection() {
   const [modal, setModal] = useState(null)   // scope being confirmed
   const [result, setResult] = useState(null) // last purge result
   const [error, setError] = useState(null)
+  const [hardResetOpen, setHardResetOpen] = useState(false)
 
   async function loadStats() {
     setLoadingStats(true)
@@ -824,7 +825,7 @@ function DataManagementSection() {
       {result && (
         <div className="mb-4 px-3 py-3 rounded-lg border border-[#22c55e]/30 bg-[#22c55e]/5 text-xs font-mono">
           <div className="flex items-center gap-1.5 text-[#22c55e] font-semibold mb-1.5">
-            <ShieldCheck size={12} /> Eliminazione completata
+            <ShieldCheck size={12} /> {result.hardReset ? 'HARD reset completato' : 'Eliminazione completata'}
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 text-[#9090a8]">
             {result.deleted_projects > 0 && <span>Progetti eliminati: <strong className="text-[#e8e4dd]">{result.deleted_projects}</strong></span>}
@@ -832,6 +833,8 @@ function DataManagementSection() {
             {result.deleted_trailers > 0 && <span>Trailer eliminati: <strong className="text-[#e8e4dd]">{result.deleted_trailers}</strong></span>}
             {result.media_moved > 0 && <span>Media spostati: <strong className="text-[#c9a84c]">{result.media_moved}</strong></span>}
             {result.media_deleted > 0 && <span>Media eliminati: <strong className="text-[#ef4444]">{result.media_deleted}</strong></span>}
+            {result.deleted_media_records > 0 && <span>Media eliminati: <strong className="text-[#ef4444]">{result.deleted_media_records}</strong></span>}
+            {result.cancelled_jobs > 0 && <span>Generazioni fermate: <strong className="text-[#e8e4dd]">{result.cancelled_jobs}</strong></span>}
             {result.bytes_freed > 0 && <span>Spazio liberato: <strong className="text-[#e8e4dd]">{fmtBytes(result.bytes_freed)}</strong></span>}
           </div>
         </div>
@@ -900,6 +903,29 @@ function DataManagementSection() {
         })}
       </div>
 
+      <div className="mt-5 pt-5 border-t border-[#ef4444]/25">
+        <div className="rounded-lg border border-[#ef4444]/40 bg-[#ef4444]/5 p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={17} className="text-[#ef4444] shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="text-sm font-semibold text-[#ef4444]">HARD reset applicazione</h4>
+              <p className="text-[10px] text-[#9090a8] mt-1 leading-relaxed">
+                Cancella fisicamente tutti i progetti, Media Library, generazioni Tool,
+                Director, Reel, Trailer, Music Video, personaggi e output training.
+                Configurazioni, workflow e modelli ComfyUI vengono conservati.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHardResetOpen(true)}
+              className="shrink-0 px-3 py-2 rounded bg-[#ef4444] hover:bg-[#dc2626] text-white text-xs font-mono font-semibold"
+            >
+              HARD RESET
+            </button>
+          </div>
+        </div>
+      </div>
+
       {modal && (
         <PurgeConfirmModal
           scope={modal}
@@ -907,6 +933,187 @@ function DataManagementSection() {
           onConfirm={handlePurge}
           onCancel={() => setModal(null)}
         />
+      )}
+      {hardResetOpen && (
+        <HardResetModal
+          onCancel={() => setHardResetOpen(false)}
+          onComplete={data => {
+            setHardResetOpen(false)
+            setResult({ hardReset: true, ...data })
+            loadStats()
+            setTimeout(() => window.location.reload(), 1200)
+          }}
+        />
+      )}
+    </Section>
+  )
+}
+
+function HardResetModal({ onCancel, onComplete }) {
+  const [confirmation, setConfirmation] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const valid = confirmation === 'HARD RESET'
+
+  async function execute() {
+    if (!valid || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/admin/hard-reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || data.error || 'Reset fallito')
+      onComplete(data)
+    } catch (e) {
+      setError(e.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="w-full max-w-md rounded-xl border border-[#ef4444]/50 bg-[#0f0f18] shadow-2xl">
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#ef4444]/25">
+          <AlertTriangle size={19} className="text-[#ef4444]" />
+          <div>
+            <h3 className="text-sm font-semibold text-[#e8e4dd]">HARD reset definitivo</h3>
+            <p className="text-[10px] text-[#ef4444] mt-0.5">Questa operazione non può essere annullata.</p>
+          </div>
+        </div>
+        <div className="px-5 py-4">
+          <p className="text-xs text-[#9090a8] leading-relaxed mb-4">
+            Verranno fermate le generazioni attive e cancellati fisicamente progetti,
+            media, upload e output generati. Digita <strong className="text-[#e8e4dd] font-mono">HARD RESET</strong> per confermare.
+          </p>
+          <input
+            autoFocus
+            value={confirmation}
+            onChange={e => setConfirmation(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') execute() }}
+            placeholder="HARD RESET"
+            className="w-full rounded border border-[#ef4444]/40 bg-[#07070d] px-3 py-2.5 text-sm font-mono text-[#e8e4dd] outline-none focus:border-[#ef4444]"
+          />
+          {error && <p className="mt-2 text-xs text-[#ef4444]">{error}</p>}
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-[#252533]">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-2 text-xs rounded border border-[#252533] text-[#9090a8] disabled:opacity-40"
+          >
+            Annulla
+          </button>
+          <button
+            onClick={execute}
+            disabled={!valid || busy}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded bg-[#ef4444] hover:bg-[#dc2626] text-white disabled:opacity-30"
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            {busy ? 'Reset in corso...' : 'Cancella definitivamente'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── HuggingFace Token Section ─────────────────────────────────────────────────
+
+function HuggingFaceTokenSection() {
+  const [token, setToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [configured, setConfigured] = useState(false)
+  const [preview, setPreview] = useState('')
+
+  useEffect(() => {
+    fetch(`${API}/provisioning/hf-token`)
+      .then(r => r.json())
+      .then(d => {
+        setConfigured(d.configured)
+        setPreview(d.token_preview || '')
+      })
+      .catch(() => {})
+  }, [])
+
+  async function save() {
+    setSaving(true)
+    try {
+      const r = await fetch(`${API}/provisioning/hf-token`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hf_token: token.trim() || null }),
+      })
+      const d = await r.json()
+      if (d.ok) {
+        setSaved(true)
+        setConfigured(!!token.trim())
+        setPreview(token.trim() ? `hf_...${token.trim().slice(-4)}` : '')
+        setToken('')
+        setTimeout(() => setSaved(false), 2500)
+      }
+    } catch {}
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Section title="HuggingFace Token" defaultOpen={false}>
+      <p className="text-[var(--text3)] text-xs mb-4 leading-relaxed">
+        Token necessario per scaricare modelli privati o gated da HuggingFace.
+        Viene usato automaticamente in <strong className="text-[var(--text2)]">Modelli</strong> (download locale) e{' '}
+        <strong className="text-[var(--text2)]">Provisioning</strong> (script SSH remoto).
+        Ottienilo da <code className="text-[var(--gold)]">huggingface.co/settings/tokens</code>.
+      </p>
+
+      {configured && (
+        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded bg-[var(--green)]/10 border border-[var(--green)]/25 text-xs text-[var(--green)]">
+          <Check size={12} />
+          Token configurato: <code className="font-mono ml-1">{preview}</code>
+        </div>
+      )}
+
+      <Field label="Nuovo token">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && save()}
+              placeholder={configured ? 'Inserisci per aggiornare...' : 'hf_...'}
+              className="w-full bg-[var(--bg1)] border border-[var(--border)] rounded px-3 py-2 text-xs text-[var(--text)] placeholder-[var(--text3)] focus:border-[var(--gold)] outline-none font-mono pr-8"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken(v => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text3)] hover:text-[var(--text2)]"
+            >
+              {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
+          <button
+            onClick={save}
+            disabled={saving || !token.trim()}
+            className="flex items-center gap-1.5 px-4 py-2 rounded border bg-[var(--gold)]/10 border-[var(--gold)]/30 text-[var(--gold)] hover:bg-[var(--gold)]/20 disabled:opacity-40 text-xs transition-colors"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <Check size={12} /> : <Download size={12} />}
+            {saved ? 'Salvato' : 'Salva'}
+          </button>
+        </div>
+      </Field>
+
+      {configured && (
+        <button
+          onClick={() => { setToken(''); fetch(`${API}/provisioning/hf-token`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hf_token: null }) }).then(() => { setConfigured(false); setPreview('') }) }}
+          className="text-[10px] text-[var(--text3)] hover:text-[var(--red)] transition-colors mt-2"
+        >
+          Rimuovi token
+        </button>
       )}
     </Section>
   )
@@ -922,6 +1129,7 @@ export default function SettingsScreen() {
 
       <LanguageSection />
       <StorageSection />
+      <HuggingFaceTokenSection />
       <AiToolkitSection />
       <LlmSection />
       <LlmAgentsSection />
@@ -1012,6 +1220,8 @@ function LlmSection() {
   const [testing, setTesting] = useState(false)
   const [saving, setSaving]   = useState(false)
   const [saveStatus, setSaveStatus] = useState(null)
+  const [unloading, setUnloading] = useState(false)
+  const [unloadStatus, setUnloadStatus] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1084,13 +1294,33 @@ function LlmSection() {
     }
   }
 
+  async function unloadAllModels() {
+    setUnloading(true)
+    setUnloadStatus(null)
+    try {
+      const res = await fetch(`${API}/llm/lmstudio/unload-all`, { method: 'POST' }).then(r => r.json())
+      if (res.ok) {
+        const n = res.unloaded || 0
+        setUnloadStatus({ ok: true, msg: n > 0 ? `✓ ${n} modell${n === 1 ? 'o' : 'i'} scaricato/i dalla RAM` : '✓ Nessun modello in RAM' })
+      } else {
+        setUnloadStatus({ ok: false, msg: `✗ ${res.error || 'Errore unload'}` })
+      }
+    } catch (e) {
+      setUnloadStatus({ ok: false, msg: `✗ ${e.message}` })
+    } finally {
+      setUnloading(false)
+      setTimeout(() => setUnloadStatus(null), 5000)
+    }
+  }
+
   return (
     <Section title="Provider LLM Globale">
       <Field label="Provider">
         <select className={sel} value={cfg.provider}
           onChange={e => { setCfg(c => ({ ...c, provider: e.target.value })); setModels(null) }}>
           <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="gemini">Google Gemini</option>
           <option value="ollama">Ollama (locale)</option>
           <option value="lmstudio">LM Studio (locale)</option>
           <option value="groq">Groq</option>
@@ -1102,25 +1332,71 @@ function LlmSection() {
           className={inp}
           value={cfg.model}
           onChange={e => setCfg(c => ({ ...c, model: e.target.value }))}
-          placeholder="gpt-4o · claude-sonnet-4-6 · llama3..."
+          placeholder={
+            cfg.provider === 'gemini'    ? 'gemini-2.0-flash · gemini-1.5-pro...' :
+            cfg.provider === 'anthropic' ? 'claude-sonnet-4-6 · claude-opus-4-7...' :
+            cfg.provider === 'openai'    ? 'gpt-4o · gpt-4o-mini...' :
+            'gpt-4o · claude-sonnet-4-6 · llama3...'
+          }
         />
         <ModelTags models={models} onSelect={m => setCfg(c => ({ ...c, model: m }))} />
       </Field>
 
-      <Field label="API Key">
+      <Field label={
+        cfg.provider === 'gemini' ? 'API Key (Google AI Studio)' :
+        cfg.provider === 'anthropic' ? 'API Key (Anthropic)' :
+        cfg.provider === 'openai' ? 'API Key (OpenAI)' :
+        cfg.provider === 'groq' ? 'API Key (Groq)' :
+        'API Key'
+      }>
         <div className="relative">
           <input
             type={showKey ? 'text' : 'password'}
             className={inp + ' pr-9'}
             value={cfg.api_key || ''}
             onChange={e => setCfg(c => ({ ...c, api_key: e.target.value }))}
-            placeholder="sk-..."
+            placeholder={
+              cfg.provider === 'gemini'    ? 'AIzaSy...' :
+              cfg.provider === 'anthropic' ? 'sk-ant-...' :
+              cfg.provider === 'openai'    ? 'sk-...' :
+              cfg.provider === 'groq'      ? 'gsk_...' :
+              ''
+            }
           />
           <button className="absolute right-2 top-2 text-[var(--text3)] hover:text-[var(--text2)]"
             onClick={() => setShowKey(v => !v)}>
             {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
         </div>
+        {cfg.provider === 'gemini' && (
+          <p className="text-[10px] text-[var(--text3)] mt-1">
+            Ottieni la chiave su{' '}
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
+              className="text-[var(--gold)] hover:underline">aistudio.google.com</a>
+            {' '}— gratuita con quota generosa
+          </p>
+        )}
+        {cfg.provider === 'anthropic' && (
+          <p className="text-[10px] text-[var(--text3)] mt-1">
+            Ottieni la chiave su{' '}
+            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
+              className="text-[var(--gold)] hover:underline">console.anthropic.com</a>
+          </p>
+        )}
+        {cfg.provider === 'openai' && (
+          <p className="text-[10px] text-[var(--text3)] mt-1">
+            Ottieni la chiave su{' '}
+            <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+              className="text-[var(--gold)] hover:underline">platform.openai.com</a>
+          </p>
+        )}
+        {cfg.provider === 'groq' && (
+          <p className="text-[10px] text-[var(--text3)] mt-1">
+            Ottieni la chiave su{' '}
+            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer"
+              className="text-[var(--gold)] hover:underline">console.groq.com</a>
+          </p>
+        )}
       </Field>
 
       <Field label="Base URL">
@@ -1128,8 +1404,20 @@ function LlmSection() {
           className={inp}
           value={cfg.base_url || ''}
           onChange={e => setCfg(c => ({ ...c, base_url: e.target.value }))}
-          placeholder="http://192.168.1.2:8083/v1"
+          placeholder={
+            cfg.provider === 'gemini'    ? 'https://generativelanguage.googleapis.com/v1beta' :
+            cfg.provider === 'openai'    ? 'https://api.openai.com/v1' :
+            cfg.provider === 'groq'      ? 'https://api.groq.com/openai/v1' :
+            cfg.provider === 'lmstudio'  ? 'http://127.0.0.1:1234/v1' :
+            cfg.provider === 'ollama'    ? 'http://127.0.0.1:11434' :
+            'http://192.168.1.2:8083/v1'
+          }
         />
+        {cfg.provider === 'gemini' && (
+          <p className="text-[10px] text-[var(--text3)] mt-1">
+            Lascia vuoto per usare l&apos;API ufficiale Google AI Studio
+          </p>
+        )}
       </Field>
 
       <Field label="Temperature">
@@ -1148,9 +1436,22 @@ function LlmSection() {
             <RefreshCw size={12} className={testing ? 'animate-spin' : ''} />
             {testing ? 'Connessione...' : 'Testa e rileva modelli'}
           </button>
+          {cfg.provider === 'lmstudio' && (
+            <button onClick={unloadAllModels} disabled={unloading || testing}
+              title="Scarica tutti i modelli dalla RAM di LM Studio (utile se la pipeline si blocca)"
+              className="flex items-center gap-2 px-3 py-2 text-xs rounded border border-[var(--border2)] text-[var(--text2)] hover:border-[var(--red)]/50 hover:text-[var(--red)] disabled:opacity-50 transition-colors">
+              {unloading ? <Loader2 size={12} className="animate-spin" /> : <span className="font-mono text-[10px]">⏏</span>}
+              {unloading ? 'Scaricamento...' : 'Scarica tutti'}
+            </button>
+          )}
           {status && (
             <span className={`text-xs ${status.ok ? 'text-[var(--green)]' : 'text-[var(--red)]'}`}>
               {status.msg}
+            </span>
+          )}
+          {unloadStatus && (
+            <span className={`text-xs ${unloadStatus.ok ? 'text-[var(--green)]' : 'text-[var(--red)]'}`}>
+              {unloadStatus.msg}
             </span>
           )}
         </div>
@@ -1635,7 +1936,8 @@ function LlmAgentsSection() {
                             onChange={e => patchRole(meta.key, { provider: e.target.value })}
                           >
                             <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="gemini">Google Gemini</option>
                             <option value="ollama">Ollama (locale)</option>
                             <option value="lmstudio">LM Studio (locale)</option>
                             <option value="groq">Groq</option>
@@ -1679,7 +1981,12 @@ function LlmAgentsSection() {
                             className={inp + ' pr-9'}
                             value={cfg.api_key || ''}
                             onChange={e => patchRole(meta.key, { api_key: e.target.value })}
-                            placeholder="sk-… (opzionale)"
+                            placeholder={
+                              cfg.provider === 'gemini'    ? 'AIzaSy… (opzionale)' :
+                              cfg.provider === 'anthropic' ? 'sk-ant-… (opzionale)' :
+                              cfg.provider === 'groq'      ? 'gsk_… (opzionale)' :
+                              'sk-… (opzionale)'
+                            }
                           />
                           <button
                             className="absolute right-2 top-2 text-[var(--text3)] hover:text-[var(--text2)]"

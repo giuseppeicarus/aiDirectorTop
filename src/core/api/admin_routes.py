@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,22 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 _MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".gif", ".mov"}
 # Sub-folders inside a project dir that hold generated assets
 _ASSET_SUBDIRS = ("frames", "clips", "final", "storyboard")
+_HARD_RESET_DIRS = (
+    "projects",
+    "media",
+    "tools",
+    "director",
+    "music_video",
+    "music_video_jobs",
+    "uploads",
+    "characters",
+    "ai-toolkit-training",
+    "test_inputs",
+)
+_HARD_RESET_FILES = (
+    "pipeline_audit.jsonl",
+    "gen_stats.jsonl",
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -64,6 +80,24 @@ def _dir_size(path: Path) -> int:
     if not path.is_dir():
         return 0
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _safe_child(root: Path, name: str) -> Path:
+    """Resolve a fixed child and reject any path escaping the app data root."""
+    resolved_root = root.expanduser().resolve()
+    target = (resolved_root / name).resolve()
+    if target.parent != resolved_root:
+        raise RuntimeError(f"Percorso reset non valido: {target}")
+    return target
+
+
+def _hard_reset_targets(root: Path) -> tuple[list[Path], list[Path]]:
+    directories = [_safe_child(root, name) for name in _HARD_RESET_DIRS]
+    files = [_safe_child(root, name) for name in _HARD_RESET_FILES]
+    obsidian_projects = (root.expanduser().resolve() / "obsidian-vault" / "Projects").resolve()
+    if obsidian_projects.parent.parent == root.expanduser().resolve():
+        directories.append(obsidian_projects)
+    return directories, files
 
 
 async def _move_to_library(files: list[Path], db: AsyncSession) -> int:
@@ -167,6 +201,75 @@ async def purge_stats(db: AsyncSession = Depends(get_db)):
 class PurgeRequest(BaseModel):
     scope: Literal["projects", "reels", "trailers", "all"]
     keep_media: bool = True
+
+
+class HardResetRequest(BaseModel):
+    confirmation: str
+
+
+@router.post("/hard-reset")
+async def hard_reset(req: HardResetRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Physically remove every app-generated project/media artifact.
+    Provider configuration, ComfyUI nodes, workflows and downloaded models survive.
+    """
+    if req.confirmation.strip() != "HARD RESET":
+        raise HTTPException(status_code=400, detail="Digitare esattamente HARD RESET")
+
+    from src.core import pipeline_registry
+    from src.core.api.pipeline_routes import cancel_all_active_pipelines
+    from src.core.config import get_config
+
+    cancelled = await pipeline_registry.cancel_all_jobs()
+    cancelled += await cancel_all_active_pipelines()
+
+    media_count = (await db.execute(select(MediaItemORM))).scalars().all()
+    project_count = (await db.execute(select(ProjectORM))).scalars().all()
+    await db.execute(delete(MediaItemORM))
+    await db.execute(delete(ProjectORM))
+    await db.commit()
+
+    root = get_config().app.data_path.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    directories, files = _hard_reset_targets(root)
+    bytes_freed = 0
+    deleted_paths: list[str] = []
+
+    for path in directories:
+        if not path.exists():
+            continue
+        bytes_freed += _dir_size(path)
+        shutil.rmtree(path)
+        deleted_paths.append(str(path))
+
+    for path in files:
+        if not path.is_file():
+            continue
+        bytes_freed += path.stat().st_size
+        path.unlink()
+        deleted_paths.append(str(path))
+
+    # Keep the app immediately usable without requiring a restart.
+    for name in ("projects", "media", "tools", "director", "music_video_jobs", "uploads", "characters"):
+        _safe_child(root, name).mkdir(parents=True, exist_ok=True)
+    _safe_child(root, "media").joinpath("uploads").mkdir(parents=True, exist_ok=True)
+
+    log.warning(
+        "admin_hard_reset",
+        projects=len(project_count),
+        media=len(media_count),
+        bytes_freed=bytes_freed,
+        cancelled_jobs=cancelled,
+    )
+    return {
+        "ok": True,
+        "deleted_projects": len(project_count),
+        "deleted_media_records": len(media_count),
+        "deleted_paths": len(deleted_paths),
+        "bytes_freed": bytes_freed,
+        "cancelled_jobs": cancelled,
+        "preserved": ["config.yaml", "studio.db", "workflow", "modelli ComfyUI"],
+    }
 
 
 @router.post("/purge")

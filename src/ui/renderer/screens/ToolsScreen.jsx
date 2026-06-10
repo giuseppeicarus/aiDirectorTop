@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Image, Film, Music, Wand2, Sparkles, Download,
   Upload, FolderOpen, X, Play, Loader2, AlertTriangle,
-  ChevronDown, ZoomIn, Maximize2, Minimize2,
+  ChevronDown, ZoomIn, Maximize2, Minimize2, Trash2,
 } from 'lucide-react'
 import ImageLightbox from '../components/ImageLightbox'
 import MediaImageContextMenu from '../components/MediaImageContextMenu'
@@ -19,6 +19,7 @@ import {
   buildToolsSourceFromMediaRecord,
   normalizeMediaList,
   mediaItemType,
+  uploadBrowserFileToToolsMedia,
   uploadDiskFileToToolsMedia,
 } from '../utils/toolsMediaSource'
 import {
@@ -33,7 +34,7 @@ const TOOLS = [
   { id: 'txt2video',       label: 'Text → Video',          Icon: Film,   needsImage: false, needsAudio: false, isVideo: true  },
   { id: 'img2video',       label: 'Image → Video',         Icon: Play,   needsImage: true,  needsAudio: false, isVideo: true  },
   { id: 'img_audio2video', label: 'Image + Audio → Video', Icon: Music,  needsImage: true,  needsAudio: true,  isVideo: true  },
-  { id: 'img2img',         label: 'Image → Image',         Icon: Image,  needsImage: true,  needsAudio: false, isVideo: false, hidden: true },
+  { id: 'img2img',         label: 'Image → Image',         Icon: Image,  needsImage: true,  needsAudio: false, isVideo: false },
 ]
 
 const ASPECT_RATIOS = ['16:9', '9:16', '1:1', '21:9', '4:3']
@@ -209,6 +210,13 @@ function JobCard({ job, selected, onSelect, onOpenPreview }) {
               </p>
             )}
           </div>
+        </div>
+      )}
+
+      {job.status === 'cancelled' && (
+        <div className="absolute inset-0 bg-[var(--bg2)] flex flex-col items-center justify-center gap-2 p-3">
+          <X size={18} className="text-[var(--text3)]" />
+          <p className="text-[9px] text-[var(--text3)] text-center font-mono">Cancellata</p>
         </div>
       )}
 
@@ -527,7 +535,10 @@ function MediaPickerModal({ onSelect, onClose, type = 'image' }) {
 
   useEffect(() => {
     setLoading(true)
-    window.studio?.tools?.media?.()
+    const loadMedia = window.studio?.tools?.media
+      ? window.studio.tools.media()
+      : fetch(`${BACKEND_ORIGIN}/api/media/?limit=500`).then(r => r.ok ? r.json() : [])
+    loadMedia
       .then((data) => {
         const list = normalizeMediaList(data)
         const want = type === 'image' ? 'image' : 'audio'
@@ -606,6 +617,10 @@ function MediaPickerModal({ onSelect, onClose, type = 'image' }) {
 
 function SourceThumb({ source, label, onPickFile, onPickMedia, onDropPath, onClear, mediaType = 'image', uploading = false }) {
   const [showPicker, setShowPicker] = useState(false)
+  const fileInputRef = useRef(null)
+  const accept = mediaType === 'image'
+    ? 'image/png,image/jpeg,image/webp,image/bmp'
+    : 'audio/mpeg,audio/wav,audio/mp4,audio/flac,audio/ogg,audio/aac'
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -614,8 +629,23 @@ function SourceThumb({ source, label, onPickFile, onPickMedia, onDropPath, onCle
     if (!file) return
     const p = file.path
     if (p && onDropPath) onDropPath(p, file.name)
-    else onPickFile?.()
+    else onPickFile?.(file)
   }, [onPickFile, onDropPath])
+
+  function openFilePicker(e) {
+    e.stopPropagation()
+    const hasNativePicker = mediaType === 'image'
+      ? typeof window.studio?.tools?.pickImage === 'function'
+      : typeof window.studio?.tools?.pickAudio === 'function'
+    if (hasNativePicker) onPickFile?.()
+    else fileInputRef.current?.click()
+  }
+
+  function handleFileInput(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) onPickFile?.(file)
+  }
 
   return (
     <>
@@ -671,11 +701,18 @@ function SourceThumb({ source, label, onPickFile, onPickMedia, onDropPath, onCle
             <div className="flex flex-col gap-1 w-full">
               <button
                 type="button"
-                onClick={(e) => { e.stopPropagation(); onPickFile?.() }}
+                onClick={openFilePicker}
                 className="flex items-center justify-center gap-1 text-[9px] px-2 py-1 rounded border border-[var(--border)] text-[var(--text3)] hover:text-[var(--text2)]"
               >
                 <Upload size={8} /> Disco
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={accept}
+                className="hidden"
+                onChange={handleFileInput}
+              />
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setShowPicker(true) }}
@@ -723,6 +760,8 @@ export default function ToolsScreen() {
   const [jobs, setJobs]               = useState([])
   const runningRef                    = useRef(false)
   const queueRef                      = useRef([])
+  const queueEpochRef                 = useRef(0)
+  const cancelledJobIdsRef            = useRef(new Set())
 
   // Detail sidebar
   const [selectedJob, setSelectedJob]         = useState(null)
@@ -794,8 +833,6 @@ export default function ToolsScreen() {
       Notification.requestPermission()
     }
 
-    if (typeof window.studio?.tools?.run !== 'function') return
-
     let attempts = 0
     const MAX = 15
     let timer = null
@@ -821,8 +858,12 @@ export default function ToolsScreen() {
   useEffect(() => {
     if (!tool.needsImage) setImageSource(null)
     if (!tool.needsAudio) setAudioSource(null)
-    setWorkflowId(null)
-  }, [activeTool])
+    const compatible = workflows.filter(w =>
+      (TOOL_WORKFLOW_TYPES[activeTool] ?? [activeTool]).includes(w.type)
+    )
+    const preferred = compatible.find(w => w.default) || compatible[0]
+    setWorkflowId(preferred?.id || null)
+  }, [activeTool, workflows])
 
   // Auto-resize inline textarea to fit content
   useEffect(() => {
@@ -846,7 +887,10 @@ export default function ToolsScreen() {
   useEffect(() => {
     if (!showAllMedia) return
     setLoadingLib(true)
-    window.studio.tools.media()
+    const loadMedia = window.studio?.tools?.media
+      ? window.studio.tools.media()
+      : fetch(`${BACKEND_ORIGIN}/api/media/?limit=500`).then(r => r.ok ? r.json() : [])
+    loadMedia
       .then(data => setAllMedia(normalizeMediaList(data)))
       .catch(() => setAllMedia([]))
       .finally(() => setLoadingLib(false))
@@ -890,10 +934,16 @@ export default function ToolsScreen() {
   async function runNextJob() {
     if (runningRef.current || queueRef.current.length === 0) return
     const job = queueRef.current.shift()
+    if (cancelledJobIdsRef.current.has(job.id)) {
+      runNextJob()
+      return
+    }
+    const epoch = queueEpochRef.current
     runningRef.current = true
     updateJob(job.id, { status: 'running', progress: 0, progressMsg: 'Avvio…' })
 
     const cleanup = window.studio.tools.onProgress((data) => {
+      if (queueEpochRef.current !== epoch || cancelledJobIdsRef.current.has(job.id)) return
       if (data.done) {
         const result = {
           type: data.type,
@@ -913,6 +963,13 @@ export default function ToolsScreen() {
         runningRef.current = false
         runNextJob()
       } else if (data.event === 'progress') {
+        if (data.progress_kind === 'stage') {
+          updateJob(job.id, {
+            progressMsg: data.msg || 'Preparazione ComfyUI...',
+            comfyuiPct: null,
+          })
+          return
+        }
         const comfyPct = data.comfyui_max > 1
           ? data.comfyui_value / data.comfyui_max
           : null
@@ -943,19 +1000,62 @@ export default function ToolsScreen() {
         image_path: job.imageSource?.path ?? null,
         audio_path: job.audioSource?.path ?? null,
       })
+      if (queueEpochRef.current !== epoch || cancelledJobIdsRef.current.has(job.id)) {
+        cleanup?.()
+        return
+      }
       // safety-net
-      if (runningRef.current) {
+      if (
+        runningRef.current &&
+        queueEpochRef.current === epoch &&
+        !cancelledJobIdsRef.current.has(job.id)
+      ) {
         updateJob(job.id, { status: 'error', error: 'Nessuna risposta dal backend' })
         cleanup?.()
         runningRef.current = false
         runNextJob()
       }
     } catch (e) {
+      if (queueEpochRef.current !== epoch || cancelledJobIdsRef.current.has(job.id)) {
+        cleanup?.()
+        return
+      }
       updateJob(job.id, { status: 'error', error: e?.message || 'Errore di connessione' })
       cleanup?.()
       runningRef.current = false
       runNextJob()
     }
+  }
+
+  async function clearGenerationQueue() {
+    const activeJobs = jobs.filter(j => j.status === 'queued' || j.status === 'running')
+    if (activeJobs.length === 0) return
+
+    queueEpochRef.current += 1
+    queueRef.current = []
+    runningRef.current = false
+    activeJobs.forEach(j => cancelledJobIdsRef.current.add(j.id))
+
+    const patch = { status: 'cancelled', progress: 0, progressMsg: 'Cancellata', error: null }
+    setJobs(prev => prev.map(j =>
+      activeJobs.some(active => active.id === j.id) ? { ...j, ...patch } : j
+    ))
+    setSelectedJob(prev =>
+      prev && activeJobs.some(active => active.id === prev.id) ? { ...prev, ...patch } : prev
+    )
+
+    try {
+      const res = await fetch(`${BACKEND_ORIGIN}/api/queue/comfyui`)
+      if (!res.ok) return
+      const payload = await res.json()
+      const nodes = Array.isArray(payload?.nodes) ? payload.nodes : []
+      await Promise.all(nodes
+        .filter(node => node.online)
+        .flatMap(node => [
+          fetch(`${BACKEND_ORIGIN}/api/queue/comfyui/interrupt?node_index=${node.index}`, { method: 'POST' }).catch(() => null),
+          fetch(`${BACKEND_ORIGIN}/api/queue/comfyui/queue?node_index=${node.index}`, { method: 'DELETE' }).catch(() => null),
+        ]))
+    } catch {}
   }
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -965,6 +1065,19 @@ export default function ToolsScreen() {
     setError(null)
     try {
       const src = await uploadDiskFileToToolsMedia(filePath, name, 'image')
+      setImageSource(src)
+    } catch (e) {
+      setError(e?.message || 'Upload immagine fallito')
+    } finally {
+      setUploadingImage(false)
+    }
+  }
+
+  async function assignImageFromBrowserFile(file) {
+    setUploadingImage(true)
+    setError(null)
+    try {
+      const src = await uploadBrowserFileToToolsMedia(file, 'image')
       setImageSource(src)
     } catch (e) {
       setError(e?.message || 'Upload immagine fallito')
@@ -986,8 +1099,29 @@ export default function ToolsScreen() {
     }
   }
 
-  async function pickImageFromDisk() {
+  async function assignAudioFromBrowserFile(file) {
+    setUploadingAudio(true)
+    setError(null)
     try {
+      const src = await uploadBrowserFileToToolsMedia(file, 'audio')
+      setAudioSource(src)
+    } catch (e) {
+      setError(e?.message || 'Upload audio fallito')
+    } finally {
+      setUploadingAudio(false)
+    }
+  }
+
+  async function pickImageFromDisk(file) {
+    if (file instanceof File) {
+      await assignImageFromBrowserFile(file)
+      return
+    }
+    try {
+      if (typeof window.studio?.tools?.pickImage !== 'function') {
+        setError('Selettore file non disponibile')
+        return
+      }
       const r = await window.studio.tools.pickImage()
       if (r?.path) await assignImageFromDisk(r.path, r.name || r.path.split(/[\\/]/).pop())
     } catch (e) {
@@ -995,8 +1129,16 @@ export default function ToolsScreen() {
     }
   }
 
-  async function pickAudioFromDisk() {
+  async function pickAudioFromDisk(file) {
+    if (file instanceof File) {
+      await assignAudioFromBrowserFile(file)
+      return
+    }
     try {
+      if (typeof window.studio?.tools?.pickAudio !== 'function') {
+        setError('Selettore file non disponibile')
+        return
+      }
       const r = await window.studio.tools.pickAudio()
       if (r?.path) await assignAudioFromDisk(r.path, r.name || r.path.split(/[\\/]/).pop())
     } catch (e) {
@@ -1424,18 +1566,19 @@ export default function ToolsScreen() {
                   (TOOL_WORKFLOW_TYPES[activeTool] ?? [activeTool]).includes(w.type)
                 )
                 if (toolWfs.length === 0) return null
-                const active = toolWfs.find(w => w.id === workflowId)
-                const label  = active ? active.name : (toolWfs.length === 1 ? toolWfs[0].name : 'Default')
+                const defaultWf = toolWfs.find(w => w.default) || toolWfs[0]
+                const active = toolWfs.find(w => w.id === workflowId) || defaultWf
+                const label  = active ? active.name : 'Default'
                 return (
                   <CompactSelect label="WF" displayValue={
                     <span className="max-w-[120px] truncate">{label}</span>
                   }>
-                    {toolWfs.length > 1 && (
-                      <SelectOption active={workflowId === null} onClick={() => setWorkflowId(null)}>
-                        Default
+                    {defaultWf && toolWfs.length > 1 && (
+                      <SelectOption active={active?.id === defaultWf.id} onClick={() => setWorkflowId(defaultWf.id)}>
+                        Default: {defaultWf.name}
                       </SelectOption>
                     )}
-                    {toolWfs.map(w => (
+                    {toolWfs.filter(w => w.id !== defaultWf?.id).map(w => (
                       <SelectOption key={w.id} active={workflowId === w.id} onClick={() => setWorkflowId(w.id)}>
                         <span className="truncate max-w-[160px]">{w.name}</span>
                       </SelectOption>
@@ -1454,6 +1597,14 @@ export default function ToolsScreen() {
               </button>
 
               {/* Generate — always enabled while prompt is valid (queue) */}
+              {jobs.some(j => j.status === 'queued' || j.status === 'running') && (
+                <button onClick={clearGenerationQueue}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-mono border border-[var(--red)]/40 text-[var(--red)] hover:bg-[var(--red)]/10 transition-colors shrink-0">
+                  <Trash2 size={11} />
+                  Cancella coda
+                </button>
+              )}
+
               {(() => {
                 const pending = jobs.filter(j => j.status === 'queued' || j.status === 'running').length
                 return (

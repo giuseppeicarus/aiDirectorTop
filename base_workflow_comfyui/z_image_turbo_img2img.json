@@ -1,0 +1,543 @@
+{
+  "85": {
+    "inputs": {
+      "model": "ema_vae_fp16.safetensors",
+      "device": "cuda:0",
+      "encode_tiled": true,
+      "encode_tile_size": 1024,
+      "encode_tile_overlap": 128,
+      "decode_tiled": true,
+      "decode_tile_size": 1024,
+      "decode_tile_overlap": 128,
+      "tile_debug": "false",
+      "offload_device": "cpu",
+      "cache_model": false
+    },
+    "class_type": "SeedVR2LoadVAEModel",
+    "_meta": {
+      "title": "SeedVR2LoadVAEModel"
+    }
+  },
+  "88": {
+    "inputs": {
+      "image": [
+        "97",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "scale_by": 0.7000000000000002
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "ImageScaleBy"
+    }
+  },
+  "84": {
+    "inputs": {
+      "image": [
+        "88",
+        0
+      ],
+      "dit": [
+        "87",
+        0
+      ],
+      "vae": [
+        "85",
+        0
+      ],
+      "seed": 3004781659,
+      "resolution": 2048,
+      "max_resolution": 4096,
+      "batch_size": 5,
+      "uniform_batch_size": false,
+      "color_correction": "lab",
+      "temporal_overlap": 0,
+      "prepend_frames": 0,
+      "input_noise_scale": 0,
+      "latent_noise_scale": 0,
+      "offload_device": "cpu",
+      "enable_debug": false
+    },
+    "class_type": "SeedVR2VideoUpscaler",
+    "_meta": {
+      "title": "SeedVR2VideoUpscaler"
+    }
+  },
+  "86": {
+    "inputs": {
+      "images": [
+        "84",
+        0
+      ],
+      "filename_prefix": "z-image-turbo-img2img"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "SaveImage"
+    }
+  },
+  "89": {
+    "inputs": {
+      "image_a": [
+        "84",
+        0
+      ],
+      "image_b": [
+        "97",
+        0
+      ]
+    },
+    "class_type": "Image Comparer (rgthree)"
+  },
+  "38": {
+    "inputs": {
+      "clip_name": "qwen3_4b_fp8_scaled.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "74": {
+    "inputs": {
+      "unet_name": "z_image_turbo-Q4_K_S.gguf"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "UnetLoaderGGUF"
+    }
+  },
+  "87": {
+    "inputs": {
+      "model": "seedvr2_ema_3b-Q4_K_M.gguf",
+      "device": "cuda:0",
+      "blocks_to_swap": 32,
+      "swap_io_components": true,
+      "offload_device": "cpu",
+      "cache_model": "flash_attn",
+      "attention_mode": "sdpa"
+    },
+    "class_type": "SeedVR2LoadDiTModel",
+    "_meta": {
+      "title": "SeedVR2LoadDiTModel"
+    }
+  },
+  "104": {
+    "inputs": {
+      "samples": [
+        "95",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ],
+      "tile_size": 512,
+      "overlap": 64,
+      "temporal_size": 64,
+      "temporal_overlap": 8
+    },
+    "class_type": "VAEDecodeTiled",
+    "_meta": {
+      "title": "VAEDecodeTiled"
+    }
+  },
+  "113": {
+    "inputs": {
+      "value": 768
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "114": {
+    "inputs": {
+      "value": 1280
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "125": {
+    "inputs": {
+      "any_01": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "Any Switch (rgthree)"
+  },
+  "10": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "90": {
+    "inputs": {
+      "text": [
+        "124",
+        0
+      ],
+      "clip": [
+        "126",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "96": {
+    "inputs": {
+      "samples": [
+        "92",
+        0
+      ],
+      "upscale_method": "nearest-exact",
+      "scale_by": 1
+    },
+    "class_type": "LatentUpscaleBy",
+    "_meta": {
+      "title": "LatentUpscaleBy"
+    }
+  },
+  "124": {
+    "inputs": {
+      "any_01": [
+        "68",
+        0
+      ],
+      "any_02": [
+        "76",
+        0
+      ]
+    },
+    "class_type": "Any Switch (rgthree)"
+  },
+  "122": {
+    "inputs": {
+      "model": [
+        "126",
+        0
+      ],
+      "reference_latent": [
+        "129",
+        0
+      ],
+      "strength": 0.4,
+      "start_percent": 0,
+      "end_percent": 0.2
+    },
+    "class_type": "LGNoiseInjectionLatent",
+    "_meta": {
+      "title": "LGNoiseInjectionLatent"
+    }
+  },
+  "91": {
+    "inputs": {
+      "text": "worst_quality, bad_quality,bad_hands,very_displeasing, boring, long_body, monochrome, watermark , lowres, worst quality, low quality, normal quality, jpeg artifacts,korean comic style,off center crop,slant out of frame,drifting eyeline,double eyelashes,text to the face ,eye patch,shaking hands,arrow toes,background characters with blurred faces,unconscious expression,nasty smile,\"ng_deepnegative_v1_75t\",\n\n\n     # bad anatomy & pose\n\n,bad hands,missing hands,missing fingers,bad feet,cropped off limbs,weak hands,sketch hands,\n\ndehydrated ,aged,mature ,blurry and background, disfigurement,(bad eyes),(bad fingers),flat  face,\n\nlayout text, overlay text,cover title, signature, captions, comic panel,interoframe,line breaks,\n\nusername, artist signature, water mark,displayed text,Scanner Text,Date,website, artist's name,artist name, page number, translation,subtitle,chinese text,korean hangul text,russian cyrillic text, english text, twitter id, instagram id, twitter username, patreon username,frame,comic_fram",
+      "clip": [
+        "38",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "130": {
+    "inputs": {
+      "width": 768,
+      "height": 1280,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "EmptyLatentImage"
+    }
+  },
+  "129": {
+    "inputs": {
+      "any_01": [
+        "123",
+        0
+      ],
+      "any_02": [
+        "130",
+        0
+      ]
+    },
+    "class_type": "Any Switch (rgthree)"
+  },
+  "127": {
+    "inputs": {
+      "model_name": "Qwen3-VL-2B-Instruct",
+      "quantization": "4-bit (VRAM-friendly)",
+      "preset_prompt": "Describe this image in detail.",
+      "custom_prompt": [
+        "70",
+        0
+      ],
+      "max_tokens": 1024,
+      "keep_model_loaded": true,
+      "seed": 940755090608951,
+      "attention_mode": "auto",
+      "image": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "aistudynow_QwenVL",
+    "_meta": {
+      "title": "aistudynow_QwenVL"
+    }
+  },
+  "75": {
+    "inputs": {
+      "image": "reference_frame.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "LoadImage"
+    }
+  },
+  "102": {
+    "inputs": {
+      "text": "Create a realistic outdoor portrait of the person standing in a green wheat field under a cloudy, dramatic sky before a storm. The person wears a fitted black sleeveless dress. Their wet hair softly frames the face and neck, slightly sticking to the skin. Standing in profile with eyes closed, head tilted slightly back, and arms crossed gently over the chest, creating an expressive and sensual yet natural pose. Lighting is diffused and moody, emphasizing the depth of the clouds and the natural glow of the skin. The overall atmosphere is cinematic, emotional, and realistic — soft tones, lifelike texture, and authentic outdoor mood. —v 6 —ar 3:4 —style raw —q 2 —uplight —hd.",
+      "passthrough": ""
+    },
+    "class_type": "Textbox",
+    "_meta": {
+      "title": "Textbox"
+    }
+  },
+  "70": {
+    "inputs": {
+      "string_a": "You are an AI image prompt expert for the Z-Image Turbo model. I will give you a short description or an example image. Your job is to write a single, highly detailed prompt of 200 to 250 words in clear English.\nRules:\nWrite a detailed, natural narrative.\nBuild the scene logically: start with the broad environment and lighting, then the camera angle and lens, then the subject, and finally the textures and materials.\nBe objective and concrete. Do not use metaphors or emotional rhetoric.\nDo not use old meta-tags like '8K', 'hyper-realistic', or 'masterpiece'.\nIf I ask for specific text to appear in the image, wrap those exact words in double quotation marks.\nDo not mention these rules in your answer.\nImage description from user:\"\n\n\n",
+      "string_b": [
+        "102",
+        0
+      ],
+      "delimiter": ""
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "StringConcatenate"
+    }
+  },
+  "68": {
+    "inputs": {
+      "anything": [
+        "127",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "easy showAnything"
+    }
+  },
+  "123": {
+    "inputs": {
+      "width": 768,
+      "height": 1280,
+      "batch_size": 1,
+      "seed": 1030994711453357,
+      "multiplier": 1,
+      "constant_batch_noise": false,
+      "normalize": false,
+      "model": [
+        "119",
+        0
+      ],
+      "latent_channels": "16",
+      "shape": "BCHW"
+    },
+    "class_type": "GenerateNoise",
+    "_meta": {
+      "title": "GenerateNoise"
+    }
+  },
+  "97": {
+    "inputs": {
+      "samples": [
+        "95",
+        0
+      ],
+      "vae": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "139": {
+    "inputs": {
+      "images": [
+        "97",
+        0
+      ],
+      "filename_prefix": "z-image-turbo-img2img"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "SaveImage"
+    }
+  },
+  "119": {
+    "inputs": {
+      "model": [
+        "126",
+        0
+      ],
+      "shift": 3,
+      "multiplier": 1
+    },
+    "class_type": "ModelSamplingZImage",
+    "_meta": {
+      "title": "ModelSamplingZImage"
+    }
+  },
+  "95": {
+    "inputs": {
+      "model": [
+        "122",
+        0
+      ],
+      "seed": 619206426173408,
+      "steps": 3,
+      "cfg": 1,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "90",
+        0
+      ],
+      "negative": [
+        "91",
+        0
+      ],
+      "latent_image": [
+        "96",
+        0
+      ],
+      "denoise": 0.3
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "92": {
+    "inputs": {
+      "model": [
+        "122",
+        0
+      ],
+      "seed": 894123078220168,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": [
+        "90",
+        0
+      ],
+      "negative": [
+        "91",
+        0
+      ],
+      "latent_image": [
+        "129",
+        0
+      ],
+      "denoise": 1
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "12": {
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNETLoader"
+    }
+  },
+  "76": {
+    "inputs": {
+      "text": "A woman is in an outdoor pool in the evening, resting her body on the edge of the rock surface, her shoulders and upper torso above the water, one arm bent and palm touching her cheek, eyes closed, face slightly upturned. The shot is medium, from the chest to the crown of the head, the angle is at eye level, the composition is centered, and dark green tropical vegetation and a blurred waterfall are visible in the background.\n\nShe has an even, matte skin tone with light reflecting off the water, warm bronze-brown makeup, softly blended warm brown eyeshadow, thin black eyeliner with an elongated wing, long, volumized lashes, and caramel-beige lips with a glossy finish. She has a light tan.\n\nHer hair is sleek, combed back, and damp, strands lying flat against her head and neck, the texture gleaming from the water.\n\nShe is wearing a deep navy blue swimsuit with a matte finish. Jewelry: thin gold chains of varying lengths around the neck, small round gold earrings, and several thin gold bracelets on the wrist; the metal surface is smooth and reflective.\n\nThe location is a pool with dark, emerald-green water, edged with gray stone with wet spots and reflections. In the background are dense palm trees and dark foliage, a waterfall with a soft blur in the depths of the frame, and a darkened space with no visible artificial light sources.\n\nThe lighting is soft and directional, with the main source positioned from the front and slightly overhead. The warm, golden light creates soft shadows under the chin and along the shoulders. Reflections from the water create an additional diffused glow on the skin. The contrast is moderate, the shadows are deep but with smooth transitions, and the highlights on the skin are pronounced and dewy.\n\nShot with an 85mm portrait lens, shallow depth of field with sharp focus on the face and upper body. The background, with vegetation and a waterfall, is softly blurred, with detailed textures of skin, water, and rock. Luxury poolside portrait photography, highly detailed, photorealistic.\n\nMoody tropical evening mood,\ndominant deep emerald green and navy blue tones,\nwarm golden highlights against a dark background,\nmoderate saturation with rich color depth,\nmedium contrast with soft shadow transitions,\nsoft directional key light with water reflections,\ndeep shadows with preserved detail,\nsmooth cinematic texture with minimal grain,\nluxury cinematic color grading.",
+      "passthrough": ""
+    },
+    "class_type": "Textbox",
+    "_meta": {
+      "title": "Textbox"
+    }
+  },
+  "126": {
+    "inputs": {
+      "model": [
+        "125",
+        0
+      ],
+      "clip": [
+        "38",
+        0
+      ],
+      "lora_count": 1,
+      "toggle_all": true,
+      "enabled_1": true,
+      "lora_name_1": "skin\\zit_fdpo_v1.safetensors",
+      "strength_1": 1,
+      "enabled_2": true,
+      "lora_name_2": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_2": 1,
+      "enabled_3": false,
+      "lora_name_3": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_3": 1,
+      "enabled_4": false,
+      "lora_name_4": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_4": 1,
+      "enabled_5": false,
+      "lora_name_5": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_5": 1.01,
+      "enabled_6": false,
+      "lora_name_6": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_6": 1,
+      "enabled_7": false,
+      "lora_name_7": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_7": 1,
+      "enabled_8": false,
+      "lora_name_8": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_8": 1,
+      "enabled_9": false,
+      "lora_name_9": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_9": 1,
+      "enabled_10": false,
+      "lora_name_10": "64\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_10": 1
+    },
+    "class_type": "ZImageTurboLoraStackV4",
+    "_meta": {
+      "title": "ZImageTurboLoraStackV4"
+    }
+  }
+}

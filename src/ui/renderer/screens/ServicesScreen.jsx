@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Activity, CheckCircle, XCircle, RefreshCw, Brain, Server, Database, Film, HardDrive } from 'lucide-react'
+import { Activity, CheckCircle, XCircle, RefreshCw, Brain, Server, Database, Film, HardDrive, Mic } from 'lucide-react'
 import { API_BASE } from '../utils/apiClient'
 
 const API = API_BASE
@@ -36,6 +36,180 @@ function ServiceCard({ icon: Icon, title, status }) {
       ) : (
         <p className="text-xs text-[var(--text3)] animate-pulse">Verifica in corso...</p>
       )}
+    </div>
+  )
+}
+
+function WhisperConfigSection() {
+  const [modelSize, setModelSize] = useState('base')
+  const [language, setLanguage] = useState('')
+  const [mode, setMode] = useState('local')
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [loadError, setLoadError] = useState(null)
+
+  useEffect(() => {
+    fetch(`${API}/services/whisper-config`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then(d => {
+        if (d.model_size) setModelSize(d.model_size)
+        if (d.language) setLanguage(d.language)
+        if (d.mode) setMode(d.mode)
+        if (d.remote_url) setRemoteUrl(d.remote_url)
+      })
+      .catch(e => setLoadError(String(e)))
+  }, [])
+
+  async function save() {
+    setSaving(true)
+    try {
+      await fetch(`${API}/services/whisper-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_size: modelSize,
+          language: language.trim() || null,
+          mode,
+          remote_url: mode === 'remote' ? remoteUrl.trim() : null,
+        }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch {
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="rounded-lg border p-4 space-y-4"
+      style={{ background: 'var(--bg2)', borderColor: 'var(--border)' }}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <Mic size={16} className="text-[var(--gold)]" />
+        <span className="text-sm font-medium" style={{ color: '#c9a84c' }}>
+          Whisper / Trascrizione Audio
+        </span>
+      </div>
+      <p className="text-xs font-mono" style={{ color: 'var(--text2)' }}>
+        Trascrizione automatica locale o via nodo remoto. Richiede openai-whisper installato.
+      </p>
+
+      {loadError && (
+        <p className="text-xs font-mono" style={{ color: 'var(--red)' }}>
+          Impossibile caricare config: {loadError}
+        </p>
+      )}
+
+      <div className="space-y-3">
+        <div>
+          <label className="block text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--text3)' }}>
+            Modello Whisper
+          </label>
+          <select
+            value={modelSize}
+            onChange={e => setModelSize(e.target.value)}
+            className="w-full rounded px-3 py-1.5 text-xs font-mono border"
+            style={{
+              background: 'var(--bg3)',
+              borderColor: 'var(--border)',
+              color: 'var(--text)',
+            }}
+          >
+            {['tiny', 'base', 'small', 'medium', 'large'].map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--text3)' }}>
+            Lingua
+          </label>
+          <input
+            type="text"
+            value={language}
+            onChange={e => setLanguage(e.target.value)}
+            placeholder="auto (lascia vuoto per rilevamento automatico)"
+            className="w-full rounded px-3 py-1.5 text-xs font-mono border"
+            style={{
+              background: 'var(--bg3)',
+              borderColor: 'var(--border)',
+              color: 'var(--text)',
+            }}
+          />
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-mono uppercase tracking-wider mb-2" style={{ color: 'var(--text3)' }}>
+            Modo
+          </label>
+          <div className="flex gap-4">
+            {[{ value: 'local', label: 'Locale' }, { value: 'remote', label: 'Nodo remoto' }].map(opt => (
+              <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="whisper-mode"
+                  value={opt.value}
+                  checked={mode === opt.value}
+                  onChange={() => setMode(opt.value)}
+                  className="accent-[#c9a84c]"
+                />
+                <span className="text-xs font-mono" style={{ color: mode === opt.value ? '#c9a84c' : 'var(--text2)' }}>
+                  {opt.label}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {mode === 'remote' && (
+          <div>
+            <label className="block text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--text3)' }}>
+              URL nodo remoto
+            </label>
+            <input
+              type="text"
+              value={remoteUrl}
+              onChange={e => setRemoteUrl(e.target.value)}
+              placeholder="http://192.168.1.100:8188"
+              className="w-full rounded px-3 py-1.5 text-xs font-mono border"
+              style={{
+                background: 'var(--bg3)',
+                borderColor: 'var(--border)',
+                color: 'var(--text)',
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono border"
+          style={{
+            background: saving ? 'transparent' : '#c9a84c18',
+            borderColor: '#c9a84c66',
+            color: '#c9a84c',
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? 'Salvataggio…' : 'Salva'}
+        </button>
+        {saved && (
+          <span
+            className="text-xs font-mono px-2 py-0.5 rounded border"
+            style={{ background: '#22c55e18', borderColor: '#22c55e44', color: '#22c55e' }}
+          >
+            Salvato
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -84,6 +258,13 @@ export default function ServicesScreen() {
         <ServiceCard icon={Server}   title="ComfyUI"  status={services.comfyui} />
         <ServiceCard icon={Database} title="Database" status={services.database} />
         <ServiceCard icon={Film}     title="FFmpeg"   status={services.ffmpeg} />
+      </div>
+
+      <div className="mt-3">
+        <WhisperConfigSection />
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
         <ServiceCard icon={HardDrive} title="Storage" status={services.storage} />
       </div>
 

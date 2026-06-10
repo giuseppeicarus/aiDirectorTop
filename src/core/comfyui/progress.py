@@ -27,6 +27,21 @@ def bind_comfy_progress_queue(
     base_extra = dict(extra or {})
 
     def callback(value: int, max_val: int, node: Optional[str] = None) -> None:
+        if max_val <= 1:
+            payload = {
+                "event": event,
+                "msg": f"{label}: {node or 'preparazione'}",
+                "pct": round(start, 4),
+                "comfyui_node": node,
+                "progress_kind": "stage",
+                **base_extra,
+            }
+            try:
+                q.put_nowait(payload)
+            except Exception:
+                pass
+            return
+
         inner = min(1.0, value / max(max_val, 1))
         pct = start + (end - start) * inner
         key = int(pct * 1000)
@@ -97,4 +112,3 @@ async def stream_pool_comfy_run(
         yield {"_result": ComfyUIRunResult(history=hist, client=client, prompt_id=prompt_id)}
     else:
         yield {"_result": await task}
-

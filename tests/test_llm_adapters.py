@@ -115,6 +115,31 @@ async def test_openai_health_check_fail():
     assert ok is False
 
 
+async def test_lmstudio_generate_json_ensures_model_is_loaded():
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = '{"ok": true}'
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+    cfg = LLMConfig(
+        provider="lmstudio",
+        model="llama-3.3-8b-instruct-128k",
+        base_url="http://localhost:1234/v1",
+    )
+
+    with (
+        patch("openai.AsyncOpenAI", return_value=mock_client),
+        patch(
+            "src.core.llm.model_probe.ensure_lmstudio_model_loaded",
+            new=AsyncMock(return_value={"loaded": True}),
+        ) as ensure,
+    ):
+        adapter = OpenAIAdapter(cfg)
+        result = await adapter.generate_json("system", "user")
+
+    assert result == {"ok": True}
+    ensure.assert_awaited_once()
+
+
 def test_openai_parse_json_strips_fence():
     mock_client = MagicMock()
     with patch("openai.AsyncOpenAI", return_value=mock_client):

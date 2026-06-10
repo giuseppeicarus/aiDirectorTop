@@ -104,21 +104,60 @@ def build_narrative_director_prompt(
     analysis: StoryAnalysis,
     inp: ProjectInput,
 ) -> str:
+    import json as _json
+
     chars = "\n".join(
         f"  - {c.name}: {c.description[:80]}..." for c in inp.characters
     ) or "  None specified"
 
-    return f"""STORY ANALYSIS:
-Themes: {', '.join(analysis.themes)}
-Visual metaphors: {', '.join(analysis.visual_metaphors)}
-Pacing notes: {analysis.pacing_notes}
-Narrative: {analysis.narrative_summary}
-Suggested motifs: {', '.join(analysis.suggested_motifs)}
+    # Emotion timeline — compact format, max 12 entries to keep prompt short
+    emotion_timeline = ""
+    if analysis.emotion_progression:
+        rows = "\n".join(
+            f"  {e.get('time_sec', '?')}s: {e.get('emotion', '?')} ({e.get('intensity', '?')})"
+            for e in analysis.emotion_progression[:12]
+        )
+        emotion_timeline = f"\nEMOTION TIMELINE:\n{rows}"
+
+    # Lyric beats — max 15 entries to keep prompt manageable for small models
+    lyric_beats_ctx = ""
+    if analysis.lyric_beats:
+        rows = "\n".join(
+            f"  {b.get('time_sec', '?')}s: \"{b.get('lyric_line', '')[:60]}\" → {b.get('emotion', '')}"
+            for b in analysis.lyric_beats[:15]
+        )
+        lyric_beats_ctx = f"\nLYRIC BEATS (use as scene triggers):\n{rows}"
+
+    # Audio timing — section-level pacing cues
+    audio_timing_ctx = ""
+    if analysis.audio_timing:
+        rows = "\n".join(
+            f"  {t.get('section_start', '?')}s-{t.get('section_end', '?')}s: {t.get('energy', '?')}"
+            for t in analysis.audio_timing
+        )
+        audio_timing_ctx = f"\nAUDIO SECTIONS:\n{rows}"
+
+    color_ctx = f"\nCOLOR MOOD: {analysis.color_mood}" if analysis.color_mood else ""
+
+    return f"""STORY ANALYSIS (use all data below):
+
+SUMMARY: {analysis.narrative_summary[:300]}
+THEMES: {', '.join(analysis.themes[:6])}
+VISUAL METAPHORS: {', '.join(analysis.visual_metaphors[:6])}
+MOTIFS: {', '.join(analysis.suggested_motifs[:4])}{color_ctx}
+PACING: {analysis.pacing_notes[:200]}
+{emotion_timeline}{lyric_beats_ctx}{audio_timing_ctx}
 
 CHARACTERS:
 {chars}
 
 RUNTIME: {inp.runtime_target_sec}s | GENRE: {inp.genre} | RATIO: {inp.aspect_ratio}
+
+MANDATORY RULES:
+- Every sequence duration_sec MUST align with the emotion timeline above
+- Scene triggers MUST match lyric beats and audio section boundaries when audio data is present
+- visual_motifs in the output MUST include at least the suggested_motifs above
+- color_palette MUST reflect the color_mood above
 
 OUTPUT EXACTLY this JSON structure (no wrapper keys, no explanations):
 {{
@@ -215,6 +254,7 @@ def build_cinematographer_prompt(
     prev_shot_memory: dict | None = None,
     current_sequence=None,
     current_scene=None,
+    analysis: "StoryAnalysis | None" = None,
 ) -> str:
     chars = "\n".join(
         f"  {c.name}: {c.description[:120]} | wardrobe: {c.wardrobe[:80]} | anchor: {c.visual_anchor}"
@@ -225,20 +265,37 @@ def build_cinematographer_prompt(
     if audio:
         sections = "\n".join(
             f"  {s.start_sec}s-{s.end_sec}s: {s.energy} energy, {s.emotion}"
-            for s in audio.sections
+            for s in audio.sections[:8]
         )
-        audio_ctx = f"\nAUDIO MAP: BPM={audio.bpm} | Key={audio.key or '?'}\nSections:\n{sections}"
+        audio_ctx = f"\nAUDIO: BPM={audio.bpm} | Key={audio.key or '?'}\nSections:\n{sections}"
         if audio.lyric_beats:
             beats_txt = "\n".join(
-                f"  {b.get('time_sec', 0):.1f}s-{b.get('end_sec', 0):.1f}s [{b.get('energy','?')}]: \"{b.get('lyric_line','')}\""
-                for b in audio.lyric_beats[:40]
+                f"  {b.get('time_sec', 0):.1f}s [{b.get('energy','?')}]: \"{b.get('lyric_line','')[:60]}\""
+                for b in audio.lyric_beats[:10]
             )
-            audio_ctx += f"\n\nLYRIC TIMING (use these to assign lyrics_segment to each shot based on its time_start/time_end):\n{beats_txt}"
+            audio_ctx += f"\nLYRIC BEATS (sample):\n{beats_txt}"
+
+    analysis_ctx = ""
+    if analysis:
+        parts_a = []
+        if analysis.narrative_summary:
+            parts_a.append(f"Story: {analysis.narrative_summary[:150]}")
+        if analysis.color_mood:
+            parts_a.append(f"Color: {analysis.color_mood}")
+        if analysis.visual_metaphors:
+            parts_a.append(f"Motifs: {', '.join(analysis.visual_metaphors[:4])}")
+        if parts_a:
+            analysis_ctx = "\nNARRATIVE DNA: " + " | ".join(parts_a)
 
     memory_ctx = ""
     if prev_shot_memory:
         import json as _json
-        memory_ctx = f"\nPREVIOUS SHOT MEMORY (maintain continuity from last scene):\n{_json.dumps(prev_shot_memory, indent=2)}"
+        memory_ctx = (
+            f"\nPREV SHOT: id={prev_shot_memory.get('shot_id','')} "
+            f"loc={prev_shot_memory.get('location','')[:60]} "
+            f"emotion={prev_shot_memory.get('emotion','')} "
+            f"notes={_json.dumps(prev_shot_memory.get('continuity_notes', [])[:3])}"
+        )
 
     if current_scene and current_sequence:
         shot_hints = "\n".join(
@@ -267,7 +324,7 @@ SCENE TO SHOOT NOW: {current_scene.id} — {current_scene.title}
 GENRE: {inp.genre} | RUNTIME: {inp.runtime_target_sec}s | ASPECT: {inp.aspect_ratio}
 VISUAL MOTIFS: {', '.join(arc.visual_motifs)}
 COLOR PALETTE: {', '.join(arc.color_palette[:4])}
-
+{analysis_ctx}
 CHARACTERS:
 {chars}
 {audio_ctx}{scene_ctx}{memory_ctx}
@@ -358,6 +415,8 @@ def build_prompt_engineer_prompt(
     shot_list: list,
     characters: list[CharacterDef],
     style_refs: list[str],
+    analysis: "StoryAnalysis | None" = None,
+    arc: "StoryArc | None" = None,
 ) -> str:
     import json as _json
 
@@ -367,10 +426,31 @@ def build_prompt_engineer_prompt(
     ) or "  None"
 
     styles = ", ".join(style_refs) if style_refs else "cinematic, photorealistic"
+
+    # Story context block — grounds the prompt engineer in the project's
+    # visual identity and emotional arc defined in earlier stages.
+    story_ctx = ""
+    if arc or analysis:
+        story_ctx = "\nSTORY CONTEXT (inject this DNA into every prompt):"
+        if arc:
+            story_ctx += f"\n  Story: {arc.logline}"
+            story_ctx += f"\n  Visual motifs (must appear in relevant shots): {', '.join(arc.visual_motifs[:6])}"
+            story_ctx += f"\n  Color palette: {', '.join(arc.color_palette[:6])}"
+        if analysis:
+            if analysis.color_mood:
+                story_ctx += f"\n  Color mood: {analysis.color_mood}"
+            if analysis.narrative_summary:
+                story_ctx += f"\n  Narrative: {analysis.narrative_summary[:250]}"
+            if analysis.visual_metaphors:
+                story_ctx += f"\n  Visual metaphors to echo: {', '.join(analysis.visual_metaphors[:6])}"
+            if analysis.pacing_notes:
+                story_ctx += f"\n  Pacing / atmosphere: {analysis.pacing_notes[:200]}"
+
     shots_json = _json.dumps(shot_list, indent=2, ensure_ascii=True)
     neg = "ugly, deformed, blurry, low quality, watermark, text overlay, bad anatomy, extra limbs, cartoon, anime, painting, CGI, artificial looking, overexposed, underexposed"
 
     return f"""GLOBAL STYLE: {styles}
+{story_ctx}
 
 CHARACTER ANCHORS (include these exact details in every shot where the character appears):
 {char_anchors}

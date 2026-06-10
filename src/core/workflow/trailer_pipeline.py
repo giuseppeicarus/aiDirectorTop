@@ -36,6 +36,7 @@ from src.core.comfyui.progress import bind_comfy_progress_queue, iter_progress_w
 from src.core.comfyui.workflow_builder import (
     build_txt2img_workflow,
     build_img2video_workflow,
+    extract_history_error,
     extract_output_files,
 )
 from src.core.models.cinematic import FramePrompt
@@ -117,6 +118,8 @@ class EDLSlot(BaseModel):
     energy: str
     emotion: str
     visual_hint: str
+    scene_id: str = ""          # consecutive slots with same scene_id share a location/time
+    narrative_role: str = ""    # intro|build|peak|resolution
 
 
 class EDL(BaseModel):
@@ -148,6 +151,10 @@ class TrailerClip(BaseModel):
     audio_src_start_sec: Optional[float] = None
     audio_src_end_sec: Optional[float] = None
     storyboard_path: Optional[str] = None
+    # Director continuity decision: True = first frame inherited from prev clip's last frame
+    use_prev_last_frame: bool = False
+    # Scene transition hint from AI director: "continuity" | "scene_cut"
+    scene_transition: str = "scene_cut"
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────────
@@ -401,8 +408,20 @@ class TrailerPipeline:
         return max(96, int(w * scale)), max(96, int(h * scale))
 
     def _hd_dimensions(self) -> tuple[int, int]:
-        """Frame first/last: stessa risoluzione video (no upscale 2×, evita OOM dopo LTX)."""
-        return max(64, int(self.req.width)), max(64, int(self.req.height))
+        """First-frame txt2img: 2× video resolution for higher quality conditioning.
+        Long side capped at 2048 to stay within AuraFlow/z-image VRAM budget.
+        Values rounded to nearest multiple of 64 (required by most diffusion models).
+        OOM is no longer a concern here: txt2img runs in Phase A, VRAM is freed
+        before LTX starts in Phase C (see _phase6_comfyui_generation).
+        """
+        w = max(64, int(self.req.width))
+        h = max(64, int(self.req.height))
+        scale = min(2.0, 2560.0 / max(w, h))
+
+        def _r64(v: float) -> int:
+            return max(64, int(round(v / 64)) * 64)
+
+        return _r64(w * scale), _r64(h * scale)
 
     def _resolve_storyboard_file(self, clip: TrailerClip, dest: Path) -> Optional[Path]:
         """Trova storyboard ComfyUI reale (ignora placeholder FFmpeg ~836 byte)."""
@@ -812,6 +831,68 @@ class TrailerPipeline:
     def _media_api_prefix(self) -> str:
         """trailer | reel — path API per servire storyboard/frames."""
         return "trailer"
+
+    async def _promote_last_frame_to_next_first(
+        self,
+        clip: TrailerClip,
+        last_frame_path: Path,
+        *,
+        emit=None,
+    ) -> Optional[Path]:
+        """Use this clip's real last frame as next clip's first frame when requested."""
+        # Extracted last frames are at VIDEO resolution (not 2× HD), so _hd_frame_ok
+        # would always reject them.  Any real image file is acceptable here.
+        from src.core.utils.comfyui_outputs import is_real_comfy_image, COMFY_REAL_IMAGE_MIN_BYTES
+        if not is_real_comfy_image(last_frame_path, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+            log.warning(
+                "last_frame_promotion_failed",
+                prev_clip=clip.clip_id,
+                prev_last_frame=str(last_frame_path) if last_frame_path else "none",
+                reason="last frame not a valid image (missing or too small)",
+            )
+            return None
+        try:
+            idx = self._clips_list.index(clip)
+        except ValueError:
+            return None
+        if idx + 1 >= len(self._clips_list):
+            return None
+
+        next_clip = self._clips_list[idx + 1]
+        if not next_clip.use_prev_last_frame:
+            return None
+
+        import shutil
+
+        dest = self._frames_dir / f"{next_clip.clip_id}_first.png"
+        if last_frame_path.resolve() != dest.resolve():
+            shutil.copy2(last_frame_path, dest)
+        next_clip.first_frame_path = str(dest)
+        next_clip.first_frame_comfy = None
+
+        log.info(
+            "last_frame_promoted_to_next_first",
+            clip_id=clip.clip_id,
+            next_clip_id=next_clip.clip_id,
+            src=str(last_frame_path),
+            dest=str(dest),
+        )
+        if emit:
+            await emit({
+                "event": "frame_done",
+                "clip_id": next_clip.clip_id,
+                "frame": "first",
+                "path": str(dest),
+                "first_path": str(dest),
+                "frame_url": (
+                    f"/api/{self._media_api_prefix()}/frames-clip/"
+                    f"{self.req.project_id}/{next_clip.clip_id}"
+                ),
+                "hd_frame_ready": True,
+                "inherited_from_clip": clip.clip_id,
+                "use_prev_last_frame": True,
+            })
+        return dest
 
     def _storyboard_frame_event(self, clip: TrailerClip, path: Path, *, ok: bool = True) -> dict:
         from urllib.parse import quote
@@ -2243,10 +2324,26 @@ class TrailerPipeline:
         if reconcile_events:
             log.info("storyboard_reconcile_pass", recovered=len(reconcile_events))
 
+        frames = self._storyboard_frames_payload()
+        missing_ids = [
+            clip.clip_id
+            for clip in self._clips_list
+            if not self._resolve_storyboard_file(
+                clip,
+                self._storyboard_dir / f"{clip.clip_id}_sb.png",
+            )
+        ]
+        if not use_ffmpeg_storyboard and missing_ids:
+            raise RuntimeError(
+                "ComfyUI non ha prodotto lo storyboard completo. "
+                f"Frame mancanti ({len(missing_ids)}/{total}): "
+                + ", ".join(missing_ids)
+            )
+
         yield {
             "event": "storyboard_ready",
-            "frames": self._storyboard_frames_payload(),
-            "count": len([c for c in self._clips_list if c.storyboard_path]),
+            "frames": frames,
+            "count": len(frames),
             "pct": 0.45,
         }
         yield {"event": "phase_done", "phase": "storyboard", "pct": 0.45}
@@ -2406,6 +2503,7 @@ class TrailerPipeline:
         """Call /free on the primary ComfyUI node and wait for VRAM to be released.
         Prevents OOM when switching from txt2img (z-image) to video (LTX) model.
         """
+        import time as _time
         import httpx as _hx
 
         try:
@@ -2421,21 +2519,36 @@ class TrailerPipeline:
         if getattr(node, "token", None):
             headers["Authorization"] = f"Bearer {node.token}"
 
-        # Step 1: request model unload
-        try:
-            async with _hx.AsyncClient(timeout=8) as hc:
-                await hc.post(
-                    f"{base}/free",
-                    json={"unload_models": True, "free_memory": True},
-                    headers=headers,
-                )
-        except Exception:
-            pass
+        async def _post_free() -> None:
+            try:
+                async with _hx.AsyncClient(timeout=10) as hc:
+                    await hc.post(
+                        f"{base}/free",
+                        json={"unload_models": True, "free_memory": True},
+                        headers=headers,
+                    )
+            except Exception:
+                pass
 
-        # Step 2: poll /system_stats until VRAM is sufficiently free (or timeout)
-        deadline = asyncio.get_event_loop().time() + 60.0
-        while asyncio.get_event_loop().time() < deadline:
+        # Step 1: first unload request
+        await _post_free()
+
+        # Step 2: poll /system_stats until VRAM is sufficiently free or timeout.
+        # Retry the /free call mid-way if VRAM is not releasing fast enough.
+        start = _time.monotonic()
+        poll_deadline = 90.0
+        retry_sent = False
+        freed = False
+        while (_time.monotonic() - start) < poll_deadline:
             await asyncio.sleep(2)
+            # Retry /free at 20s and 50s if VRAM is still not released
+            elapsed_so_far = _time.monotonic() - start
+            if not retry_sent and elapsed_so_far > 20:
+                await _post_free()
+                retry_sent = True
+            elif retry_sent and elapsed_so_far > 50:
+                await _post_free()
+                retry_sent = False  # allow one more retry if needed
             try:
                 async with _hx.AsyncClient(timeout=5) as hc:
                     r = await hc.get(f"{base}/system_stats", headers=headers)
@@ -2445,15 +2558,48 @@ class TrailerPipeline:
                         if devs:
                             vram_free_mb = devs[0].get("vram_free", 0)
                             vram_total_mb = devs[0].get("vram_total", 1)
-                            # Consider VRAM free when >60% is available
-                            if vram_free_mb / vram_total_mb > 0.60:
-                                return
+                            # Accept when >50% VRAM is free (lower than before to handle
+                            # CUDA context overhead that keeps permanent VRAM residency).
+                            # Require 75 % VRAM free so that z-image / Lumina2
+                            # (≈8 GB reserved on a 24 GB card, 65 % free) must be
+                            # truly unloaded before LTX starts.  After a real
+                            # /free the ratio reaches 97 %+; 50 % was passing
+                            # too early while the model was still cached.
+                            if vram_total_mb > 0 and vram_free_mb / vram_total_mb > 0.75:
+                                freed = True
+                                break
             except Exception:
                 pass
-        # Fallback: just wait the minimum
-        await asyncio.sleep(max(0, wait_sec - 4))
+
+        # Guarantee a minimum wait even when polling succeeds early, so the GPU
+        # driver has time to complete deallocation before the next model loads.
+        elapsed = _time.monotonic() - start
+        if elapsed < wait_sec:
+            await asyncio.sleep(wait_sec - elapsed)
+
+        if not freed:
+            # Last-resort: one more /free and a hard wait before handing off to LTX.
+            await _post_free()
+            await asyncio.sleep(wait_sec)
 
     async def _phase6_comfyui_generation(self) -> AsyncGenerator[dict, None]:
+        """Two-phase generation optimized for single-GPU VRAM budget.
+
+        Phase A — txt2img (z-image loaded once):
+            Generate first frames for all clips that do NOT inherit the previous
+            clip's last frame.  Continuity clips (use_prev_last_frame=True) are
+            skipped: their first frame is set by _promote_last_frame_to_next_first
+            after Phase C processes the preceding clip.
+
+        Phase B — VRAM free:
+            Unload the txt2img model in one shot before LTX starts.
+
+        Phase C — img2video (LTX loaded once, sequential):
+            Generate every video clip.  Only the first frame is passed as input;
+            LTX drives the motion freely.  After each clip the real last frame is
+            extracted from the video by _gen_video and automatically promoted to
+            the next continuity clip's first frame via _promote_last_frame_to_next_first.
+        """
         yield {"event": "phase", "phase": "comfyui", "pct": 0.42}
 
         from src.core.comfyui.workflow_builder import sync_workflows_from_base
@@ -2469,32 +2615,15 @@ class TrailerPipeline:
             "pct": 0.44,
         }
 
-        if self._use_ffmpeg_clips:
-            yield {
-                "event": "clip_backend",
-                "backend": "ffmpeg",
-                "reason": (
-                    "ComfyUI non esegue sui nodi configurati — Ken Burns / cut statici"
-                    if self.req.clip_backend != "ffmpeg"
-                    else "Modalità cut statici"
-                ),
-            }
-        else:
-            yield {
-                "event": "clip_backend",
-                "backend": "comfyui",
-                "txt2img": self.req.txt2img_workflow,
-                "img2video": self.req.img2video_workflow,
-            }
-
-        sem = asyncio.Semaphore(self.req.concurrent_jobs)
         total = len(self._clips_list)
-        done_count = 0
-        queue: asyncio.Queue = asyncio.Queue()
 
         def _artifact_ok(path: Path, min_bytes: int = 4096) -> bool:
-            from src.core.utils.comfyui_outputs import is_real_comfy_image
-
+            from src.core.utils.comfyui_outputs import (
+                is_real_comfy_image,
+                is_real_comfy_video,
+            )
+            if path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+                return is_real_comfy_video(path)
             if min_bytes >= 4096:
                 return is_real_comfy_image(path, min_bytes=max(min_bytes, 5000))
             return path.exists() and path.stat().st_size >= min_bytes
@@ -2503,7 +2632,6 @@ class TrailerPipeline:
             return self._hd_frame_ok(path)
 
         def _resolve_frame_paths(clip: TrailerClip) -> tuple[Path, Path]:
-            """Solo frame di questo job (clip_id esatto) — mai riusare PNG di run precedenti."""
             ff = self._frames_dir / f"{clip.clip_id}_first.png"
             lf = self._frames_dir / f"{clip.clip_id}_last.png"
             if clip.first_frame_path:
@@ -2518,124 +2646,339 @@ class TrailerPipeline:
                 lf = ff
             return ff, lf
 
-        async def process_clip(clip: TrailerClip) -> None:
-            async with sem:
-                events: list = []
+        # ── FFmpeg-only path (no VRAM issue, keep original per-clip logic) ──
+        if self._use_ffmpeg_clips:
+            yield {
+                "event": "clip_backend",
+                "backend": "ffmpeg",
+                "reason": (
+                    "ComfyUI non esegue sui nodi configurati — Ken Burns / cut statici"
+                    if self.req.clip_backend != "ffmpeg"
+                    else "Modalità cut statici"
+                ),
+            }
+            done_count = 0
+            for i, clip in enumerate(self._clips_list):
+                ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
+                lf_path = self._frames_dir / f"{clip.clip_id}_last.png"
+                q: asyncio.Queue = asyncio.Queue()
+                async def _emit_ffmpeg(ev: dict, _q: asyncio.Queue = q) -> None:
+                    await _q.put(ev)
                 try:
-                    ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
-                    lf_path = self._frames_dir / f"{clip.clip_id}_last.png"
-                    async def emit_live(ev: dict) -> None:
-                        await queue.put(ev)
-
                     ff_path, lf_path, frame_events = await self._ensure_frame_files(
-                        clip, ff_path, lf_path, _hd_ok, emit=emit_live,
+                        clip, ff_path, lf_path, _hd_ok, emit=_emit_ffmpeg,
                     )
-                    # Emit frame preview events immediately to SSE stream
-                    _preview_events = {"frame_done", "frames_ready", "frame_skip"}
+                    while not q.empty():
+                        yield q.get_nowait()
                     for fe in frame_events:
-                        if fe.get("event") in _preview_events:
-                            await emit_live(fe)
-                        else:
-                            events.append(fe)
-
+                        yield fe
                     ff_path = self._resolve_frame_file(clip, ff_path) or ff_path
                     lf_path = self._resolve_frame_file(clip, lf_path) or lf_path
-                    if not _hd_ok(ff_path):
-                        raise RuntimeError(
-                            f"Frame first mancante per {clip.clip_id} — "
-                            "verifica download ComfyUI (file proge_* in frames/)"
-                        )
-                    if not _hd_ok(lf_path):
-                        lf_path = ff_path
-
-                    # Emit frames_ready immediately so UI shows preview without waiting for video gen
-                    await emit_live({
-                        "event": "frames_ready",
-                        "clip_id": clip.clip_id,
-                        "first_path": str(ff_path),
-                        "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
-                        "hd_frame_ready": True,
-                    })
-
                     clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
-                    skip_video = _artifact_ok(clip_dest, min_bytes=50_000)
-                    if skip_video and not self._use_ffmpeg_clips:
-                        # Rigenera con LTX (evita clip ffmpeg/statiche di run precedenti)
-                        skip_video = False
-                        try:
-                            clip_dest.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                    if skip_video:
+                    if _artifact_ok(clip_dest, min_bytes=50_000):
                         clip.clip_path = str(clip_dest)
-                        events.append({"event": "clip_skip", "clip_id": clip.clip_id,
-                                       "path": str(clip_dest)})
-                    elif self._use_ffmpeg_clips:
+                        yield {
+                            "event": "clip_skip",
+                            "clip_id": clip.clip_id,
+                            "path": str(clip_dest),
+                            "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                            "hd_frame_ready": True,
+                            "status": "frame_ready",
+                        }
+                    else:
                         await self._gen_video_ffmpeg(clip, ff_path, lf_path, clip_dest)
                         clip.clip_path = str(clip_dest)
-                        events.append({
+                        yield {
                             "event": "clip_done", "clip_id": clip.clip_id,
                             "path": str(clip_dest), "backend": "ffmpeg",
                             "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
-                        })
-                    else:
-                        # Free z-image VRAM before LTX loads — prevents OOM when
-                        # both models can't fit simultaneously (23.52 GB limit).
-                        await emit_live({
-                            "event": "progress",
-                            "msg": f"Scarico modello frame da VRAM prima di LTX…",
-                            "clip_id": clip.clip_id,
-                            "clip_phase": "video_gen",
-                        })
-                        await self._comfyui_free_vram(wait_sec=5.0)
-                        await self._gen_video(
-                            clip, ff_path, lf_path, clip_dest, emit=emit_live,
-                        )
-                        clip.clip_path = str(clip_dest)
-                        events.append({
-                            "event": "clip_done", "clip_id": clip.clip_id,
-                            "path": str(clip_dest),
-                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
-                        })
-
+                        }
+                    done_count += 1
                 except Exception as exc:
-                    err_msg = str(exc) or repr(exc)
-                    log.error("clip_generation_failed", clip_id=clip.clip_id, error=err_msg)
-                    # Fallback per-clip se abbiamo frame ma LTX/upload fallisce
-                    if (
-                        not self._use_ffmpeg_clips
-                        and self.req.allow_ffmpeg_fallback
-                    ):
-                        try:
-                            ff_path, lf_path = _resolve_frame_paths(clip)
-                            if _artifact_ok(ff_path):
-                                clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
-                                await self._gen_video_ffmpeg(clip, ff_path, lf_path, clip_dest)
-                                clip.clip_path = str(clip_dest)
-                                events = [
-                                    {"event": "clip_fallback", "clip_id": clip.clip_id,
-                                     "backend": "ffmpeg", "reason": err_msg[:200]},
-                                    {
-                                        "event": "clip_done", "clip_id": clip.clip_id,
-                                        "path": str(clip_dest), "backend": "ffmpeg",
-                                        "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
-                                    },
-                                ]
-                            else:
-                                events.append({"event": "clip_error", "clip_id": clip.clip_id,
-                                               "error": err_msg})
-                        except Exception as fb_exc:
-                            events.append({
-                                "event": "clip_error",
-                                "clip_id": clip.clip_id,
-                                "error": f"{err_msg} | fallback: {fb_exc}",
-                            })
-                    else:
-                        events.append({"event": "clip_error", "clip_id": clip.clip_id,
-                                       "error": err_msg})
-
+                    yield {"event": "clip_error", "clip_id": clip.clip_id, "error": str(exc)}
                 self._save_checkpoint(6)
-                # Register generated media in the library
+                yield {
+                    "event": "generation_progress",
+                    "completed": done_count,
+                    "total": total,
+                    "pct": round(0.45 + 0.43 * (done_count / max(total, 1)), 3),
+                }
+            yield {"event": "generation_complete", "pct": 0.88}
+            return
+
+        # ── ComfyUI path ─────────────────────────────────────────────────────
+        yield {
+            "event": "clip_backend",
+            "backend": "comfyui",
+            "txt2img": self.req.txt2img_workflow,
+            "img2video": self.req.img2video_workflow,
+        }
+
+        # ── PHASE A: generate all first frames (txt2img / z-image) ──────────
+        # Clips with use_prev_last_frame=True are normally skipped: their first
+        # frame is promoted by _promote_last_frame_to_next_first during Phase C.
+        # Fallback: if a continuity clip has no valid promoted frame yet (first
+        # run or after a failed promotion), include it for normal frame generation
+        # so Phase C never encounters a missing first_frame_path.
+        regen_asset_filter = getattr(self, "_regen_asset_filter", None)
+        video_only_regen = regen_asset_filter == "video"
+        frames_needed = [] if video_only_regen else [
+            (i, clip)
+            for i, clip in enumerate(self._clips_list)
+            if not (
+                clip.use_prev_last_frame
+                and i > 0
+                and clip.first_frame_path  # only skip if already promoted
+                and Path(clip.first_frame_path).exists()
+                and Path(clip.first_frame_path).stat().st_size > 5000
+            )
+        ]
+        frames_to_gen = len(frames_needed)
+
+        yield {
+            "event": "phase",
+            "phase": "frame_gen",
+            "msg": f"Generazione first frame — {frames_to_gen}/{total} clip…",
+            "pct": 0.45,
+        }
+
+        for frame_idx, (clip_i, clip) in enumerate(frames_needed):
+            ff_canon = self._frames_dir / f"{clip.clip_id}_first.png"
+            pct_frame = round(0.45 + 0.15 * (frame_idx / max(frames_to_gen, 1)), 3)
+
+            # Check cache (explicit path or canonical disk path)
+            cached: Optional[Path] = None
+            if clip.first_frame_path:
+                p = Path(clip.first_frame_path)
+                if _hd_ok(p):
+                    cached = p
+            if cached is None and _hd_ok(ff_canon):
+                cached = ff_canon
+                clip.first_frame_path = str(ff_canon)
+
+            if cached:
+                yield {
+                    "event": "frame_skip",
+                    "clip_id": clip.clip_id,
+                    "reason": "cached",
+                    "path": str(cached),
+                    "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                    "hd_frame_ready": True,
+                    "pct": pct_frame,
+                }
+                continue
+
+            yield {
+                "event": "progress",
+                "msg": f"First frame {frame_idx + 1}/{frames_to_gen} — {clip.clip_id}",
+                "clip_id": clip.clip_id,
+                "clip_index": frame_idx + 1,
+                "clip_total": frames_to_gen,
+                "clip_phase": "frame_gen",
+                "pct": pct_frame,
+            }
+
+            fq: asyncio.Queue = asyncio.Queue()
+            async def _emit_frame(ev: dict, _q: asyncio.Queue = fq) -> None:
+                await _q.put(ev)
+
+            frame_task = asyncio.create_task(
+                self._gen_frame(
+                    clip.first_frame_prompt, ff_canon,
+                    clip_id=clip.clip_id,
+                    role="first",
+                    negative_prompt=clip.negative_prompt,
+                    emit=_emit_frame,
+                )
+            )
+            frame_deadline = asyncio.get_event_loop().time() + 360.0
+            while not frame_task.done():
+                remaining = max(0.5, frame_deadline - asyncio.get_event_loop().time())
+                try:
+                    ev = await asyncio.wait_for(fq.get(), timeout=min(30.0, remaining))
+                    yield ev
+                except asyncio.TimeoutError:
+                    if asyncio.get_event_loop().time() >= frame_deadline:
+                        frame_task.cancel()
+                        break
+                    yield {"event": "progress", "msg": f"In attesa frame — {clip.clip_id}…"}
+            try:
+                await frame_task
+            except Exception as exc:
+                yield {"event": "frame_error", "clip_id": clip.clip_id, "error": str(exc)[:200]}
+                continue
+            # Drain any remaining events
+            while not fq.empty():
+                yield fq.get_nowait()
+
+            resolved = self._resolve_frame_file(clip, ff_canon) or ff_canon
+            if resolved.resolve() != ff_canon.resolve():
+                import shutil as _shutil
+                _shutil.copy2(resolved, ff_canon)
+
+            if _hd_ok(ff_canon):
+                clip.first_frame_path = str(ff_canon)
+                yield {
+                    "event": "frame_done",
+                    "clip_id": clip.clip_id,
+                    "frame": "first",
+                    "path": str(ff_canon),
+                    "filename": ff_canon.name,
+                    "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                    "url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{ff_canon.name}",
+                    "hd_frame_ready": True,
+                    "pct": round(0.45 + 0.15 * ((frame_idx + 1) / max(frames_to_gen, 1)), 3),
+                }
+            else:
+                yield {"event": "frame_error", "clip_id": clip.clip_id, "error": "Frame non salvato su disco"}
+
+        # ── PHASE B: unload txt2img model once ───────────────────────────────
+        yield {
+            "event": "phase",
+            "phase": "vram_free",
+            "msg": "Scarico modello immagine (z-image) — VRAM per LTX…",
+            "pct": 0.60,
+        }
+        await self._comfyui_free_vram(wait_sec=3.0 if video_only_regen else 10.0)
+        yield {
+            "event": "progress",
+            "msg": "VRAM libera — avvio generazione video con LTX…",
+            "pct": 0.61,
+        }
+
+        # ── PHASE C: generate all videos (LTX, sequential) ──────────────────
+        # Only the first frame is fed to LTX.  The real last frame is extracted
+        # from each generated video and propagated to the next continuity clip
+        # by the existing _gen_video → _promote_last_frame_to_next_first chain.
+        yield {
+            "event": "phase",
+            "phase": "video_clips",
+            "msg": f"Generazione clip video LTX — {total} clip…",
+            "pct": 0.62,
+        }
+
+        done_count = 0
+        for i, clip in enumerate(self._clips_list):
+            yield {
+                "event": "progress",
+                "msg": f"Avvio video {i + 1}/{total} — {clip.clip_id}",
+                "clip_id": clip.clip_id,
+                "clip_index": i + 1,
+                "clip_total": total,
+                "pct": round(0.62 + 0.26 * (i / max(total, 1)), 3),
+            }
+
+            try:
+                # Resolve first frame: may have been promoted from prev clip's
+                # extracted last frame during this loop's previous iteration.
+                # Continuity clips (use_prev_last_frame) inherit at VIDEO resolution,
+                # not 2× HD, so _hd_ok would reject them — use _artifact_ok instead.
+                ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
+                if clip.first_frame_path:
+                    p = Path(clip.first_frame_path)
+                    if _hd_ok(p) or (clip.use_prev_last_frame and _artifact_ok(p, min_bytes=5000)):
+                        ff_path = p
+
+                frame_valid = _hd_ok(ff_path) or (
+                    clip.use_prev_last_frame and _artifact_ok(ff_path, min_bytes=5000)
+                )
+                if not frame_valid:
+                    # Promotion from previous clip's last frame failed or has not
+                    # happened yet.  Degrade to standard mode so the clip uses the
+                    # frame that was generated for it in Phase A (fallback path).
+                    if clip.use_prev_last_frame:
+                        log.warning(
+                            "use_prev_last_frame_degraded",
+                            clip_id=clip.clip_id,
+                            first_frame_path=str(ff_path),
+                            reason="promoted frame missing — falling back to Phase A frame",
+                        )
+                        clip.use_prev_last_frame = False
+                        ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
+                        frame_valid = _hd_ok(ff_path)
+                    if not frame_valid:
+                        raise RuntimeError(
+                            f"Frame first mancante per {clip.clip_id} — "
+                            "verifica generazione Phase A o propagazione last frame"
+                        )
+
+                yield {
+                    "event": "frames_ready",
+                    "clip_id": clip.clip_id,
+                    "first_path": str(ff_path),
+                    "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                    "hd_frame_ready": True,
+                }
+
+                clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
+                # Remove stale clip from a previous run that was too small
+                if clip_dest.exists() and not _artifact_ok(clip_dest, min_bytes=50_000):
+                    try:
+                        clip_dest.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+                if _artifact_ok(clip_dest, min_bytes=50_000):
+                    clip.clip_path = str(clip_dest)
+                    yield {
+                        "event": "clip_skip",
+                        "clip_id": clip.clip_id,
+                        "path": str(clip_dest),
+                        "frame_url": f"/api/{self._media_api_prefix()}/frames-clip/{self.req.project_id}/{clip.clip_id}",
+                        "hd_frame_ready": True,
+                        "status": "frame_ready",
+                    }
+                else:
+                    vq: asyncio.Queue = asyncio.Queue()
+                    async def _emit_video(ev: dict, _q: asyncio.Queue = vq) -> None:
+                        await _q.put(ev)
+
+                    video_timeout = max(
+                        2700,
+                        int(min(clip.duration_sec, self.req.max_clip_sec) * 240),
+                    )
+                    video_task = asyncio.create_task(
+                        # Pass ff_path as both start and end frame so the LTX
+                        # workflow receives a valid input on both nodes; LTX will
+                        # still generate free motion.  The real last frame is
+                        # extracted from the video output by _gen_video itself.
+                        self._gen_video(clip, ff_path, ff_path, clip_dest, emit=_emit_video)
+                    )
+                    video_deadline = asyncio.get_event_loop().time() + video_timeout + 60
+                    video_timed_out = False
+                    while not video_task.done():
+                        remaining = max(0.5, video_deadline - asyncio.get_event_loop().time())
+                        try:
+                            ev = await asyncio.wait_for(vq.get(), timeout=min(120.0, remaining))
+                            yield ev
+                        except asyncio.TimeoutError:
+                            if asyncio.get_event_loop().time() >= video_deadline:
+                                video_task.cancel()
+                                video_timed_out = True
+                                break
+                            yield {"event": "progress", "msg": f"LTX in corso — {clip.clip_id}…"}
+                    while not vq.empty():
+                        yield vq.get_nowait()
+                    if video_timed_out:
+                        try:
+                            await video_task
+                        except asyncio.CancelledError:
+                            pass
+                        raise TimeoutError(
+                            f"Timeout generazione video per {clip.clip_id} "
+                            f"dopo {video_timeout + 60}s"
+                        )
+                    await video_task  # re-raise on failure
+
+                    clip.clip_path = str(clip_dest)
+                    yield {
+                        "event": "clip_done",
+                        "clip_id": clip.clip_id,
+                        "path": str(clip_dest),
+                        "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
+                    }
+
+                # Register in media library
                 if _artifact_ok(ff_path):
                     _fire_register(register_media(
                         ff_path, "image",
@@ -2658,55 +3001,54 @@ class TrailerPipeline:
                         tags=[self._media_api_prefix(), "clip", clip.clip_id],
                         generation_prompt=prompt_for_trailer_clip(clip, "video", "clip"),
                     ))
-                for ev in events:
-                    await queue.put(ev)
-                await queue.put({"_done_marker": clip.clip_id})
-                # Small cooldown between clips so ComfyUI output queue is flushed.
-                await asyncio.sleep(1.5)
+                done_count += 1
 
-        yield {
-            "event": "phase",
-            "phase": "video_clips",
-            "msg": "Generazione clip LTX / FFmpeg dai frame…",
-            "pct": 0.52,
-        }
-
-        # Sequential processing: one ComfyUI job at a time.
-        # Each clip task must fully complete (including local download) before the next starts.
-        for i, clip in enumerate(self._clips_list):
-            yield {
-                "event": "progress",
-                "msg": f"Avvio clip {i + 1}/{total} — {clip.clip_id}",
-                "clip_id": clip.clip_id,
-                "clip_index": i + 1,
-                "clip_total": total,
-                "pct": round(0.42 + 0.46 * (i / max(total, 1)), 3),
-            }
-            task = asyncio.create_task(process_clip(clip))
-            clip_done = False
-            while not clip_done:
-                try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=120)
-                except asyncio.TimeoutError:
-                    if task.done():
-                        break
-                    yield {"event": "progress", "msg": f"In attesa download ComfyUI — {clip.clip_id}…"}
-                    continue
-                if "_done_marker" in ev:
-                    done_count += 1
-                    pct = round(0.42 + 0.46 * (done_count / max(total, 1)), 3)
-                    yield {"event": "generation_progress", "completed": done_count,
-                           "total": total, "pct": pct}
-                    clip_done = True
+            except Exception as exc:
+                err_msg = str(exc) or repr(exc)
+                log.error("clip_generation_failed", clip_id=clip.clip_id, error=err_msg)
+                if self.req.allow_ffmpeg_fallback:
+                    try:
+                        ff_p, lf_p = _resolve_frame_paths(clip)
+                        if _artifact_ok(ff_p):
+                            clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
+                            await self._gen_video_ffmpeg(clip, ff_p, lf_p, clip_dest)
+                            clip.clip_path = str(clip_dest)
+                            done_count += 1
+                            yield {
+                                "event": "clip_fallback",
+                                "clip_id": clip.clip_id,
+                                "backend": "ffmpeg",
+                                "reason": err_msg[:200],
+                            }
+                            yield {
+                                "event": "clip_done",
+                                "clip_id": clip.clip_id,
+                                "path": str(clip_dest),
+                                "backend": "ffmpeg",
+                                "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
+                            }
+                        else:
+                            yield {"event": "clip_error", "clip_id": clip.clip_id, "error": err_msg}
+                    except Exception as fb_exc:
+                        yield {
+                            "event": "clip_error",
+                            "clip_id": clip.clip_id,
+                            "error": f"{err_msg} | fallback: {fb_exc}",
+                        }
                 else:
-                    yield ev
-            # Surface any task exception without swallowing it
-            try:
-                await task
-            except Exception as _task_exc:
-                log.error("clip_task_exception", clip_id=clip.clip_id, error=str(_task_exc))
+                    yield {"event": "clip_error", "clip_id": clip.clip_id, "error": err_msg}
 
-        # Recovery: ComfyUI fallito ma frame presenti → rigenera clip in FFmpeg
+            self._save_checkpoint(6)
+            yield {
+                "event": "generation_progress",
+                "completed": done_count,
+                "total": total,
+                "pct": round(0.62 + 0.26 * (done_count / max(total, 1)), 3),
+            }
+            # Small cooldown so ComfyUI output queue is fully flushed before next job.
+            await asyncio.sleep(1.5)
+
+        # Recovery: clips still missing video → ffmpeg fallback
         if self.req.allow_ffmpeg_fallback:
             missing = [
                 c for c in self._clips_list
@@ -2736,11 +3078,7 @@ class TrailerPipeline:
                             "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
                         }
                     except Exception as exc:
-                        yield {
-                            "event": "clip_error",
-                            "clip_id": clip.clip_id,
-                            "error": str(exc),
-                        }
+                        yield {"event": "clip_error", "clip_id": clip.clip_id, "error": str(exc)}
 
         yield {"event": "generation_complete", "pct": 0.88}
 
@@ -2766,8 +3104,6 @@ class TrailerPipeline:
                 p = Path(clip.last_frame_path)
                 if artifact_ok(p):
                     lf = p
-            if artifact_ok(ff) and not artifact_ok(lf):
-                lf = ff
             return ff, lf
 
         ff_path, lf_path = _resolved()
@@ -2793,7 +3129,6 @@ class TrailerPipeline:
         canon_ff = self._frames_dir / f"{clip.clip_id}_first.png"
         canon_lf = self._frames_dir / f"{clip.clip_id}_last.png"
 
-        first_comfy_failed = False
         for role, target, prompt, comfy_attr in (
             ("first", canon_ff, clip.first_frame_prompt, "first_frame_comfy"),
             ("last", canon_lf, clip.last_frame_prompt, "last_frame_comfy"),
@@ -2803,16 +3138,6 @@ class TrailerPipeline:
                 continue
             if role == "last":
                 if artifact_ok(canon_lf) or artifact_ok(lf_cur):
-                    continue
-                if artifact_ok(ff_cur) and not artifact_ok(lf_cur):
-                    import shutil
-                    shutil.copy2(ff_cur, canon_lf)
-                    clip.last_frame_path = str(canon_lf)
-                    continue
-                if first_comfy_failed and artifact_ok(canon_ff):
-                    import shutil
-                    shutil.copy2(canon_ff, canon_lf)
-                    clip.last_frame_path = str(canon_lf)
                     continue
             frame_timeout = 300.0 if role == "first" else 240.0
             if emit:
@@ -2854,8 +3179,6 @@ class TrailerPipeline:
                     "hd_frame_ready": role == "first",
                 })
             except (asyncio.TimeoutError, TimeoutError) as exc:
-                if role == "first":
-                    first_comfy_failed = True
                 log.warning(
                     "comfyui_frame_timeout",
                     clip_id=clip.clip_id,
@@ -2864,8 +3187,6 @@ class TrailerPipeline:
                     error=str(exc),
                 )
             except Exception as exc:
-                if role == "first":
-                    first_comfy_failed = True
                 log.warning(
                     "comfyui_frame_failed",
                     clip_id=clip.clip_id,
@@ -2875,11 +3196,10 @@ class TrailerPipeline:
 
         ff_path, lf_path = _resolved()
         if artifact_ok(ff_path):
-            if not artifact_ok(lf_path):
-                lf_path = ff_path
             clip.first_frame_path = str(ff_path)
-            clip.last_frame_path = str(lf_path)
-            return ff_path, lf_path, events
+            # The video workflow may still use the first frame as a guide when a
+            # real last frame is missing, but do not persist/display it as LAST.
+            return ff_path, lf_path if artifact_ok(lf_path) else ff_path, events
 
         # Recovery: file ComfyUI (proge_*, ecc.) presenti ma path canonico mancante
         recovered_ff = self._resolve_frame_file(clip, canon_ff)
@@ -2904,7 +3224,6 @@ class TrailerPipeline:
             if artifact_ok(ff_path):
                 if not artifact_ok(lf_path):
                     lf_path = ff_path
-                    clip.last_frame_path = str(lf_path)
                 return ff_path, lf_path, events
 
         if self.req.allow_ffmpeg_fallback:
@@ -3202,7 +3521,10 @@ class TrailerPipeline:
             use_audio_track=use_audio_track,
             model_overrides=getattr(self.req, "model_overrides", None),
         )
-        video_timeout = max(600, int(min(clip.duration_sec, self.req.max_clip_sec) * 90))
+        video_timeout = max(
+            1800,
+            int(min(clip.duration_sec, self.req.max_clip_sec) * 180),
+        )
         if emit:
             await emit({
                 "event": "progress",
@@ -3214,14 +3536,43 @@ class TrailerPipeline:
             wf, client=client, timeout=video_timeout,
             label="Video LTX", clip_id=clip.clip_id, kind="video", emit=emit,
         )
-        files = extract_output_files(run.history)
-        if not files:
-            log.error("gen_video_no_output", clip_id=clip.clip_id, history=str(run.history)[:300])
-            raise RuntimeError(f"No video output from ComfyUI for clip {clip.clip_id}")
-
         from src.core.utils.comfyui_outputs import download_comfyui_file, pick_best_video_output
 
-        best_video = pick_best_video_output(files)
+        history = run.history
+        files = extract_output_files(history)
+        best_video = None
+        video_wait_deadline = asyncio.get_event_loop().time() + 600.0
+        while best_video is None:
+            try:
+                best_video = pick_best_video_output(files)
+                break
+            except ValueError:
+                if not run.prompt_id or asyncio.get_event_loop().time() >= video_wait_deadline:
+                    log.error(
+                        "gen_video_no_video_output",
+                        clip_id=clip.clip_id,
+                        prompt_id=run.prompt_id,
+                        files=[f.get("filename") for f in files],
+                    )
+                    raise RuntimeError(
+                        f"ComfyUI non ha prodotto un video per clip {clip.clip_id}"
+                    )
+                await asyncio.sleep(2.0)
+                try:
+                    history = await run.client.get_history(run.prompt_id)
+                except Exception as exc:
+                    log.warning(
+                        "gen_video_history_retry",
+                        clip_id=clip.clip_id,
+                        prompt_id=run.prompt_id,
+                        error=str(exc),
+                    )
+                    continue
+                err = extract_history_error(history)
+                if err:
+                    raise RuntimeError(f"ComfyUI video {clip.clip_id}: {err}")
+                files = extract_output_files(history)
+
         fname = best_video["filename"]
         ext = Path(fname).suffix or ".mp4"
         tmp_dest = dest.with_suffix(ext)
@@ -3243,27 +3594,8 @@ class TrailerPipeline:
             )
         log.info("gen_video_saved", clip_id=clip.clip_id, dest=str(dest), size=dest.stat().st_size)
 
-        # Extract the real last frame from the generated video so the UI can show it.
-        try:
-            lf_extracted = self._frames_dir / f"{clip.clip_id}_last.png"
-            rc, _ = await _run_ffmpeg(
-                "-y", "-sseof", "-0.1", "-i", str(dest),
-                "-vframes", "1", "-q:v", "2", str(lf_extracted),
-            )
-            if rc == 0 and lf_extracted.exists() and lf_extracted.stat().st_size > 5000:
-                clip.last_frame_path = str(lf_extracted)
-                log.info("gen_video_last_frame_extracted", clip_id=clip.clip_id, dest=str(lf_extracted))
-                if emit:
-                    await emit({
-                        "event": "last_frame_ready",
-                        "clip_id": clip.clip_id,
-                        "last_frame_path": str(lf_extracted),
-                        "last_frame_url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{lf_extracted.name}",
-                    })
-        except Exception:
-            pass
-
-        # Download last frame image if the workflow produces one (e.g., VBVR)
+        # Determine if we have a dedicated last frame node in the workflow (e.g., VBVR)
+        has_workflow_last_frame = False
         from src.core.comfyui.workflow_builder import get_workflow_meta
         wf_meta = get_workflow_meta(video_wf_id)
         if wf_meta.get("last_frame_node"):
@@ -3276,30 +3608,94 @@ class TrailerPipeline:
                 from src.core.utils.comfyui_outputs import pick_best_image_output, download_comfyui_file
                 try:
                     best_img = pick_best_image_output(image_files)
-                    lf_dest = self._frames_dir / f"{clip.clip_id}_last_from_video.png"
-                    await download_comfyui_file(client, best_img, lf_dest, expect="image")
-                    if lf_dest.exists() and lf_dest.stat().st_size > 5000:
-                        log.info("gen_video_last_frame_saved", clip_id=clip.clip_id, dest=str(lf_dest))
+                    lf_canonical = self._frames_dir / f"{clip.clip_id}_last.png"
+                    log.info("gen_video_last_frame_downloading_from_wf", clip_id=clip.clip_id, filename=best_img.get("filename"))
+                    await download_comfyui_file(client, best_img, lf_canonical, expect="image")
+                    if lf_canonical.exists() and lf_canonical.stat().st_size > 5000:
+                        clip.last_frame_path = str(lf_canonical)
+                        log.info("gen_video_last_frame_saved_from_wf", clip_id=clip.clip_id, dest=str(lf_canonical))
+                        if emit:
+                            await emit({
+                                "event": "last_frame_ready",
+                                "clip_id": clip.clip_id,
+                                "last_frame_path": str(lf_canonical),
+                                "last_frame_url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{lf_canonical.name}",
+                            })
+                        await self._promote_last_frame_to_next_first(clip, lf_canonical, emit=emit)
                         _fire_register(register_media(
-                            lf_dest, "image",
+                            lf_canonical, "image",
                             self.req.project_id,
                             getattr(self.req, "title", None) or "Trailer",
                             source="trailer",
                             tags=["last_frame", "vbvr"],
                         ))
+                        has_workflow_last_frame = True
                 except Exception as lf_err:
-                    log.warning("gen_video_last_frame_download_failed",
+                    log.warning("gen_video_last_frame_wf_download_failed",
                                 clip_id=clip.clip_id, error=str(lf_err))
+
+        # Extract the real last frame from the generated video via ffmpeg ONLY as fallback
+        if not has_workflow_last_frame:
+            try:
+                lf_extracted = self._frames_dir / f"{clip.clip_id}_last.png"
+                log.info("gen_video_extracting_last_frame_ffmpeg", clip_id=clip.clip_id, dest=str(lf_extracted))
+                rc, _ = await _run_ffmpeg(
+                    "-y", "-sseof", "-0.1", "-i", str(dest),
+                    "-vframes", "1", "-q:v", "2", str(lf_extracted),
+                )
+                if rc == 0 and lf_extracted.exists() and lf_extracted.stat().st_size > 5000:
+                    clip.last_frame_path = str(lf_extracted)
+                    log.info("gen_video_last_frame_extracted", clip_id=clip.clip_id, dest=str(lf_extracted))
+                    if emit:
+                        await emit({
+                            "event": "last_frame_ready",
+                            "clip_id": clip.clip_id,
+                            "last_frame_path": str(lf_extracted),
+                            "last_frame_url": f"/api/{self._media_api_prefix()}/frames/{self.req.project_id}/{lf_extracted.name}",
+                        })
+                    await self._promote_last_frame_to_next_first(clip, lf_extracted, emit=emit)
+            except Exception as ffmpeg_err:
+                log.warning("gen_video_ffmpeg_last_frame_failed", clip_id=clip.clip_id, error=str(ffmpeg_err))
 
     # ── Phase 7: Video Assembler ──────────────────────────────────────────────
 
     async def _phase7_video_assembler(self) -> AsyncGenerator[dict, None]:
         yield {"event": "phase", "phase": "assembly", "pct": 0.88}
 
+        from src.core.utils.comfyui_outputs import is_real_comfy_video
         good_clips = [
             c for c in self._clips_list
-            if c.clip_path and Path(c.clip_path).exists()
+            if c.clip_path and is_real_comfy_video(Path(c.clip_path))
         ]
+        # Retry placeholder clips whose first_frame is valid — regenerate their video
+        placeholder_clips = [
+            c for c in self._clips_list
+            if c not in good_clips
+        ]
+        if placeholder_clips:
+            for clip in placeholder_clips:
+                ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
+                lf_path = self._frames_dir / f"{clip.clip_id}_last.png"
+                if not ff_path.exists() or ff_path.stat().st_size < 4096:
+                    continue
+                if not lf_path.exists() or lf_path.stat().st_size < 4096:
+                    lf_path = ff_path
+                clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
+                try:
+                    await self._gen_video_ffmpeg(clip, ff_path, lf_path, clip_dest)
+                    clip.clip_path = str(clip_dest)
+                    if is_real_comfy_video(clip_dest):
+                        good_clips.append(clip)
+                        yield {
+                            "event": "clip_done",
+                            "clip_id": clip.clip_id,
+                            "path": str(clip_dest),
+                            "backend": "ffmpeg",
+                            "url": f"/api/{self._media_api_prefix()}/clips/{self.req.project_id}/{clip_dest.name}",
+                        }
+                except Exception as exc:
+                    log.warning("assembly_retry_clip_failed", clip_id=clip.clip_id, error=str(exc))
+
         if not good_clips:
             failed = [
                 c.clip_id for c in self._clips_list
@@ -3374,6 +3770,11 @@ class TrailerPipeline:
         ffmpeg_args += ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
         if has_audio:
             ffmpeg_args += ["-c:a", "aac", "-b:a", "128k"]
+        else:
+            # Strip any embedded audio (e.g. LTX adds aac to first clip).
+            # Without -an, mixed-stream concat causes FFmpeg to stop at the
+            # shortest audio stream, truncating the video output.
+            ffmpeg_args += ["-an"]
 
         scale_filter = (
             f"scale={self.req.width}:{self.req.height}"
@@ -3383,9 +3784,12 @@ class TrailerPipeline:
         ffmpeg_args += [
             "-vf", scale_filter,
             "-r", str(self.req.fps),
-            "-shortest",
-            str(output_path),
         ]
+        if has_audio:
+            # Only use -shortest when there is a real external audio track to
+            # sync to; otherwise it would cut off at the first audio stream end.
+            ffmpeg_args += ["-shortest"]
+        ffmpeg_args += [str(output_path)]
 
         yield {"event": "assembly_start", "clips": len(good_clips), "pct": 0.90}
         rc, err = await _run_ffmpeg(*ffmpeg_args)

@@ -10,19 +10,22 @@ import {
   ImagePlus, Loader2, Sparkles, Check, RefreshCw, X, Film,
   LayoutGrid, AlertCircle, Image as ImageIcon, Trash2, Clapperboard,
   ChevronRight, Instagram, Library, Search, ChevronDown, Settings2, Cpu, Square,
-  Save, RotateCcw, Edit3, ChevronUp, Wand2, UserRound,
+  Save, RotateCcw, Edit3, ChevronUp, Wand2, UserRound, Music2, Maximize2, List,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ProjectDirBanner from '../components/ProjectDirBanner'
 import GenQueueBadge from '../components/GenQueueBadge'
+import { ComfyUIQueueInline } from '../components/ComfyUIQueuePanel'
 import {
   ReelClipPlanGrid,
   ReelEstimatedClipStrip,
   ReelSystemActivityPanel,
   PromptPreviewRow,
   ReelPromptEditorModal,
+  ReelHorizontalClipList,
 } from '../components/ReelClipCards'
 import ReelAudioSection from '../components/ReelAudioSection'
+import ImageLightbox from '../components/ImageLightbox'
 import {
   BACKEND_ORIGIN,
   mediaThumbUrl,
@@ -453,6 +456,62 @@ const DEFAULT_CONFIG = {
   txt2img_workflow: 'z_image_turbo_txt2img',
   img2video_workflow: 'ltx_img2video',
   img_audio2video_workflow: 'ltx_img_audio2video',
+}
+
+function ReelDescriptionGenerator({ title, lyrics, style, audioAnalysis, refsCount, onApply }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const canRun = Boolean(lyrics?.trim() || title?.trim() || style?.trim() || audioAnalysis || refsCount > 0)
+
+  async function generate() {
+    if (!canRun) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${BACKEND_ORIGIN}/api/llm/generate-reel-description`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title?.trim() || '',
+          lyrics: lyrics?.trim() || '',
+          style: style?.trim() || '',
+          audio_analysis: audioAnalysis || null,
+          refs_count: refsCount || 0,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (data.ok && data.description) {
+        onApply(data.description.trim())
+      } else {
+        setError(data.error || (res.ok ? 'Nessuna descrizione ricevuta' : `Errore server (${res.status})`))
+      }
+    } catch (e) {
+      setError(e.message || 'Errore di rete')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      <button
+        type="button"
+        onClick={generate}
+        disabled={loading || !canRun}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[10px] font-mono border border-[#c9a84c]/40 bg-[#c9a84c]/8 text-[#c9a84c] hover:bg-[#c9a84c]/15 disabled:opacity-40 transition-colors"
+      >
+        {loading ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+        {loading ? 'Generazione in corso…' : 'Genera con AI'}
+      </button>
+      {!canRun && (
+        <p className="text-[9px] font-mono text-[#555568]">
+          Inserisci titolo, lirica o stile per abilitare la generazione AI.
+        </p>
+      )}
+      {error && <p className="text-[9px] font-mono text-[#ef4444]">{error}</p>}
+    </div>
+  )
 }
 
 function ReelStyleImprover({ title, description, currentStyle, onApply }) {
@@ -912,6 +971,7 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
   const [src, setSrc] = useState(null)
   const [failed, setFailed] = useState(false)
   const [retry, setRetry] = useState(0)
+  const [modalOpen, setModalOpen] = useState(false)
   const isPlaceholder = clip?.storyboard_placeholder || clip?.storyboard_ok === false
   const preferHd = clip?.hd_frame_ready || clip?.clip_phase === 'frame_gen' || clip?.clip_phase === 'video_gen' || clip?.status === 'done'
   const awaitingAsset = clip?.status === 'waiting'
@@ -1072,15 +1132,33 @@ function ClipPreviewCell({ clip, projectId, jobId, aspectRatio = '9:16' }) {
   }
 
   return (
-    <img
-      src={src}
-      alt={clip?.clip_id}
-      className="w-full h-full object-cover"
-      onError={() => {
-        if (retry < 4) setRetry(r => r + 1)
-        else { setSrc(null); setFailed(true) }
-      }}
-    />
+    <>
+      <div
+        className="w-full h-full cursor-zoom-in relative group"
+        onClick={() => setModalOpen(true)}
+      >
+        <img
+          src={src}
+          alt={clip?.clip_id}
+          className="w-full h-full object-cover"
+          onError={() => {
+            if (retry < 4) setRetry(r => r + 1)
+            else { setSrc(null); setFailed(true) }
+          }}
+        />
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white/90 backdrop-blur-[1px]">
+          <Maximize2 size={14} className="scale-75 group-hover:scale-100 transition-transform duration-200" />
+        </div>
+      </div>
+
+      {modalOpen && (
+        <ImageLightbox
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          items={[{ src, alt: `Inquadratura ${clip?.slot_id || clip?.clip_id || ''} - Anteprima Storyboard` }]}
+        />
+      )}
+    </>
   )
 }
 
@@ -1105,7 +1183,7 @@ function ClipPreviewGrid({ clips, projectId, jobId, aspectRatio }) {
         {sorted.map(clip => (
           <div key={clip.clip_id} className={clsx(
             'rounded-lg overflow-hidden border bg-[#16161f]',
-            clip.status === 'done' && 'border-[#22c55e]/50',
+            (clip.status === 'done' || clip.status === 'frame_ready' || clip.hd_frame_ready) && 'border-[#22c55e]/50',
             clip.status === 'storyboard' && 'border-[#3b82f6]/40',
             clip.status === 'storyboard_failed' && 'border-[#f59e0b]/50',
             clip.status === 'generating' && 'border-[#c9a84c]/50',
@@ -1287,7 +1365,14 @@ function JobsListView({ projectId, refreshKey, onNew, onViewDetail, onResumeJob 
         `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(projectId)}/${job.job_id}?cleanup=true`,
         { method: 'DELETE' },
       )
-      if (res.ok) setJobs(prev => prev.filter(j => j.job_id !== job.job_id))
+      if (res.ok || res.status === 404) {
+        setJobs(prev => prev.filter(j => j.job_id !== job.job_id))
+      } else {
+        const data = await res.json().catch(() => ({}))
+        alert(`Errore eliminazione: ${data.detail || res.statusText}`)
+      }
+    } catch (err) {
+      alert(`Errore eliminazione: ${err.message}`)
     } finally {
       setDeletingId(null)
     }
@@ -1444,7 +1529,14 @@ function JobDetailView({ job, projectId, onBack, onOpenReview, onResumePipeline,
         `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(projectId)}/${job.job_id}?cleanup=true`,
         { method: 'DELETE' },
       )
-      if (res.ok) onDelete()
+      if (res.ok || res.status === 404) {
+        onDelete()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        alert(`Errore eliminazione: ${data.detail || res.statusText}`)
+      }
+    } catch (err) {
+      alert(`Errore eliminazione: ${err.message}`)
     } finally {
       setDeleting(false)
     }
@@ -2329,70 +2421,11 @@ function GeneratingView({
   activeJobId, mediaProjectId, config, onStop, onPause, onResumePause, onContinue,
   jobPaused, staleRunning, canContinue, pipelineInterrupted, onGoList, onNew,
   catalogProjectId, systemActivity, agentsStatus, reelEnhanceContext,
+  layoutMode, setLayoutMode, onSave, onRegen, regenningId,
 }) {
-  const [regenningId, setRegenningId] = useState(null)
   const isPortrait = config.aspect_ratio === '9:16'
   const sbSize = reelStoryboardPixelSize(config)
   const hdSize = reelHdDimensions(config.width, config.height)
-
-  async function handleSavePrompt(clipId, prompts) {
-    const res = await fetch(
-      `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(prompts),
-      },
-    )
-    if (!res.ok) throw new Error(await res.text())
-    setClips(prev => prev.map(c => (c.clip_id === clipId ? { ...c, ...prompts } : c)))
-  }
-
-  async function handleRegen(clipId) {
-    if (regenningId) return
-    setRegenningId(clipId)
-    setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, status: 'generating', comfyuiPct: 0 } : c))
-    try {
-      const url = `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}/regen`
-      const es = new EventSource(url)
-      await new Promise((resolve, reject) => {
-        es.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data)
-            if (data.done || data.error) {
-              es.close()
-              if (data.error) reject(new Error(data.error))
-              else resolve()
-              return
-            }
-            if (data.event === 'storyboard_frame') {
-              const sbOk = data.storyboard_ok !== false
-              setClips(prev => prev.map(c =>
-                c.clip_id === clipId ? {
-                  ...c,
-                  status: sbOk ? 'storyboard' : 'storyboard_failed',
-                  storyboard_ok: sbOk,
-                  storyboard_path: data.path || c.storyboard_path,
-                  storyboard_filename: data.storyboard_filename || c.storyboard_filename,
-                  preview_url: data.preview_url || data.url || c.preview_url,
-                } : c,
-              ))
-            }
-            if (data.event === 'clip_comfyui_progress' && data.comfyui_max > 1) {
-              const pct = Math.round((data.comfyui_value / data.comfyui_max) * 100)
-              setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, comfyuiPct: pct } : c))
-            }
-          } catch {}
-        }
-        es.onerror = () => { es.close(); resolve() }
-      })
-    } catch {}
-    setRegenningId(null)
-    setClips(prev => prev.map(c => c.clip_id === clipId
-      ? { ...c, comfyuiPct: 0, status: c.status === 'generating' ? 'storyboard' : c.status }
-      : c,
-    ))
-  }
 
   const withImage = clips.filter(c => c.storyboard_ok !== false && !c.storyboard_placeholder && (c.frame_url || c.storyboard_path)).length
 
@@ -2434,6 +2467,38 @@ function GeneratingView({
           )}
 
           <div className="ml-auto flex items-center gap-3">
+            {/* Segmented Layout Selector */}
+            <div className="flex items-center gap-1 bg-[#16161f] p-0.5 rounded-lg border border-[#252533] shrink-0">
+              <button
+                type="button"
+                onClick={() => setLayoutMode('horizontal')}
+                className={clsx(
+                  "p-1 px-2 rounded transition-all flex items-center gap-1 text-[8.5px] font-mono font-semibold",
+                  layoutMode === 'horizontal'
+                    ? "bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20"
+                    : "text-[#555568] hover:text-[#9090a8] border border-transparent"
+                )}
+                title="Vista Orizzontale"
+              >
+                <List size={11} />
+                Orizzontale
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayoutMode('grid')}
+                className={clsx(
+                  "p-1 px-2 rounded transition-all flex items-center gap-1 text-[8.5px] font-mono font-semibold",
+                  layoutMode === 'grid'
+                    ? "bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20"
+                    : "text-[#555568] hover:text-[#9090a8] border border-transparent"
+                )}
+                title="Vista Griglia"
+              >
+                <LayoutGrid size={11} />
+                Griglia
+              </button>
+            </div>
+
             <span className="text-sm font-mono font-semibold text-[#c9a84c]">{globalPct}%</span>
 
             {view === 'generating' && (
@@ -2565,24 +2630,43 @@ function GeneratingView({
             phaseStatus={phaseStatus}
           />
         )}
-        <ReelClipPlanGrid
-          clips={clips}
-          projectId={mediaProjectId}
-          jobId={activeJobId}
-          aspectRatio={config.aspect_ratio}
-          config={config}
-          sbSize={sbSize}
-          hdSize={hdSize}
-          dopPlans={dopPlans}
-          onSave={view !== 'done' ? handleSavePrompt : undefined}
-          onRegen={view !== 'done' ? handleRegen : undefined}
-          regenningId={regenningId}
-          projectContext={reelEnhanceContext}
-          title={clips.length > 0
-            ? `${withImage}/${clips.length} clip con anteprima · prompt e parametri di regia`
-            : undefined}
-          emptyHint="Le clip appariranno qui man mano che gli agenti completano l'analisi e i prompt"
-        />
+        {(view === 'generating' || view === 'storyboard') && (
+          <div className="mb-3">
+            <ComfyUIQueueInline projectId={storageProjectId} />
+          </div>
+        )}
+        {layoutMode === 'horizontal' ? (
+          <ReelHorizontalClipList
+            clips={clips}
+            projectId={mediaProjectId}
+            jobId={activeJobId}
+            aspectRatio={config.aspect_ratio}
+            dopPlans={dopPlans}
+            onSave={view !== 'done' ? onSave : undefined}
+            onRegen={view !== 'done' ? onRegen : undefined}
+            regenningId={regenningId}
+            projectContext={reelEnhanceContext}
+          />
+        ) : (
+          <ReelClipPlanGrid
+            clips={clips}
+            projectId={mediaProjectId}
+            jobId={activeJobId}
+            aspectRatio={config.aspect_ratio}
+            config={config}
+            sbSize={sbSize}
+            hdSize={hdSize}
+            dopPlans={dopPlans}
+            onSave={view !== 'done' ? onSave : undefined}
+            onRegen={view !== 'done' ? onRegen : undefined}
+            regenningId={regenningId}
+            projectContext={reelEnhanceContext}
+            title={clips.length > 0
+              ? `${withImage}/${clips.length} clip con anteprima · prompt e parametri di regia`
+              : undefined}
+            emptyHint="Le clip appariranno qui man mano che gli agenti completano l'analisi e i prompt"
+          />
+        )}
       </div>
     </div>
   )
@@ -2627,6 +2711,8 @@ export default function CreateReelScreen() {
   })
   const [resumePhase, setResumePhase] = useState('full')
   const [pipelineInterrupted, setPipelineInterrupted] = useState(false)
+  const [layoutMode, setLayoutMode] = useState('horizontal')
+  const [regenningId, setRegenningId] = useState(null)
   const [projectDir, setProjectDir] = useState(null)
   const [refUploadError, setRefUploadError] = useState(null)
   const [showMediaPicker, setShowMediaPicker] = useState(false)
@@ -2956,19 +3042,34 @@ export default function CreateReelScreen() {
         || reelFrameClipUrl(mediaProjectId, data.clip_id)
         || resolveBackendUrl(data.url)
       if (frameUrl) {
+        const isHd = Boolean(data.hd_frame_ready)
+          || (!data.placeholder && !data.from_storyboard && data.cached !== true)
+        const sep = frameUrl.includes('?') ? '&' : '?'
+        const cachedUrl = isHd ? `${frameUrl}${sep}v=${Date.now()}` : frameUrl
         setClips(prev => prev.map(c =>
           c.clip_id === data.clip_id
             ? {
                 ...c,
-                frame_url: frameUrl,
+                frame_url: cachedUrl,
                 first_frame_path: data.path || data.first_path || c.first_frame_path,
-                hd_frame_ready: Boolean(data.hd_frame_ready)
-                  || (!data.placeholder && !data.from_storyboard && data.cached !== true),
-                clip_phase: data.hd_frame_ready || (!data.placeholder && !data.from_storyboard)
-                  ? 'frame_gen'
-                  : c.clip_phase,
-                status: data.placeholder ? c.status : 'generating',
+                hd_frame_ready: isHd,
+                clip_phase: isHd ? 'frame_gen' : c.clip_phase,
+                status: data.placeholder ? c.status : (isHd ? 'frame_ready' : 'generating'),
               }
+            : c,
+        ))
+      }
+    }
+
+    if (data.event === 'frame_skip') {
+      const frameUrl = resolveBackendUrl(data.frame_url)
+        || reelFrameClipUrl(mediaProjectId, data.clip_id)
+      if (data.clip_id) {
+        const sep = frameUrl ? (frameUrl.includes('?') ? '&' : '?') : '?'
+        const cachedUrl = frameUrl ? `${frameUrl}${sep}v=${Date.now()}` : null
+        setClips(prev => prev.map(c =>
+          c.clip_id === data.clip_id
+            ? { ...c, hd_frame_ready: true, status: 'frame_ready', ...(cachedUrl ? { frame_url: cachedUrl } : {}) }
             : c,
         ))
       }
@@ -3345,6 +3446,83 @@ export default function CreateReelScreen() {
     await openJobReview(job, { autoContinue: true })
   }
 
+  async function handleSavePrompt(clipId, prompts) {
+    const res = await fetch(
+      `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prompts),
+      },
+    )
+    if (!res.ok) throw new Error(await res.text())
+    setClips(prev => prev.map(c => (c.clip_id === clipId ? { ...c, ...prompts } : c)))
+  }
+
+  async function handleRegen(clipId, kind = 'preview') {
+    if (regenningId) return
+    setRegenningId(clipId)
+
+    if (kind === 'preview') {
+      setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, status: 'generating', comfyuiPct: 0, comfyuiKind: 'preview' } : c))
+      try {
+        const url = `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}/regen`
+        const es = new EventSource(url)
+        await new Promise((resolve, reject) => {
+          es.onmessage = (e) => {
+            try {
+              const data = JSON.parse(e.data)
+              if (data.done || data.error) {
+                es.close()
+                if (data.error) reject(new Error(data.error))
+                else resolve()
+                return
+              }
+              if (data.event === 'storyboard_frame') {
+                const sbOk = data.storyboard_ok !== false
+                setClips(prev => prev.map(c =>
+                  c.clip_id === clipId ? {
+                    ...c,
+                    status: sbOk ? 'storyboard' : 'storyboard_failed',
+                    storyboard_ok: sbOk,
+                    storyboard_path: data.path || c.storyboard_path,
+                    storyboard_filename: data.storyboard_filename || c.storyboard_filename,
+                    preview_url: data.preview_url || data.url || c.preview_url,
+                  } : c,
+                ))
+              }
+              if (data.event === 'clip_comfyui_progress' && data.comfyui_max > 1) {
+                const pct = Math.round((data.comfyui_value / data.comfyui_max) * 100)
+                setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, comfyuiPct: pct } : c))
+              }
+            } catch {}
+          }
+          es.onerror = () => { es.close(); resolve() }
+        })
+      } catch {}
+      setRegenningId(null)
+      setClips(prev => prev.map(c => c.clip_id === clipId
+        ? { ...c, comfyuiPct: 0, comfyuiKind: null, status: c.status === 'generating' ? 'storyboard' : c.status }
+        : c,
+      ))
+    } else {
+      setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, status: 'generating', comfyuiPct: 0, comfyuiKind: kind, comfyuiMsg: `Rigenero ${kind}...` } : c))
+      try {
+        const params = {
+          ...buildParams('regen_clip', activeJobId),
+          regen_clip_id: clipId,
+          regen_asset: kind,
+        }
+        await window.studio?.reel?.generate?.(params, handleProgress)
+      } catch (err) {
+        console.error("Single asset regen failed:", err)
+      } finally {
+        setRegenningId(null)
+        setClips(prev => prev.map(c => c.clip_id === clipId ? { ...c, comfyuiKind: null } : c))
+      }
+    }
+  }
+
   function handleGoList() {
     if (activeJobId && ['generating', 'storyboard'].includes(view)) {
       try {
@@ -3708,6 +3886,38 @@ export default function CreateReelScreen() {
             </div>
 
             <div className="ml-auto flex items-center gap-2 shrink-0">
+              {/* Segmented Layout Selector */}
+              <div className="flex items-center gap-1 bg-[#16161f] p-0.5 rounded-lg border border-[#252533] mr-2">
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode('horizontal')}
+                  className={clsx(
+                    "p-1 px-2 rounded transition-all flex items-center gap-1 text-[8.5px] font-mono font-semibold",
+                    layoutMode === 'horizontal'
+                      ? "bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20"
+                      : "text-[#555568] hover:text-[#9090a8] border border-transparent"
+                  )}
+                  title="Vista Orizzontale"
+                >
+                  <List size={11} />
+                  Orizzontale
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode('grid')}
+                  className={clsx(
+                    "p-1 px-2 rounded transition-all flex items-center gap-1 text-[8.5px] font-mono font-semibold",
+                    layoutMode === 'grid'
+                      ? "bg-[#c9a84c]/10 text-[#c9a84c] border border-[#c9a84c]/20"
+                      : "text-[#555568] hover:text-[#9090a8] border border-transparent"
+                  )}
+                  title="Vista Griglia"
+                >
+                  <LayoutGrid size={11} />
+                  Griglia
+                </button>
+              </div>
+
               <GhostBtn onClick={handleGoList}>
                 <ChevronRight size={12} className="rotate-180" /> Lista
               </GhostBtn>
@@ -3744,30 +3954,35 @@ export default function CreateReelScreen() {
           {directorNarrative && <DirectorNarrativeCard narrative={directorNarrative} />}
         </div>
         <div className="flex-1 overflow-y-auto p-6">
-          <ReelClipPlanGrid
-            clips={clips}
-            projectId={mediaProjectId}
-            jobId={activeJobId}
-            aspectRatio={config.aspect_ratio}
-            config={config}
-            sbSize={reelStoryboardPixelSize(config)}
-            hdSize={reelHdDimensions(config.width, config.height)}
-            dopPlans={dopPlans}
-            onSave={async (clipId, prompts) => {
-              const res = await fetch(
-                `${BACKEND_ORIGIN}/api/reel/jobs/${encodeURIComponent(catalogProjectId)}/${activeJobId}/clips/${encodeURIComponent(clipId)}`,
-                {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(prompts),
-                },
-              )
-              if (!res.ok) throw new Error(await res.text())
-              setClips(prev => prev.map(c => (c.clip_id === clipId ? { ...c, ...prompts } : c)))
-            }}
-            projectContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
-            title="Revisione storyboard — anteprima, prompt e regia per ogni clip"
-          />
+          {layoutMode === 'horizontal' ? (
+            <ReelHorizontalClipList
+              clips={clips}
+              projectId={mediaProjectId}
+              jobId={activeJobId}
+              aspectRatio={config.aspect_ratio}
+              dopPlans={dopPlans}
+              onSave={handleSavePrompt}
+              onRegen={handleRegen}
+              regenningId={regenningId}
+              projectContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
+            />
+          ) : (
+            <ReelClipPlanGrid
+              clips={clips}
+              projectId={mediaProjectId}
+              jobId={activeJobId}
+              aspectRatio={config.aspect_ratio}
+              config={config}
+              sbSize={reelStoryboardPixelSize(config)}
+              hdSize={reelHdDimensions(config.width, config.height)}
+              dopPlans={dopPlans}
+              onSave={handleSavePrompt}
+              onRegen={handleRegen}
+              regenningId={regenningId}
+              projectContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
+              title="Revisione storyboard — anteprima, prompt e regia per ogni clip"
+            />
+          )}
         </div>
       </div>
     )
@@ -3809,6 +4024,11 @@ export default function CreateReelScreen() {
         systemActivity={systemActivity}
         agentsStatus={agentsStatus}
         reelEnhanceContext={buildReelEnhanceContext(description, config, directorNarrative, mediaProjectId)}
+        layoutMode={layoutMode}
+        setLayoutMode={setLayoutMode}
+        onSave={handleSavePrompt}
+        onRegen={handleRegen}
+        regenningId={regenningId}
       />
     )
   }
@@ -3816,8 +4036,8 @@ export default function CreateReelScreen() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#07070d]">
 
-      {/* ── STICKY DIRECTOR HEADER ── */}
-      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-3 border-b border-[#252533] bg-[#0f0f18] shrink-0">
+      {/* ── HEADER ── */}
+      <div className="flex items-center justify-between px-6 py-3 border-b border-[#252533] bg-[#0f0f18] shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-8 h-8 rounded bg-[#c9a84c]/10 border border-[#c9a84c]/30 shrink-0">
             <Clapperboard size={16} className="text-[#c9a84c]" />
@@ -3826,7 +4046,7 @@ export default function CreateReelScreen() {
             <h1 className="font-['Playfair_Display'] text-base text-[#e8e4dd] leading-tight">Director's Studio</h1>
             <p className="text-[9px] font-mono text-[#555568]">Nuovo reel cinematografico</p>
           </div>
-          <div className="hidden md:flex items-center gap-1 ml-4">
+          <div className="hidden lg:flex items-center gap-1 ml-4">
             {['Vision', 'Regia', 'Prompt', 'Storyboard', 'HD+Video'].map((step, i, arr) => (
               <span key={step} className="flex items-center gap-1">
                 <span className="text-[9px] font-mono text-[#555568]">{step}</span>
@@ -3841,9 +4061,19 @@ export default function CreateReelScreen() {
         </GhostBtn>
       </div>
 
-      {/* ── SCROLLABLE BODY ── */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-6 py-8 space-y-5">
+      {/* ── ERROR BANNER ── */}
+      {error && (
+        <div className="flex items-start gap-2 px-6 py-2.5 bg-[#ef4444]/8 border-b border-[#ef4444]/25 shrink-0">
+          <AlertCircle size={13} className="text-[#ef4444] mt-0.5 shrink-0" />
+          <p className="text-xs font-mono text-[#ef4444]">{error}</p>
+        </div>
+      )}
+
+      {/* ── TWO-COLUMN BODY ── */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+
+        {/* ── LEFT: Creative Panel ── */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 min-w-0">
 
           {/* BRIEF DEL REGISTA */}
           <div className="rounded-xl border border-[#252533] bg-[#16161f] overflow-hidden">
@@ -3870,13 +4100,21 @@ export default function CreateReelScreen() {
                 <textarea
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  rows={8}
+                  rows={9}
                   className="w-full bg-[#0f0f18] border border-[#252533] rounded-lg px-3 py-2.5 text-sm text-[#e8e4dd] placeholder-[#3a3a50] resize-y focus:outline-none focus:border-[#c9a84c]/50 transition-colors leading-relaxed"
                   placeholder="Una donna cammina da sola nelle strade notturne di una metropoli. I neon colorati si riflettono sul marciapiede bagnato dalla pioggia. La camera segue i suoi movimenti con lenta eleganza cinematografica, stringendosi sul suo viso quando si ferma ad ascoltare la musica nel silenzio della notte…"
                 />
                 <p className="mt-1.5 text-[9px] font-mono text-[#555568]">
                   Descrivi storia, personaggi, atmosfera, ritmo e cosa accade in ogni momento. Min. 20 caratteri.
                 </p>
+                <ReelDescriptionGenerator
+                  title={title}
+                  lyrics={lyrics}
+                  style={config.style}
+                  audioAnalysis={audioAnalysis}
+                  refsCount={refs.length}
+                  onApply={setDescription}
+                />
               </div>
             </div>
           </div>
@@ -3908,80 +4146,96 @@ export default function CreateReelScreen() {
           </div>
 
           {/* REFERENCE IMAGES */}
-          <ReferenceDropZone
-            refs={refs}
-            onAddPaths={addRefsFromPaths}
-            onRemove={(path) => setRefs(prev => prev.filter(x => x.path !== path))}
-            onPick={handlePickImages}
-            onPickFromLibrary={() => setShowMediaPicker(true)}
-            uploadError={refUploadError}
-          />
-
-          {/* CHARACTER */}
-          <CharacterReelSelector
-            mode={characterMode}
-            setMode={setCharacterMode}
-            selectedId={selectedCharacterId}
-            setSelectedId={setSelectedCharacterId}
-          />
-
-          {/* AUDIO */}
-          <ReelAudioSection
-            audioFile={audioFile}
-            setAudioFile={setAudioFile}
-            audioStartSec={audioStartSec}
-            setAudioStartSec={setAudioStartSec}
-            reelDurationSec={config.duration_sec}
-            lyrics={lyrics}
-            setLyrics={setLyrics}
-            onAnalysis={setAudioAnalysis}
-          />
-
-          {/* PROJECT SETTINGS */}
-          <ReelProjectSettings config={config} setConfig={setConfig} />
-
-          {/* WORKFLOW + MODEL OVERRIDES */}
-          <ModelOverridesSection config={config} onChange={setModelOverrides} />
-          <WorkflowSelector config={config} setConfig={setConfig} hasAudio={Boolean(audioFile)} />
-
-          {/* ACTION BAR */}
-          <div className="rounded-xl border border-[#c9a84c]/25 bg-[#c9a84c]/[0.04] overflow-hidden">
-            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#c9a84c]/20">
-              <div className="w-2 h-2 rounded-full bg-[#c9a84c] shrink-0 animate-pulse" />
-              <span className="text-[9px] font-mono text-[#c9a84c] uppercase tracking-widest">Avvia Produzione</span>
+          <div className="rounded-xl border border-[#252533] bg-[#16161f] overflow-hidden">
+            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-[#252533] bg-[#0f0f18]">
+              <div className="w-2 h-2 rounded-full bg-[#a78bfa] shrink-0" />
+              <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-widest">Immagini di Riferimento</span>
+              <span className="ml-auto text-[9px] font-mono text-[#555568]">{refs.length}/{MAX_REFS}</span>
             </div>
             <div className="p-4">
-              {error && (
-                <div className="mb-4 flex items-start gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/8 px-3 py-2.5">
-                  <AlertCircle size={13} className="text-[#ef4444] mt-0.5 shrink-0" />
-                  <p className="text-xs font-mono text-[#ef4444]">{error}</p>
-                </div>
-              )}
-              <div className="flex items-center gap-4 flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleGenerate}
-                  disabled={!description.trim()}
-                  className={clsx(
-                    'flex items-center gap-2.5 px-6 py-3 rounded-lg text-sm font-semibold transition-all',
-                    'bg-[#c9a84c] text-[#07070d] hover:bg-[#e6c46a] disabled:opacity-40 disabled:cursor-not-allowed',
-                    'shadow-[0_0_20px_#c9a84c28]',
-                  )}
-                >
-                  <Sparkles size={15} />
-                  Genera Storyboard
-                </button>
-                <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
-              </div>
-              <p className="mt-3 text-[9px] font-mono text-[#555568] leading-relaxed">
-                Fase 1: Vision LLM — analisi reference e stile.
-                Fase 2–3: Regia narrativa e prompt sincronizzati a musica e lirica.
-                Fase 4: Anteprime ComfyUI a bassa risoluzione — revisione e approvazione prima di HD e clip LTX.
-                Configura il ruolo LLM <strong>vision_analyst</strong> in Servizi (es. gpt-4o o claude-sonnet).
-              </p>
+              <ReferenceDropZone
+                refs={refs}
+                onAddPaths={addRefsFromPaths}
+                onRemove={(path) => setRefs(prev => prev.filter(x => x.path !== path))}
+                onPick={handlePickImages}
+                onPickFromLibrary={() => setShowMediaPicker(true)}
+                uploadError={refUploadError}
+              />
             </div>
           </div>
 
+        </div>
+
+        {/* ── RIGHT: Settings Sidebar ── */}
+        <div className="w-[330px] shrink-0 border-l border-[#252533] overflow-y-auto bg-[#0a0a12]">
+          <div className="p-4 space-y-4">
+
+            {/* AUDIO */}
+            <div className="rounded-xl border border-[#252533] bg-[#16161f] overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#252533] bg-[#0f0f18]">
+                <Music2 size={12} className="text-[#9090a8] shrink-0" />
+                <span className="text-[9px] font-mono text-[#9090a8] uppercase tracking-widest">Audio & Musica</span>
+                {audioFile && (
+                  <span className="ml-auto text-[8px] font-mono px-1.5 py-0.5 rounded bg-[#22c55e]/15 text-[#22c55e] border border-[#22c55e]/25">caricato</span>
+                )}
+              </div>
+              <div className="p-3">
+                <ReelAudioSection
+                  audioFile={audioFile}
+                  setAudioFile={setAudioFile}
+                  audioStartSec={audioStartSec}
+                  setAudioStartSec={setAudioStartSec}
+                  reelDurationSec={config.duration_sec}
+                  lyrics={lyrics}
+                  setLyrics={setLyrics}
+                  onAnalysis={setAudioAnalysis}
+                />
+              </div>
+            </div>
+
+            {/* PERSONAGGIO */}
+            <CharacterReelSelector
+              mode={characterMode}
+              setMode={setCharacterMode}
+              selectedId={selectedCharacterId}
+              setSelectedId={setSelectedCharacterId}
+            />
+
+            {/* IMPOSTAZIONI PROGETTO */}
+            <ReelProjectSettings config={config} setConfig={setConfig} />
+
+            {/* WORKFLOW */}
+            <WorkflowSelector config={config} setConfig={setConfig} hasAudio={Boolean(audioFile)} />
+
+            {/* MODELLI & LORA */}
+            <ModelOverridesSection config={config} onChange={setModelOverrides} />
+
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── STICKY BOTTOM ACTION BAR ── */}
+      <div className="shrink-0 flex items-center gap-4 px-6 py-3 border-t border-[#c9a84c]/20 bg-[#0f0f18]">
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={!description.trim()}
+          className={clsx(
+            'flex items-center gap-2.5 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all shrink-0',
+            'bg-[#c9a84c] text-[#07070d] hover:bg-[#e6c46a] disabled:opacity-40 disabled:cursor-not-allowed',
+            'shadow-[0_0_20px_#c9a84c28]',
+          )}
+        >
+          <Sparkles size={15} />
+          Genera Storyboard
+        </button>
+        <GenQueueBadge kind="image" workflow={config.txt2img_workflow || 'z_image_txt2img'} />
+        <p className="text-[9px] font-mono text-[#555568] leading-relaxed hidden xl:block min-w-0 truncate">
+          Vision → Regia narrativa → Prompt → Storyboard LD → approva → HD + clip video
+        </p>
+        <div className="ml-auto shrink-0 text-[9px] font-mono text-[#555568]">
+          {config.aspect_ratio} · {config.width}×{config.height} · {config.duration_sec}s · {config.fps}fps
         </div>
       </div>
 

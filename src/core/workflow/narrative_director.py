@@ -58,7 +58,7 @@ async def generate_narrative_arc(
             system=NARRATIVE_DIRECTOR_SYSTEM,
             user=(vault_context or "") + build_narrative_director_prompt(analysis, inp),
             temperature=getattr(role_cfg, "temperature", 0.70),
-            max_tokens=4000,
+            max_tokens=getattr(role_cfg, "max_tokens", 6000),
         )
     except Exception as e:
         log.error("narrative_director_llm_failed", error=str(e))
@@ -79,7 +79,14 @@ async def generate_narrative_arc(
         log.warning("narrative_director_used_fallback_construct", sequences=len(result.sequences))
 
     if not result.sequences:
-        log.warning("narrative_director_empty_sequences", title=result.title)
+        log.error("narrative_director_empty_sequences", title=result.title,
+                  raw_keys=list(data.keys()) if isinstance(data, dict) else [])
+        raise RuntimeError(
+            "LLM 2 (Narrative Director) ha restituito 0 sequenze. "
+            "L'LLM non ha generato la struttura narrativa richiesta. "
+            f"Arc title: '{result.title}'. "
+            "Controlla il log del backend e prova a resettare 'narrative_arc'."
+        )
 
     log.info("narrative_director_done", sequences=len(result.sequences))
     return result

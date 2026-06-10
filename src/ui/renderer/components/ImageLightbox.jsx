@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Maximize2,
+  X, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Maximize2, Download,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -38,6 +38,23 @@ export default function ImageLightbox({
     setScale(1)
     setPos({ x: 0, y: 0 })
   }, [])
+
+  const handleDownload = () => {
+    if (!current?.src) return
+    const link = document.createElement('a')
+    link.href = current.src
+    const urlName = String(current.src).split(/[/\\]/).pop() || 'resource'
+    const cleanUrlName = urlName.split('?')[0]
+    const ext = isImage ? '.png' : '.mp4'
+    const baseName = current.alt
+      ? current.alt.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      : cleanUrlName.replace(/\.[^/.]+$/, "")
+    const filename = baseName.endsWith(ext) ? baseName : `${baseName}${ext}`
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -153,6 +170,9 @@ export default function ImageLightbox({
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          <ToolbarBtn onClick={handleDownload} title="Scarica risorsa">
+            <Download size={17} />
+          </ToolbarBtn>
           {isImage && (
             <>
               <ToolbarBtn onClick={() => zoomBy(0.8)} title="Zoom −">

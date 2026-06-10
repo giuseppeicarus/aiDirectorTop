@@ -445,6 +445,10 @@ async def reconcile_trailer_job_clips(
 async def delete_job(project_id: str, job_id: str, cleanup: bool = False):
     """Delete a job record. Pass ?cleanup=true to also remove generated files."""
     from src.core.workflow.trailer_jobs import remove_job
+    from src.core import pipeline_registry
+
+    # Force-stop any running task before removing the record
+    pipeline_registry.force_stop_job(job_id)
 
     try:
         ok = remove_job(project_id, job_id, cleanup_files=cleanup)

@@ -340,6 +340,7 @@ class CinematicPipeline:
                         generate_shot_list(
                             arc, inp, inp.audio_analysis,
                             vault_context=self._vault_memory("cinematographer"),
+                            analysis=sa,
                         ),
                         "shot_list", 0.3, on_progress,
                     )
@@ -390,6 +391,8 @@ class CinematicPipeline:
                         generate_frame_prompts(
                             shots, inp,
                             vault_context=self._vault_memory("prompt_engineer"),
+                            analysis=sa,
+                            arc=arc,
                         ),
                         "prompt_generation", 0.3, on_progress,
                     )
@@ -465,29 +468,42 @@ class CinematicPipeline:
                 done.append("video_gen"); self._save_state(state)
 
             # Assembly
-            emit("assembly", 0.0, "Assemblaggio finale con FFmpeg...")
-            final = await self._assembly(shots)
-            done.append("assembly")
-            state["final_deliverable"] = {
-                "video_path": str(final),
-                "pipeline": "cinematic",
-            }
-            self._save_state(state)
-            emit("assembly", 1.0, "Video finale pronto!", artifact_path=str(final))
+            if "assembly" not in done:
+                emit("assembly", 0.0, "Assemblaggio finale con FFmpeg...")
+                final = await self._assembly(shots)
+                done.append("assembly")
+                state["final_deliverable"] = {
+                    "video_path": str(final),
+                    "pipeline": "cinematic",
+                }
+                self._save_state(state)
+                emit("assembly", 1.0, "Video finale pronto!", artifact_path=str(final))
 
-            _arc = state.get("data", {}).get("story_arc") or {}
-            _assembly_prompt = prompt_for_assembly_final(
-                self._project_title,
-                project_input=state.get("project_input"),
-                shots=shots,
-                logline=_arc.get("logline"),
-            )
-            _fire_register(register_media(
-                final, "video", self.project_id, self._project_title,
-                frame_type="final",
-                tags=["pipeline", "final", self._project_title],
-                generation_prompt=_assembly_prompt,
-            ))
+                _arc = state.get("data", {}).get("story_arc") or {}
+                _assembly_prompt = prompt_for_assembly_final(
+                    self._project_title,
+                    project_input=state.get("project_input"),
+                    shots=shots,
+                    logline=_arc.get("logline"),
+                )
+                _fire_register(register_media(
+                    final, "video", self.project_id, self._project_title,
+                    frame_type="final",
+                    tags=["pipeline", "final", self._project_title],
+                    generation_prompt=_assembly_prompt,
+                ))
+            else:
+                _saved = state.get("final_deliverable", {}).get("video_path", "")
+                if _saved and Path(_saved).exists():
+                    final = Path(_saved)
+                    emit("assembly", 1.0, "Assemblaggio già completato", artifact_path=str(final))
+                else:
+                    # File missing — re-run assembly
+                    emit("assembly", 0.0, "Re-assemblaggio video finale...")
+                    final = await self._assembly(shots)
+                    state["final_deliverable"] = {"video_path": str(final), "pipeline": "cinematic"}
+                    self._save_state(state)
+                    emit("assembly", 1.0, "Video finale pronto!", artifact_path=str(final))
 
             pipeline_registry.complete_run(self.project_id, status="completed", stages_done=len(done))
             return str(final)
@@ -733,6 +749,7 @@ class CinematicPipeline:
                     fn = await c.upload_image(Path(shot.first_frame.image_path))
                     ln = await c.upload_image(Path(shot.last_frame.image_path))
                     wf = build_img2video_workflow(shot, fn, ln, shot.shot_id,
+                                                  duration_sec=shot.duration_sec or 6.0,
                                                   audio_start_sec=audio_offsets.get(shot.shot_id, 0.0),
                                                   workflow_id=workflow_id)
 
@@ -1046,22 +1063,41 @@ class CinematicPipeline:
             raise RuntimeError("Nessuna clip per assemblaggio")
         cfg = self._cfg.output
         ffmpeg = cfg.ffmpeg_path or "ffmpeg"
+        self._final.mkdir(parents=True, exist_ok=True)
         out = self._final / f"final_{int(time.time())}.mp4"
-        if len(clips) == 1:
-            cmd = [ffmpeg,"-y","-i",str(clips[0]),"-c:v",cfg.video_codec,"-crf",str(cfg.video_crf),str(out)]
-        else:
-            inputs = [x for c in clips for x in ["-i", str(c)]]
-            td = cfg.transition_duration_sec
-            parts = [f"[{i}][{i+1}]xfade=transition={cfg.transition_type}:duration={td}:offset={round(i*4.0,2)}[v{i}]" for i in range(len(clips)-1)]
-            cmd = [ffmpeg,"-y"]+inputs+["-filter_complex",";".join(parts),"-map",f"[v{len(clips)-2}]","-c:v",cfg.video_codec,"-crf",str(cfg.video_crf),"-preset",cfg.video_preset,"-pix_fmt","yuv420p",str(out)]
+
         import subprocess as _sp
+
+        if len(clips) == 1:
+            cmd = [
+                ffmpeg, "-y", "-i", str(clips[0]),
+                "-c:v", cfg.video_codec, "-crf", str(cfg.video_crf),
+                "-preset", cfg.video_preset, "-pix_fmt", "yuv420p",
+                str(out),
+            ]
+        else:
+            # Use concat demuxer: works for any number of clips with any codec mix.
+            # Re-encodes to ensure uniform output format.
+            concat_txt = self._final / f"concat_{int(time.time())}.txt"
+            concat_txt.write_text(
+                "\n".join(f"file '{c.as_posix()}'" for c in clips),
+                encoding="utf-8",
+            )
+            cmd = [
+                ffmpeg, "-y",
+                "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+                "-c:v", cfg.video_codec, "-crf", str(cfg.video_crf),
+                "-preset", cfg.video_preset, "-pix_fmt", "yuv420p",
+                str(out),
+            ]
+
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
             lambda: _sp.run(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE),
         )
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg: {result.stderr.decode(errors='replace')[-500:]}")
+            raise RuntimeError(f"FFmpeg assembly: {result.stderr.decode(errors='replace')[-600:]}")
         return out
 
     # ── Media recovery (disco + history ComfyUI) ─────────────────────────────

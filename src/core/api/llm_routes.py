@@ -20,12 +20,49 @@ ANTHROPIC_MODELS = [
     "claude-3-opus-20240229",
 ]
 
+GEMINI_MODELS_FALLBACK = [
+    "gemini-2.5-pro-preview-06-05",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+]
+
+
+async def _fetch_gemini_models(base_url: str, api_key: str) -> List[str]:
+    """Recupera la lista modelli da Google Generative AI."""
+    if not api_key:
+        return GEMINI_MODELS_FALLBACK
+    try:
+        url = base_url.rstrip("/") + "/models"
+        headers = {"x-goog-api-key": api_key}
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+        raw = r.json().get("models", [])
+        # filtra solo modelli generateContent-capable
+        names = []
+        for m in raw:
+            name = m.get("name", "")
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods and name.startswith("models/"):
+                names.append(name.removeprefix("models/"))
+        return sorted(names) or GEMINI_MODELS_FALLBACK
+    except Exception:
+        return GEMINI_MODELS_FALLBACK
+
 
 async def _fetch_provider_models(provider: str, base_url: str, api_key: str) -> List[str]:
     """Recupera la lista modelli dal provider. Restituisce lista di ID/nomi."""
     p = provider.lower()
     if p == "anthropic":
         return ANTHROPIC_MODELS
+
+    if p in ("gemini", "google", "google_gemini"):
+        from src.core.llm.gemini_adapter import GEMINI_BASE
+        return await _fetch_gemini_models(base_url or GEMINI_BASE, api_key or "")
 
     headers: dict = {}
     if api_key:
@@ -340,6 +377,41 @@ async def llm_models_registry(provider: Optional[str] = None):
     return {"ok": True, **data}
 
 
+@router.post("/lmstudio/unload-all")
+async def lmstudio_unload_all():
+    """
+    Scarica dalla RAM tutti i modelli caricati in LM Studio.
+    Utile per sbloccare pipeline bloccate con modelli duplicati.
+    """
+    from src.core.llm.model_probe import (
+        lmstudio_native_base, _auth_headers,
+        _lmstudio_unload_all_loaded, _lmstudio_list_models,
+        _collect_loaded_instance_ids,
+    )
+    import httpx
+
+    cfg = get_config().llm
+    if (cfg.provider or "").lower() not in ("lmstudio", "lm_studio"):
+        return {"ok": False, "error": "Provider corrente non è LM Studio"}
+
+    native_base = lmstudio_native_base(cfg.base_url)
+    headers = _auth_headers(cfg.api_key)
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Elenca prima per mostrare cosa viene scaricato
+            catalog = await _lmstudio_list_models(client, native_base, headers)
+            loaded_before = _collect_loaded_instance_ids(catalog)
+            count = await _lmstudio_unload_all_loaded(client, native_base, headers)
+        return {
+            "ok": True,
+            "unloaded": count,
+            "instance_ids": loaded_before,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.delete("/models/blacklist")
 async def llm_remove_blacklist(provider: str, model: str):
     """Rimuove un modello dalla blacklist del provider."""
@@ -488,6 +560,93 @@ async def _improve_style_llm_call(adapter, user_prompt: str) -> dict:
     )
 
 
+class GenerateReelDescriptionRequest(BaseModel):
+    title: str = ""
+    lyrics: str = ""
+    style: str = ""
+    audio_analysis: Optional[dict] = None
+    refs_count: int = 0
+
+
+@router.post("/generate-reel-description")
+async def generate_reel_description(req: GenerateReelDescriptionRequest):
+    """Genera una descrizione narrativa del reel usando i dati inseriti (lirica, stile, audio…)."""
+    from src.core.llm.style_improve import openai_message_text, _try_parse_json
+
+    has_input = any([req.title.strip(), req.lyrics.strip(), req.style.strip(), req.audio_analysis, req.refs_count > 0])
+    if not has_input:
+        return {"ok": False, "error": "Inserisci almeno un dato (titolo, lirica o stile) per generare la descrizione"}
+
+    parts: list[str] = ["Genera una descrizione narrativa cinematografica per un reel AI. La descrizione deve guidare la pipeline di generazione: storia, personaggi, atmosfera, ritmo visivo e cosa accade clip per clip."]
+    if req.title.strip():
+        parts.append(f"Titolo: {req.title.strip()}")
+    if req.lyrics.strip():
+        parts.append(f"Lirica / testo canzone:\n{req.lyrics.strip()[:3000]}")
+    if req.style.strip():
+        parts.append(f"Stile visivo desiderato: {req.style.strip()[:500]}")
+    if req.audio_analysis:
+        bpm = req.audio_analysis.get("bpm")
+        sections = req.audio_analysis.get("sections", [])
+        if bpm:
+            parts.append(f"BPM audio: {bpm}")
+        if sections:
+            emotions = list({s.get("emotion", "") for s in sections if s.get("emotion")})
+            if emotions:
+                parts.append(f"Emozioni audio rilevate: {', '.join(emotions[:6])}")
+    if req.refs_count > 0:
+        parts.append(f"Immagini di riferimento caricate: {req.refs_count}")
+    parts.append(
+        'Scrivi UNA descrizione in italiano, 80-200 parole, in prima terza persona presente, '
+        'cinematografica, evocativa, che descriva cosa si vede in ogni momento del reel. '
+        'JSON only: {"description":"..."}'
+    )
+    user_prompt = "\n\n".join(parts)
+    system = (
+        "Sei un regista cinematografico professionista specializzato in video AI. "
+        "Rispondi SOLO con un oggetto JSON: {\"description\": \"...\"}"
+    )
+
+    try:
+        adapter = get_llm_adapter()
+        if hasattr(adapter, "_client"):
+            kwargs = dict(
+                model=adapter._model,
+                temperature=0.82,
+                max_tokens=600,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            if getattr(adapter, "_use_json_format", False):
+                kwargs["response_format"] = {"type": "json_object"}
+            response = await adapter._client.chat.completions.create(**kwargs)
+            raw = openai_message_text(response.choices[0].message)
+        else:
+            raw_obj = await adapter.generate_json(
+                system=system,
+                user=user_prompt,
+                temperature=0.82,
+                max_tokens=600,
+            )
+            if isinstance(raw_obj, dict):
+                desc = raw_obj.get("description", "")
+                if desc:
+                    return {"ok": True, "description": desc}
+            raw = str(raw_obj)
+
+        parsed = _try_parse_json(raw)
+        if isinstance(parsed, dict) and parsed.get("description"):
+            return {"ok": True, "description": parsed["description"]}
+        # fallback: raw text if not JSON
+        clean = raw.strip().strip('"').strip()
+        if len(clean) > 20:
+            return {"ok": True, "description": clean}
+        return {"ok": False, "error": "Il modello non ha restituito una descrizione valida. Riprova."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.post("/improve-style")
 async def improve_style(req: ImproveStyleRequest):
     """Adatta e migliora lo stile visivo in base a brief e stile già inserito dall'utente."""
@@ -548,6 +707,64 @@ async def pull_ollama_model(req: OllamaPullRequest):
         return {"ok": False, "error": "Timeout — il download è molto lento o Ollama non è avviato"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@router.get("/ollama/pull-stream")
+async def pull_ollama_model_stream(model: str):
+    """
+    Pull Ollama con streaming SSE — aggiorna UI live durante il download.
+    Ollama /api/pull stream=true emette NDJSON: {status, completed?, total?, digest?}
+    """
+    import json as _json
+
+    cfg = get_config().llm
+    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434"
+
+    async def _stream():
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=1200, write=30, pool=30)) as client:
+                async with client.stream(
+                    "POST",
+                    base.rstrip("/") + "/api/pull",
+                    json={"name": model, "stream": True},
+                ) as resp:
+                    resp.raise_for_status()
+                    async for raw_line in resp.aiter_lines():
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            chunk = _json.loads(raw_line)
+                        except Exception:
+                            continue
+                        status  = chunk.get("status", "")
+                        total   = chunk.get("total",     0) or 0
+                        done    = chunk.get("completed", 0) or 0
+                        pct     = round(done / total * 100, 1) if total > 0 else 0
+                        is_done = status in ("success", "done") or (total > 0 and done >= total)
+                        evt = {
+                            "status":    status,
+                            "total":     total,
+                            "completed": done,
+                            "pct":       pct,
+                            "done":      is_done,
+                            "model":     model,
+                            "digest":    chunk.get("digest", ""),
+                        }
+                        yield f"data: {_json.dumps(evt)}\n\n"
+                        if is_done and status == "success":
+                            break
+        except httpx.ConnectError:
+            yield f"data: {_json.dumps({'error': 'Ollama non raggiungibile', 'done': True})}\n\n"
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc), 'done': True})}\n\n"
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/generate-storyboard")

@@ -120,6 +120,7 @@ async def download_comfyui_file(
             size = dest.stat().st_size
             if size == 0:
                 raise ValueError(f"File vuoto su disco dopo download: {dest}")
+            validate_downloaded_bytes(dest.read_bytes()[:512], expect=expect)
             if expect == "image" and min_image_bytes is not None and size < min_image_bytes:
                 raise ValueError(
                     f"Immagine ComfyUI troppo piccola ({size} bytes) — "
@@ -197,15 +198,41 @@ def find_local_image_by_prefix(
     return pick_largest_real_image(matches, min_bytes=min_bytes)
 
 
-async def history_image_outputs_for_prefix(client, prefix: str, *, limit: int = 40) -> list[dict]:
+async def history_image_outputs_for_prefix(
+    client, prefix: str, *, limit: int = 40, prompt_id: str = ""
+) -> list[dict]:
     """
     Elenca output immagine in /history il cui filename inizia con prefix
     (subfolder/type corretti per /view).
+    Se prompt_id è fornito, cerca prima in quell'entry specifica e restituisce
+    solo quelle se trovate (evita contaminazione cross-reel nel fallback path).
     """
     from src.core.comfyui.workflow_builder import extract_output_files
 
     if not prefix:
         return []
+
+    def _match_entries(hist: dict) -> list[dict]:
+        out: list[dict] = []
+        for entry in extract_output_files(hist):
+            name = entry.get("filename") or ""
+            if not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                continue
+            stem = Path(name).stem
+            if stem != prefix and not stem.startswith(f"{prefix}_"):
+                continue
+            out.append(entry)
+        return out
+
+    # If we have the specific prompt_id, try it first to avoid cross-reel hits
+    if prompt_id:
+        try:
+            hist = await client.get_history(prompt_id)
+            specific = _match_entries(hist)
+            if specific:
+                return specific
+        except Exception:
+            pass
 
     try:
         prompt_ids = await client._history_prompt_ids()
@@ -216,18 +243,14 @@ async def history_image_outputs_for_prefix(client, prefix: str, *, limit: int = 
     out: list[dict] = []
     seen: set[str] = set()
     for pid in reversed(ordered):
+        if pid == prompt_id:
+            continue  # already checked above
         try:
             hist = await client.get_history(pid)
         except Exception:
             continue
-        for entry in extract_output_files(hist):
-            name = entry.get("filename") or ""
-            if not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                continue
-            stem = Path(name).stem
-            if stem != prefix and not stem.startswith(f"{prefix}_"):
-                continue
-            key = f"{name}|{entry.get('subfolder')}|{entry.get('type')}"
+        for entry in _match_entries(hist):
+            key = f"{entry.get('filename')}|{entry.get('subfolder')}|{entry.get('type')}"
             if key in seen:
                 continue
             seen.add(key)
@@ -301,6 +324,7 @@ async def download_image_by_prefix_probe(
     min_image_bytes: int = STORYBOARD_IMAGE_MIN_BYTES,
     max_index: int = 32,
     local_folders: list[Path] | None = None,
+    prompt_id: str = "",
 ) -> Path:
     """
     Recupera immagine ComfyUI: disco locale → history (/view con path esatto) → probe minimo.
@@ -321,7 +345,7 @@ async def download_image_by_prefix_probe(
         _log.info("download_local_prefix_hit", prefix=prefix, path=str(local_hit))
         return dest
 
-    history_files = await history_image_outputs_for_prefix(client, prefix)
+    history_files = await history_image_outputs_for_prefix(client, prefix, prompt_id=prompt_id)
     if history_files:
         try:
             return await download_best_comfyui_image(
@@ -425,7 +449,7 @@ async def download_comfyui_image_resilient(
             )
 
     return await download_image_by_prefix_probe(
-        client, output_prefix, dest, min_image_bytes=min_image_bytes,
+        client, output_prefix, dest, min_image_bytes=min_image_bytes, prompt_id=prompt_id,
     )
 
 
@@ -471,11 +495,11 @@ def is_real_comfy_video(path: Path, *, min_bytes: int = COMFY_REAL_VIDEO_MIN_BYT
     if path.suffix.lower() not in _VIDEO_EXTS:
         return False
     try:
-        head = path.read_bytes()[:64]
+        head = path.read_bytes()[:512]
         validate_downloaded_bytes(head, expect="video")
         return True
     except ValueError:
-        return size >= min_bytes
+        return False
 
 
 def find_local_video_by_prefix(
@@ -640,7 +664,8 @@ def pick_best_video_output(files: list[dict]) -> dict:
         if Path(f.get("filename") or "").suffix.lower() in _VIDEO_EXTS
     ]
     if not video_files:
-        return files[0]
+        names = ", ".join(str(f.get("filename") or "?") for f in files[:8])
+        raise ValueError(f"History ComfyUI senza output video: {names}")
     if len(video_files) == 1:
         return video_files[0]
 

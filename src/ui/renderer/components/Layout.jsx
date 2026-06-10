@@ -1,10 +1,10 @@
 import { Outlet, NavLink, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import {
-  Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Zap, Wrench, LayoutDashboard,
+  Film, FolderOpen, Settings, Plus, Circle, Scissors, ListChecks, Wrench, LayoutDashboard,
   Image, GitBranch, Wand2, Package, Clapperboard, Tv, Instagram, BookOpen,
   ChevronDown, ChevronRight, Play, Music, Layers, Video,
   Image as ImageIcon,
-  UserRound,
+  UserRound, Terminal, Server,
 } from 'lucide-react'
 import { useConfigStore, usePipelineStore, useProjectStore } from '../stores'
 import { useEffect, useMemo, useState } from 'react'
@@ -12,6 +12,7 @@ import clsx from 'clsx'
 import GlobalActivityBanner from './GlobalActivityBanner'
 import NewProjectTypeModal, { NEW_PROJECT_OPTIONS } from './NewProjectTypeModal'
 import { useGlobalActivityBridge } from '../hooks/useGlobalActivityBridge'
+import { useCharacterTrainingMonitor } from '../hooks/useCharacterTrainingMonitor'
 import { fetchRecentNavItems, recentKindLabel, recentKindColor } from '../utils/sidebarRecent'
 
 const TOOL_NAV = [
@@ -19,6 +20,7 @@ const TOOL_NAV = [
   { id: 'txt2video', label: 'Text → Video', Icon: Film },
   { id: 'img2video', label: 'Image → Video', Icon: Play },
   { id: 'img_audio2video', label: 'Image + Audio → Video', Icon: Music },
+  { id: 'img2img', label: 'Image → Image', Icon: ImageIcon },
 ]
 
 const MEDIA_NAV = [
@@ -30,10 +32,11 @@ const MEDIA_NAV = [
 ]
 
 const CONFIG_NAV = [
-  { to: '/nodes', label: 'Nodi ComfyUI', Icon: Zap },
   { to: '/services', label: 'Servizi', Icon: Wrench },
   { to: '/models', label: 'Modelli', Icon: Package },
   { to: '/workflows', label: 'Workflow', Icon: GitBranch },
+  { to: '/provisioning', label: 'Provisioning', Icon: Terminal },
+  { to: '/comfy-manager', label: 'Comfy Manager', Icon: Server },
   { to: '/queue', label: 'Code & Monitor', Icon: ListChecks, pipelineDot: true },
   { to: '/obsidian', label: 'Obsidian Vault', Icon: BookOpen, accent: true },
   { to: '/settings', label: 'Impostazioni', Icon: Settings },
@@ -80,6 +83,7 @@ export default function Layout() {
   const [mediaFiltersOpen, setMediaFiltersOpen] = useState(false)
 
   useGlobalActivityBridge()
+  useCharacterTrainingMonitor()
 
   useEffect(() => {
     loadNodes()
@@ -253,6 +257,16 @@ export default function Layout() {
             >
               <Instagram size={15} />
               CreateReel
+            </NavLink>
+            <NavLink
+              to="/music-video"
+              className={({ isActive }) => navClass(
+                isActive || location.pathname.startsWith('/music-video'),
+                true,
+              )}
+            >
+              <Music size={15} />
+              Music Video
             </NavLink>
             <NavLink
               to="/characters"

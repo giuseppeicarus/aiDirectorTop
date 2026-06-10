@@ -4,6 +4,7 @@ import path from 'path'
 
 export default defineConfig({
   root: 'src/ui/renderer',
+  base: './',
   plugins: [react()],
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src/ui/renderer') },

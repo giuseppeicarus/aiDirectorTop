@@ -21,6 +21,16 @@ from src.core.config import ComfyUINodeConfig
 
 _log = structlog.get_logger("comfyui.client")
 
+
+class ComfyUIExecutionInterrupted(RuntimeError):
+    """Raised when ComfyUI reports execution_interrupted for our job.
+
+    This is NOT a node hardware/connectivity failure — the job was cancelled
+    (e.g., leftover interrupt from a previous run). The node should NOT be
+    quarantined; the workflow can be retried immediately.
+    """
+
+
 # ComfyUI nativo usa underscore; alcuni proxy espongono anche varianti kebab-case.
 _API_PATH_CANDIDATES: dict[str, list[str]] = {
     "system_stats": ["/system_stats", "/system-stats"],
@@ -273,8 +283,28 @@ class ComfyUIClient:
 
         from src.core.comfyui.workflow_builder import extract_history_error, extract_output_files
 
+        async def _get_history_resilient() -> dict:
+            try:
+                return await self.get_history(prompt_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    raise
+                _log.warning(
+                    "comfyui_history_transient_http",
+                    prompt_id=prompt_id,
+                    status=exc.response.status_code,
+                )
+                return {}
+            except httpx.TransportError as exc:
+                _log.warning(
+                    "comfyui_history_transport_retry",
+                    prompt_id=prompt_id,
+                    error=str(exc),
+                )
+                return {}
+
         async def _poll_history_once() -> Optional[dict]:
-            hist = await self.get_history(prompt_id)
+            hist = await _get_history_resilient()
             if extract_output_files(hist):
                 return hist
             status = hist.get("status") if isinstance(hist.get("status"), dict) else {}
@@ -289,7 +319,7 @@ class ComfyUIClient:
             from src.core.comfyui.workflow_builder import inject_ws_executed_output
 
             while watchdog.should_continue():
-                hist = await self.get_history(prompt_id)
+                hist = await _get_history_resilient()
                 if isinstance(ws_out, dict) and ws_out:
                     hist = inject_ws_executed_output(hist, node_id, ws_out)
                 if extract_output_files(hist):
@@ -304,7 +334,7 @@ class ComfyUIClient:
                 elif watchdog.idle_exceeded():
                     break
                 await asyncio.sleep(1.5)
-            hist = await self.get_history(prompt_id)
+            hist = await _get_history_resilient()
             if isinstance(ws_out, dict) and ws_out:
                 hist = inject_ws_executed_output(hist, node_id, ws_out)
             return hist
@@ -424,7 +454,7 @@ class ComfyUIClient:
                         data = msg.get("data", {})
                         pid = data.get("prompt_id") if isinstance(data, dict) else None
                         if not pid or pid == prompt_id:
-                            raise RuntimeError(
+                            raise ComfyUIExecutionInterrupted(
                                 f"ComfyUI job {prompt_id} interrotto (execution_interrupted)"
                             )
         except Exception as exc:

@@ -2,6 +2,7 @@
   "name": "cinematic-ai-studio",
   "version": "1.0.0",
   "description": "Automated cinematic video creation with AI and ComfyUI",
+  "author": "CinematicAI Studio",
   "main": "src/ui/main.js",
   "scripts": {
     "predev": "node scripts/ensure-dev-ports.mjs",
@@ -86,6 +87,18 @@
         ]
       }
     ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CinematicAI Studio",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "differentialPackage": false,
+      "runAfterFinish": true,
+      "perMachine": false
+    },
     "win": {
       "target": [
         "nsis",

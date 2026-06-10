@@ -34,7 +34,9 @@ function projectLabel(data) {
     || data.extra?.project_id
     || ''
   if (!raw) return ''
-  const s = String(raw).replace(/^reel_|^trailer_/, '')
+  const value = String(raw).trim()
+  if (/^(reel|trailer)_standalone$/i.test(value)) return ''
+  const s = value.replace(/^reel_|^trailer_/, '')
   return s.length > 40 ? `${s.slice(0, 37)}…` : s
 }
 
@@ -42,6 +44,13 @@ function taskId(channel, data) {
   const base = data.job_id || data.project_id || data.storage_project_id
     || data.catalog_project_id || data.extra?.project_id || 'default'
   return `${channel}:${base}`
+}
+
+function activitySource(channel, data) {
+  const label = SOURCE_LABELS[channel] || 'Studio'
+  if (channel !== 'reel:progress' && channel !== 'trailer:progress') return label
+  const title = projectLabel(data)
+  return title ? `${channel === 'reel:progress' ? 'Reel' : 'Trailer'} · ${title}` : label
 }
 
 /** Percorso + query per aprire il dettaglio/run dalla notifica. */
@@ -111,7 +120,8 @@ function clipTag(data) {
 function parseReelTrailer(channel, data) {
   const src = SOURCE_LABELS[channel] || 'Generazione'
   const proj = projectLabel(data)
-  const projPart = proj ? ` del progetto ${proj}` : ''
+  const subject = channel === 'reel:progress' ? 'reel' : 'trailer'
+  const projPart = proj ? ` del ${subject} ${proj}` : ''
 
   if (data.event === 'agent_progress' && data.msg) {
     const agent = data.agent_label || data.agent_role || 'Agente'
@@ -235,7 +245,7 @@ export function parseGlobalActivity(channel, data) {
       id,
       active: true,
       kind: 'pause',
-      source: SOURCE_LABELS[channel],
+      source: activitySource(channel, data),
       message: parseReelTrailer(channel, data),
       pct: data.pct != null ? Math.round(data.pct * 100) : undefined,
     })
@@ -251,7 +261,14 @@ export function parseGlobalActivity(channel, data) {
       ? 'llm'
       : (data.stage === 'frame_gen' ? 'image' : data.stage === 'video_gen' ? 'video' : 'work')
     const pct = data.total_progress != null ? Math.round(data.total_progress * 100) : undefined
-    return withNav(channel, data, { id, active: true, message, source: SOURCE_LABELS[channel], kind, pct })
+    return withNav(channel, data, {
+      id,
+      active: true,
+      message,
+      source: SOURCE_LABELS[channel],
+      kind,
+      pct,
+    })
   }
 
   if (channel === 'reel:progress' || channel === 'trailer:progress') {
@@ -261,7 +278,14 @@ export function parseGlobalActivity(channel, data) {
         : data.kind === 'frame' || data.clip_phase === 'frame_gen' ? 'image'
           : 'work'
     const pct = data.pct != null ? Math.round(data.pct * 100) : undefined
-    return withNav(channel, data, { id, active: true, message, source: SOURCE_LABELS[channel], kind, pct })
+    return withNav(channel, data, {
+      id,
+      active: true,
+      message,
+      source: activitySource(channel, data),
+      kind,
+      pct,
+    })
   }
 
   if (channel === 'director:progress') {

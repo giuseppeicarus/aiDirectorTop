@@ -104,8 +104,14 @@ export const usePipelineStore = create((set, get) => ({
 
     const cleanup = window.studio.pipeline.onProgress((data) => {
       if (data.done) {
-        set({ stage: 'done', totalProgress: 1, currentLLM: null, paused: false })
-        sendNotify('CinematicAI Studio', 'Pipeline completata con successo!')
+        if (data.storyboard_complete) {
+          // Storyboard phase finished — stay idle so the approval banner shows
+          set({ stage: 'idle', totalProgress: 1, currentLLM: null, paused: false })
+          sendNotify('CinematicAI Studio', 'Storyboard pronto — approva per avviare la produzione')
+        } else {
+          set({ stage: 'done', totalProgress: 1, currentLLM: null, paused: false })
+          sendNotify('CinematicAI Studio', 'Pipeline completata con successo!')
+        }
         cleanup()
         return
       }

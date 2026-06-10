@@ -56,3 +56,5 @@ coverage/
 
 # External tool checkouts / local runners
 .external/
+dist-electron/
+

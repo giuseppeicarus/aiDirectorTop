@@ -13,6 +13,8 @@ _LOADER_FIELDS: dict[str, tuple[str, str]] = {
     "UNETLoader": ("unet_name", "unet"),
     "CLIPLoader": ("clip_name", "clip"),
     "CheckpointLoaderSimple": ("ckpt_name", "checkpoint"),
+    "LoraLoader": ("lora_name", "lora"),
+    "LoRALoader": ("lora_name", "lora"),
 }
 
 _Z_IMAGE_VAE_HINT = (
@@ -50,6 +52,53 @@ def collect_workflow_assets(workflow: dict) -> list[dict[str, str]]:
         if isinstance(name, str) and name.strip():
             assets.append({"kind": kind, "class_type": class_type, "name": name.strip()})
     return assets
+
+
+def bypass_missing_loras(workflow: dict, missing: list[dict[str, str]]) -> list[str]:
+    """
+    Rimuove dal grafo le LoRA non disponibili e ricollega i consumer agli input
+    model/clip originali. Checkpoint, UNet, CLIP e VAE restano obbligatori.
+    """
+    missing_names = {
+        asset["name"]
+        for asset in missing
+        if asset.get("kind") == "lora" and asset.get("name")
+    }
+    if not missing_names:
+        return []
+
+    removed: list[str] = []
+    for node_id, node in list(workflow.items()):
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") not in ("LoraLoader", "LoRALoader"):
+            continue
+        inputs = node.get("inputs") or {}
+        if inputs.get("lora_name") not in missing_names:
+            continue
+
+        replacements = {
+            0: inputs.get("model"),
+            1: inputs.get("clip"),
+        }
+        for consumer in workflow.values():
+            if not isinstance(consumer, dict):
+                continue
+            consumer_inputs = consumer.get("inputs") or {}
+            for key, value in list(consumer_inputs.items()):
+                if (
+                    isinstance(value, list)
+                    and len(value) == 2
+                    and str(value[0]) == str(node_id)
+                    and value[1] in replacements
+                    and replacements[value[1]] is not None
+                ):
+                    consumer_inputs[key] = replacements[value[1]]
+
+        del workflow[node_id]
+        removed.append(str(inputs["lora_name"]))
+
+    return removed
 
 
 def validate_workflow_models(

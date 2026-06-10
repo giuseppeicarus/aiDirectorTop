@@ -7,7 +7,7 @@ import structlog
 from typing import List
 from src.core.llm.factory import get_llm_adapter
 from src.core.llm.cinematic_prompts import PROMPT_ENGINEER_SYSTEM, build_prompt_engineer_prompt
-from src.core.models.cinematic import CinematicShot, ProjectInput, FramePrompt
+from src.core.models.cinematic import CinematicShot, ProjectInput, FramePrompt, StoryAnalysis, StoryArc
 from src.core.config import get_config
 
 log = structlog.get_logger()
@@ -19,6 +19,8 @@ async def generate_frame_prompts(
     shot_list: List[CinematicShot],
     inp: ProjectInput,
     vault_context: str = "",
+    analysis: StoryAnalysis | None = None,
+    arc: StoryArc | None = None,
 ) -> List[CinematicShot]:
     """LLM 4: genera prompt immagine/video per ogni shot."""
     config = get_config()
@@ -39,9 +41,11 @@ async def generate_frame_prompts(
             system=PROMPT_ENGINEER_SYSTEM,
             user=(vault_context or "") + build_prompt_engineer_prompt(
                 chunk_dicts, inp.characters, inp.style_references,
+                analysis=analysis,
+                arc=arc,
             ),
             temperature=getattr(role_cfg, "temperature", 0.65),
-            max_tokens=6000,
+            max_tokens=getattr(role_cfg, "max_tokens", 6000),
         )
 
         # Unwrap common LLM response wrapper patterns

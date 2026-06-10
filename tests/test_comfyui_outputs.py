@@ -64,6 +64,7 @@ def test_inject_ws_executed_output_provides_download_filename():
     )
     files = extract_output_files(hist)
     assert files[0]["filename"] == "clip_001_slot_002_sb_0005_.png"
+    assert files[0]["node_id"] == "9"
 
 
 def test_extract_output_files_deep_scan_nested():

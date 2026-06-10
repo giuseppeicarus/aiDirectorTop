@@ -15,11 +15,14 @@ from pydantic import BaseModel
 
 from src.core.comfyui.pool import ComfyUINodePool, ComfyUIRunResult
 from src.core.comfyui.progress import stream_pool_comfy_run
+from src.core import pipeline_registry
 from src.core.comfyui.workflow_builder import (
+    build_img2img_workflow,
     build_img2video_workflow,
     build_txt2img_workflow,
     build_txt2video_workflow,
     extract_output_files,
+    get_workflow_meta,
     list_workflows,
 )
 from src.core.config import get_config
@@ -30,6 +33,13 @@ from src.core.utils.comfyui_outputs import download_comfyui_file
 router = APIRouter()
 
 QUALITY_STEPS = {"low": 15, "medium": 25, "high": 40, "ultra": 60}
+TOOL_LABELS = {
+    "txt2img": "Tools Text to Image",
+    "img2img": "Tools Image to Image",
+    "txt2video": "Tools Text to Video",
+    "img2video": "Tools Image to Video",
+    "img_audio2video": "Tools Image + Audio to Video",
+}
 
 ASPECT_RESOLUTIONS = {
     "16:9":  (1280, 720),
@@ -84,7 +94,7 @@ async def _finalize_tool_artifact(
 # ── Request models ─────────────────────────────────────────────────────────────
 
 class ToolRunRequest(BaseModel):
-    tool: str                       # txt2img | txt2video | img2video | img_audio2video
+    tool: str                       # txt2img | img2img | txt2video | img2video | img_audio2video
     prompt: str
     negative_prompt: str = ""
     aspect_ratio: str = "16:9"
@@ -125,6 +135,9 @@ async def run_tool(req: ToolRunRequest):
     """SSE: esegue una generazione ComfyUI standalone."""
 
     async def stream() -> AsyncGenerator[str, None]:
+        job_id: str | None = None
+        registry_status = "failed"
+        registry_error: str | None = None
         try:
             if req.width and req.height:
                 w, h = req.width, req.height
@@ -136,8 +149,26 @@ async def run_tool(req: ToolRunRequest):
             out_dir = _tools_dir()
             out_dir.mkdir(parents=True, exist_ok=True)
             job_id = uuid.uuid4().hex[:8]
+            pipeline_registry.register_job(
+                job_id,
+                "tools",
+                TOOL_LABELS.get(req.tool, f"Tools {req.tool}"),
+                "__tools__",
+            )
 
             def ev(data: dict) -> str:
+                if data.get("event") == "start":
+                    pipeline_registry.update_job(job_id, stage="queued", progress=0.0, message="Avvio generazione")
+                elif data.get("event") == "progress":
+                    pct = data.get("pct")
+                    if pct is None and data.get("comfyui_pct") is not None:
+                        pct = float(data.get("comfyui_pct", 0)) / 100.0
+                    pipeline_registry.update_job(
+                        job_id,
+                        stage=data.get("msg") or data.get("comfyui_node") or "generating",
+                        progress=max(0.0, min(1.0, float(pct or 0.0))),
+                        message=data.get("msg") or "",
+                    )
                 return "data: " + json.dumps(data) + "\n\n"
 
             yield ev({"event": "start", "job_id": job_id})
@@ -177,9 +208,62 @@ async def run_tool(req: ToolRunRequest):
                     tags=["tools", "txt2img", f"{w}x{h}"],
                     generation_prompt=req.prompt,
                 )
+                registry_status = "completed"
                 yield ev({"done": True, "job_id": job_id, **artifact})
 
             # ── txt2video ────────────────────────────────────────────────────
+            elif req.tool == "img2img":
+                if not req.image_path or not Path(req.image_path).exists():
+                    yield ev({"error": "Immagine sorgente non trovata: " + (req.image_path or "nessuna")})
+                    return
+
+                run_client = await pool.get_client()
+                yield ev({"event": "progress", "msg": "Upload immagine a ComfyUI…", "pct": 0.08})
+                fn = await run_client.upload_image(Path(req.image_path))
+
+                prefix = f"tool_{job_id}"
+                wf = build_img2img_workflow(
+                    fn,
+                    req.prompt,
+                    prefix,
+                    steps=steps,
+                    seed=seed,
+                    negative_prompt=req.negative_prompt,
+                    workflow_id=req.workflow_id,
+                )
+                yield ev({"event": "progress", "msg": "Generazione img2img con workflow originale…", "pct": 0.14})
+                run = None
+                async for item in stream_pool_comfy_run(
+                    pool, wf,
+                    client=run_client,
+                    timeout=cfg.comfyui.execution_timeout_sec,
+                    start=0.16, end=0.88, label="Immagine",
+                ):
+                    if "_result" in item:
+                        run = item["_result"]
+                    else:
+                        yield ev(item)
+                files = extract_output_files(run.history)
+                if not files:
+                    yield ev({"error": "Nessun output da ComfyUI"}); return
+                meta = get_workflow_meta(req.workflow_id or "z_image_turbo_img2img")
+                primary_output_node = str(meta.get("primary_output_node") or "")
+                selected_file = (
+                    next((f for f in files if str(f.get("node_id") or "") == primary_output_node), None)
+                    if primary_output_node else None
+                ) or files[-1]
+
+                yield ev({"event": "progress", "msg": "Download risultato…", "pct": 0.92})
+                dest = out_dir / f"{prefix}.png"
+                artifact = await _finalize_tool_artifact(
+                    dest, selected_file, run.client,
+                    media_type="image", tool=req.tool,
+                    tags=["tools", "img2img", f"{w}x{h}"],
+                    generation_prompt=req.prompt,
+                )
+                registry_status = "completed"
+                yield ev({"done": True, "job_id": job_id, **artifact})
+
             elif req.tool == "txt2video":
                 prefix = f"tool_{job_id}"
                 wf = build_txt2video_workflow(
@@ -212,6 +296,7 @@ async def run_tool(req: ToolRunRequest):
                     tags=["tools", "txt2video", f"{w}x{h}"],
                     generation_prompt=req.prompt,
                 )
+                registry_status = "completed"
                 yield ev({"done": True, "job_id": job_id, **artifact})
 
             # ── img2video / img_audio2video ───────────────────────────────────
@@ -272,13 +357,18 @@ async def run_tool(req: ToolRunRequest):
                     tags=["tools", req.tool, f"{w}x{h}"],
                     generation_prompt=req.prompt,
                 )
+                registry_status = "completed"
                 yield ev({"done": True, "job_id": job_id, **artifact})
 
             else:
                 yield ev({"error": f"Tool sconosciuto: {req.tool}"})
 
         except Exception as exc:
+            registry_error = str(exc)
             yield "data: " + json.dumps({"error": str(exc)}) + "\n\n"
+        finally:
+            if job_id is not None:
+                pipeline_registry.complete_job(job_id, status=registry_status, error=registry_error)
 
     return StreamingResponse(
         stream(),

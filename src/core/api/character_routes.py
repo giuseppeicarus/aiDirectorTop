@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -50,6 +52,167 @@ class CharacterValidationResponse(BaseModel):
     can_create: bool
     min_required: int
     errors: list[str]
+
+
+class ContinueTrainingRequest(BaseModel):
+    checkpoint_filename: str
+    additional_steps: int = 500
+    lr: float = 5e-5
+    noise_offset: Optional[float] = None
+    phase_name: str = ""
+
+
+def _scan_character_training(record: CharacterRecord) -> Optional[dict]:
+    """Scan the training directory for a character and return live progress info.
+
+    Returns None if there is no active or partially-complete training to report.
+    """
+    from src.core.workflow.character_service import character_training_root
+    import yaml as _yaml
+    from datetime import datetime, timezone
+    from urllib.parse import quote
+
+    training_dir = character_training_root() / record.id
+    if not training_dir.is_dir():
+        return None
+
+    lora_name = f"character_{record.id}_{record.profile.lower()}"
+    config_path = training_dir / "config" / f"{lora_name}.yaml"
+
+    # Read total_steps and save_every from YAML config
+    total_steps = 0
+    save_every = 200
+    if config_path.is_file():
+        try:
+            with config_path.open("r", encoding="utf-8") as fh:
+                cfg_yaml = _yaml.safe_load(fh) or {}
+            # ai-toolkit YAML: config.process[0].train.steps
+            train_cfg = (
+                cfg_yaml.get("config", {})
+                .get("process", [{}])[0]
+                .get("train", {})
+            )
+            total_steps = int(train_cfg.get("steps", 0))
+            save_every = int(train_cfg.get("save_every_n_steps", 200))
+        except Exception:
+            pass
+
+    # Fall back to record config if YAML didn't yield steps
+    if total_steps == 0:
+        total_steps = record.config.get("training_steps", 0)
+    if total_steps == 0:
+        return None
+
+    # Find checkpoint files matching  *_XXXXXXXX.safetensors
+    output_dir = training_dir / "output" / lora_name
+    checkpoint_files: list[tuple[int, Path]] = []
+    if output_dir.is_dir():
+        for p in output_dir.glob("*.safetensors"):
+            m = re.search(r"_(\d+)\.safetensors$", p.name)
+            if m:
+                checkpoint_files.append((int(m.group(1)), p))
+
+    checkpoint_files.sort(key=lambda t: t[0])
+    current_step = checkpoint_files[-1][0] if checkpoint_files else 0
+
+    # Determine whether training is actively running
+    is_running = False
+    try:
+        from src.core.workflow.ai_toolkit_adapter import _ACTIVE_PROCESSES
+        is_running = record.id in _ACTIVE_PROCESSES
+    except Exception:
+        pass
+
+    # Nothing interesting to report
+    if current_step == 0 or current_step >= total_steps:
+        return None
+
+    percent = round(current_step / total_steps * 100, 1) if total_steps > 0 else 0.0
+
+    # ETA estimation: use mtime delta between the last two checkpoints
+    eta_seconds: Optional[int] = None
+    if len(checkpoint_files) >= 2 and save_every > 0:
+        try:
+            mtime1 = checkpoint_files[-2][1].stat().st_mtime
+            mtime2 = checkpoint_files[-1][1].stat().st_mtime
+            seconds_per_save_block = mtime2 - mtime1
+            if seconds_per_save_block > 0:
+                remaining_blocks = (total_steps - current_step) / save_every
+                eta_seconds = int(remaining_blocks * seconds_per_save_block)
+        except Exception:
+            pass
+
+    # Build checkpoints list
+    checkpoints_out = []
+    for step, path in checkpoint_files:
+        try:
+            stat = path.stat()
+            size_bytes = stat.st_size
+            created_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            size_bytes = 0
+            created_at = None
+        checkpoints_out.append({
+            "step": step,
+            "filename": path.name,
+            "size_bytes": size_bytes,
+            "created_at": created_at,
+        })
+
+    # Latest sample image
+    latest_sample_url: Optional[str] = None
+    samples_dir = training_dir / "output" / lora_name / "samples"
+    if not samples_dir.is_dir():
+        samples_dir = training_dir / "output" / "samples"
+    if samples_dir.is_dir() and current_step > 0:
+        for ext in ("jpg", "png"):
+            candidate = samples_dir / f"{lora_name}_{current_step:08d}_0.{ext}"
+            if candidate.is_file():
+                latest_sample_url = f"/api/reel/source?path={quote(str(candidate.resolve()))}"
+                break
+        # Fallback: most-recently-modified sample
+        if not latest_sample_url:
+            all_samples = sorted(
+                [p for p in samples_dir.glob("*") if p.suffix.lower() in {".jpg", ".png"}],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if all_samples:
+                latest_sample_url = f"/api/reel/source?path={quote(str(all_samples[0].resolve()))}"
+
+    return {
+        "character_id": record.id,
+        "name": record.name,
+        "profile": record.profile,
+        "current_step": current_step,
+        "total_steps": total_steps,
+        "percent": percent,
+        "is_running": is_running,
+        "eta_seconds": eta_seconds,
+        "checkpoints": checkpoints_out,
+        "latest_sample_url": latest_sample_url,
+    }
+
+
+@router.get("/active-trainings")
+async def get_active_trainings(x_user_id: Optional[str] = Header(None)):
+    """Return all characters that have an active or partially-complete training job.
+
+    This endpoint is intentionally independent of the character's `status` field so
+    that externally-running jobs (e.g. PID started outside the app) are still surfaced
+    in the GlobalActivityBanner.
+    """
+    owner_id = owner_from_header(x_user_id)
+    records = list_records(owner_id)
+    results = []
+    for record in records:
+        try:
+            info = _scan_character_training(record)
+            if info is not None and info["is_running"]:
+                results.append(info)
+        except Exception:
+            pass
+    return results
 
 
 @router.get("/ai-toolkit/status")
@@ -378,6 +541,55 @@ async def update_character(
     return record
 
 
+@router.post("/{character_id}/continue-training", response_model=CharacterRecord)
+async def continue_character_training(
+    character_id: str,
+    body: ContinueTrainingRequest,
+    x_user_id: Optional[str] = Header(None),
+):
+    owner_id = owner_from_header(x_user_id)
+    record = get_record(owner_id, character_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Personaggio non trovato")
+
+    if record.status == "in_creazione":
+        raise HTTPException(status_code=409, detail="Training già in corso — attendi il completamento")
+
+    if body.additional_steps < 50 or body.additional_steps > 5000:
+        raise HTTPException(status_code=400, detail="additional_steps deve essere tra 50 e 5000")
+
+    from src.core.workflow.character_service import character_training_root
+    from src.core.workflow.ai_toolkit_adapter import run_continue_lora
+
+    training_dir = character_training_root() / character_id
+    lora_name = f"character_{character_id}_{record.profile.lower()}"
+    checkpoint_path = training_dir / "output" / lora_name / body.checkpoint_filename
+
+    if not checkpoint_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Checkpoint non trovato: {body.checkpoint_filename}")
+
+    # Determine continuation index (count existing cont configs)
+    config_dir = training_dir / "config"
+    existing_conts = list(config_dir.glob(f"{lora_name}_cont*.yaml")) if config_dir.exists() else []
+    cont_index = len(existing_conts) + 1
+
+    record.status = "in_creazione"
+    record.progress = 0
+    record.error = None
+    save_record(record)
+
+    asyncio.create_task(
+        run_continue_lora(
+            record, checkpoint_path, body.additional_steps, cont_index,
+            lr=body.lr,
+            noise_offset=body.noise_offset,
+            phase_name=body.phase_name,
+        )
+    )
+
+    return record
+
+
 @router.post("/{character_id}/start", response_model=CharacterRecord)
 async def start_character(
     character_id: str,
@@ -501,5 +713,3 @@ async def export_character_lora(
         return {"ok": True, "message": f"Checkpoint copiato con successo in {dest_path}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore durante la copia del file: {str(e)}")
-
-

@@ -7,11 +7,12 @@
       "type": "txt2img",
       "category": "text_to_image",
       "default": true,
-      "description": "Text to image con Z-Image Turbo (AuraFlow, 25 step). Più veloce e qualità superiore. Modelli: z_image_turbo_bf16.safetensors + qwen_3_4b.safetensors + ae.safetensors.",
+      "description": "Text to image con Z-Image Turbo (AuraFlow, 25 step) e LoRA realismo attivo di default. Modelli: z_image_turbo_bf16.safetensors + qwen_3_4b.safetensors + ae.safetensors + skin/zit_fdpo_v1.",
       "models": [
         "z_image_turbo_bf16.safetensors (models/diffusion_models)",
         "qwen_3_4b.safetensors (models/text_encoders)",
-        "ae.safetensors (models/vae)"
+        "ae.safetensors (models/vae)",
+        "skin/zit_fdpo_v1.safetensors (models/loras)"
       ],
       "inject": {
         "prompt": {
@@ -43,6 +44,87 @@
         "9"
       ],
       "source": "base_workflow_comfyui/z-imageTurbo_Text_To_image.json"
+    },
+    {
+      "id": "z_image_turbo_img2img",
+      "name": "Z-Image Turbo (img2img — continuazione clip)",
+      "file": "z_image_turbo_img2img.json",
+      "type": "img2img",
+      "category": "image_to_image",
+      "description": "Image to image Z-Image Turbo con analisi automatica QwenVL del reference abilitata di default e LoRA realismo. Genera un nuovo frame preservando continuità cromatica, compositiva e identità visiva.",
+      "models": [
+        "z_image_turbo_bf16.safetensors (models/diffusion_models)",
+        "qwen_3_4b.safetensors (models/text_encoders)",
+        "ae.safetensors (models/vae)",
+        "skin/zit_fdpo_v1.safetensors (models/loras)"
+      ],
+      "inject": {
+        "reference_image": {
+          "node": "75",
+          "field": "image"
+        },
+        "prompt": {
+          "node": "102",
+          "field": "text"
+        },
+        "negative_prompt": {
+          "node": "91",
+          "field": "text"
+        }
+      },
+      "output_nodes": [
+        "139",
+        "86"
+      ],
+      "primary_output_node": "86",
+      "supports_prompt_analysis": true,
+      "prompt_analysis_default": true
+    },
+    {
+      "id": "flux2_klein_9b_kv_image_reference",
+      "name": "FLUX.2 Klein 9B KV Image Reference",
+      "file": "image_flux2_klein_9b_kv_image_reference_api.json",
+      "type": "img2img",
+      "category": "image_to_image",
+      "description": "Image reference to image con FLUX.2 Klein 9B KV. Usa il reference per preservare identita, composizione e coerenza visiva durante la trasformazione.",
+      "models": [
+        "flux-2-klein-9b-kv-fp8.safetensors (models/diffusion_models)",
+        "qwen_3_8b_fp8mixed.safetensors (models/text_encoders)",
+        "flux2-vae.safetensors (models/vae)"
+      ],
+      "inject": {
+        "reference_image": [
+          {
+            "node": "76",
+            "field": "image"
+          },
+          {
+            "node": "81",
+            "field": "image"
+          }
+        ],
+        "prompt": {
+          "node": "135",
+          "field": "text"
+        },
+        "seed": {
+          "node": "125",
+          "field": "noise_seed"
+        },
+        "steps": {
+          "node": "137",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "138",
+          "field": "cfg"
+        }
+      },
+      "output_nodes": [
+        "94"
+      ],
+      "primary_output_node": "94",
+      "source": "base_workflow_comfyui/image_flux2_klein_9b_kv_image_reference.json"
     },
     {
       "id": "z_image_txt2img",
@@ -145,6 +227,7 @@
         "t5xxl_fp16.safetensors",
         "ltxv_spatial_upscaler_0.9.7.safetensors"
       ],
+      "supports_last_frame": true,
       "inject": {
         "first_image": {
           "node": "2001",
@@ -199,6 +282,8 @@
         "ltx-video-vae-decode-v0.9.6.safetensors",
         "t5xxl_fp16.safetensors"
       ],
+      "supports_last_frame": true,
+      "last_frame_output_node": "347",
       "inject": {
         "first_image": {
           "node": "269",
@@ -250,6 +335,48 @@
         "ltx-2.3-22b-dev-fp8.safetensors",
         "gemma_3_12B_it_fp4_mixed.safetensors"
       ],
+      "supports_last_frame": true,
+      "inject": {
+        "first_image": {
+          "node": "269",
+          "field": "image"
+        },
+        "prompt": {
+          "node": "267:266",
+          "field": "value"
+        },
+        "width": {
+          "node": "267:257",
+          "field": "value"
+        },
+        "height": {
+          "node": "267:258",
+          "field": "value"
+        },
+        "duration_sec": {
+          "node": "267:225",
+          "field": "value"
+        },
+        "fps": {
+          "node": "267:260",
+          "field": "value"
+        },
+        "last_image": {
+          "node": "270",
+          "field": "image"
+        }
+      },
+      "output_nodes": [
+        "75"
+      ],
+      "source": "base_workflow_comfyui/ltx_2_3_Image_To_Video.json"
+    },
+    {
+      "id": "6f051df2",
+      "name": "Ltx 2.3 Image To Video (export)",
+      "file": "6f051df2.json",
+      "type": "img2video",
+      "description": "Copia export ComfyUI — stessi nodi di ltx_img2video",
       "inject": {
         "first_image": {
           "node": "269",
@@ -278,24 +405,7 @@
       },
       "output_nodes": [
         "75"
-      ],
-      "source": "base_workflow_comfyui/ltx_2_3_Image_To_Video.json"
-    },
-    {
-      "id": "6f051df2",
-      "name": "Ltx 2.3 Image To Video (export)",
-      "file": "6f051df2.json",
-      "type": "img2video",
-      "description": "Copia export ComfyUI — stessi nodi di ltx_img2video",
-      "inject": {
-        "first_image": { "node": "269", "field": "image" },
-        "prompt": { "node": "267:266", "field": "value" },
-        "width": { "node": "267:257", "field": "value" },
-        "height": { "node": "267:258", "field": "value" },
-        "duration_sec": { "node": "267:225", "field": "value" },
-        "fps": { "node": "267:260", "field": "value" }
-      },
-      "output_nodes": ["75"]
+      ]
     },
     {
       "id": "ltx_img_audio2video_vbvr",
@@ -346,9 +456,20 @@
           "field": "start_index"
         }
       },
-      "output_nodes": ["341", "407"],
+      "output_nodes": [
+        "341",
+        "407"
+      ],
       "last_frame_node": "407",
       "source": "base_workflow_comfyui/ltx_2_3_Image_Audio_To_Video_VBVR_last_frame_upscaled.json"
     }
-  ]
+  ],
+  "smart_reel": {
+    "txt2img_workflow": "z_image_turbo_txt2img",
+    "img2img_continuation_workflow": "z_image_turbo_img2img",
+    "video_with_audio_workflow": "ltx_img_audio2video",
+    "video_no_audio_workflow": "ltx_img2video",
+    "video_continuation_no_audio_workflow": "ltx_director_img2video",
+    "description": "Pipeline smart reel: genera first_frame con txt2img, last_frame con img2img (continuazione), clip con audio o senza."
+  }
 }

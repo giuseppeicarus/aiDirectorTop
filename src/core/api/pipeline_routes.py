@@ -23,6 +23,20 @@ _active_tasks: Dict[str, asyncio.Task] = {}
 _pause_events: Dict[str, asyncio.Event] = {}
 
 
+async def cancel_all_active_pipelines() -> int:
+    """Cancel all legacy cinematic pipelines before destructive maintenance."""
+    tasks = [task for task in _active_tasks.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _active_tasks.clear()
+    for event in _pause_events.values():
+        event.set()
+    _pause_events.clear()
+    return len(tasks)
+
+
 class PipelineRunRequest(BaseModel):
     """Input semplificato per avviare la pipeline. Costruisce un ProjectInput internamente."""
     project_id: str

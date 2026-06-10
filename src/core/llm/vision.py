@@ -73,6 +73,33 @@ async def analyze_reference_images(
     """
     valid = [p.resolve() for p in image_paths if p.is_file()][: _MAX_IMAGES]
     if not valid:
+        # No reference images: extract character anchors from brief via text-only LLM
+        if brief and len(brief.strip()) > 20:
+            try:
+                from src.core.workflow.trailer_pipeline import _llm_json
+
+                user_text_brief = build_reel_vision_user_prompt(
+                    brief=brief,
+                    style=style,
+                    image_names=[],
+                )
+                raw = await _llm_json(
+                    REEL_VISION_SYSTEM,
+                    user_text_brief + "\n\n(No reference images provided — synthesize character_anchors and environment_anchors strictly from the brief text above.)",
+                    role="narrative_director",
+                    temperature=0.4,
+                    max_tokens=1024,
+                )
+                raw.setdefault("images", [])
+                raw.setdefault("combined_style", style or "cinematic, photorealistic")
+                raw.setdefault("character_anchors", [])
+                raw.setdefault("environment_anchors", [])
+                raw.setdefault("palette_hex", [])
+                raw.setdefault("wardrobe_notes", "")
+                raw.setdefault("continuity_rules", [])
+                return raw
+            except Exception as exc:
+                log.warning("vision_brief_extraction_failed", error=str(exc))
         return {
             "images": [],
             "combined_style": style or "cinematic, photorealistic",
@@ -98,21 +125,40 @@ async def analyze_reference_images(
         image_names=[p.name for p in valid],
     )
 
+    _text_fallback_note = "\n\n(Vision non disponibile su questo provider — inferisci solo dal brief.)"
+
     if hasattr(adapter, "generate_json_with_images"):
-        raw = await adapter.generate_json_with_images(
-            REEL_VISION_SYSTEM,
-            user_text,
-            images=encoded,
-            temperature=0.4,
-            max_tokens=4096,
-        )
+        try:
+            raw = await adapter.generate_json_with_images(
+                REEL_VISION_SYSTEM,
+                user_text,
+                images=encoded,
+                temperature=0.4,
+                max_tokens=4096,
+            )
+        except Exception as vision_err:
+            log.warning(
+                "vision_adapter_image_failed_fallback",
+                provider=role_cfg.provider,
+                model=role_cfg.model,
+                error=str(vision_err),
+            )
+            from src.core.workflow.trailer_pipeline import _llm_json
+
+            raw = await _llm_json(
+                REEL_VISION_SYSTEM,
+                user_text + _text_fallback_note,
+                role="narrative_director",
+                temperature=0.5,
+                max_tokens=2048,
+            )
     else:
         log.warning("vision_adapter_no_multimodal", provider=role_cfg.provider)
         from src.core.workflow.trailer_pipeline import _llm_json
 
         raw = await _llm_json(
             REEL_VISION_SYSTEM,
-            user_text + "\n\n(Vision non disponibile su questo provider — inferisci solo dal brief.)",
+            user_text + _text_fallback_note,
             role="narrative_director",
             temperature=0.5,
             max_tokens=2048,

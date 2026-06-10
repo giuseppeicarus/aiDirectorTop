@@ -2,7 +2,7 @@
  * Upload audio, player con offset start, analisi e lirica manuale per CreateReel.
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Music2, Upload, Play, Pause, Loader2, X, Sparkles, CheckCircle2, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react'
+import { Music2, Upload, Play, Pause, Loader2, X, Sparkles, CheckCircle2, AlertCircle, ChevronDown, ChevronRight, Mic, FileText, Copy, Download } from 'lucide-react'
 import clsx from 'clsx'
 import { BACKEND_ORIGIN } from '../utils/mediaUrl'
 
@@ -240,7 +240,67 @@ const SECTION_TYPE_COLORS = {
   outro: '#555568',
 }
 
-function ReelAudioAnalysisResult({ analysis, hasLyrics }) {
+function SrtBox({ srt }) {
+  const [openSrt, setOpenSrt] = useState(true)
+
+  function copySrt() {
+    navigator.clipboard.writeText(srt)
+  }
+
+  function downloadSrt() {
+    const blob = new Blob([srt], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'subtitles.srt'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="rounded-lg border border-[#252533] bg-[#0f0f18] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#252533]">
+        <button
+          type="button"
+          onClick={() => setOpenSrt(o => !o)}
+          className="flex items-center gap-1.5 text-[9px] font-mono text-[#9090a8] hover:text-[#e8e4dd]"
+        >
+          <FileText size={12} className="text-[#c9a84c]" />
+          <span className="uppercase tracking-wider text-[#c9a84c]">Sottotitoli SRT</span>
+          {openSrt ? <ChevronDown size={11} className="text-[#555568]" /> : <ChevronRight size={11} className="text-[#555568]" />}
+        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={copySrt}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-mono text-[#9090a8] hover:text-[#c9a84c] border border-[#252533] hover:border-[#c9a84c]/40"
+          >
+            <Copy size={10} />
+            Copia
+          </button>
+          <button
+            type="button"
+            onClick={downloadSrt}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-mono text-[#9090a8] hover:text-[#c9a84c] border border-[#252533] hover:border-[#c9a84c]/40"
+          >
+            <Download size={10} />
+            Scarica .srt
+          </button>
+        </div>
+      </div>
+      {openSrt && (
+        <pre
+          className="px-3 py-2 text-[9px] font-mono text-[#e8e4dd] whitespace-pre-wrap leading-relaxed overflow-y-auto"
+          style={{ maxHeight: 200 }}
+        >
+          {srt}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function ReelAudioAnalysisResult({ analysis, hasLyrics, srt }) {
   const [openSections, setOpenSections] = useState(true)
   const [openLyrics, setOpenLyrics] = useState(true)
 
@@ -388,6 +448,8 @@ function ReelAudioAnalysisResult({ analysis, hasLyrics }) {
           Senza testo incollato: analisi solo BPM/sezioni/energia. Per il timing lirica aggiungi i versi e rianalizza.
         </p>
       )}
+
+      {srt && <SrtBox srt={srt} />}
     </div>
   )
 }
@@ -405,6 +467,9 @@ export default function ReelAudioSection({
   const [analyzing, setAnalyzing] = useState(false)
   const [analysis, setAnalysis] = useState(null)
   const [analyzeError, setAnalyzeError] = useState(null)
+  const [srt, setSrt] = useState('')
+  const [transcribing, setTranscribing] = useState(false)
+  const [transcribeError, setTranscribeError] = useState(null)
 
   const pickAudio = useCallback(async () => {
     const picked = await window.studio?.reel?.pickAudio?.()
@@ -443,6 +508,37 @@ export default function ReelAudioSection({
       setAnalyzeError(e.message || 'Analisi fallita')
     } finally {
       setAnalyzing(false)
+    }
+  }
+
+  async function runTranscribe() {
+    if (!audioFile?.path) return
+    setTranscribing(true)
+    setTranscribeError(null)
+    try {
+      const res = await fetch(`${BACKEND_ORIGIN}/api/reel/transcribe-whisper`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_path: audioFile.path,
+          audio_start_sec: audioStartSec,
+          duration_sec: reelDurationSec,
+          model_size: 'base',
+          language: null,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText)
+      if (data.ok) {
+        const lines = (data.words || []).map(w => w.word || w.text || '').filter(Boolean)
+        const transcribedText = lines.join('\n') || data.srt || ''
+        setLyrics(transcribedText)
+        setSrt(data.srt || '')
+      }
+    } catch (e) {
+      setTranscribeError(e.message || 'Trascrizione fallita')
+    } finally {
+      setTranscribing(false)
     }
   }
 
@@ -499,6 +595,22 @@ export default function ReelAudioSection({
 
           <button
             type="button"
+            onClick={runTranscribe}
+            disabled={transcribing}
+            className="flex items-center gap-2 px-3 py-2 rounded text-[10px] font-mono border border-[#252533] text-[#9090a8] hover:text-[#c9a84c] hover:border-[#c9a84c]/40 disabled:opacity-50"
+          >
+            {transcribing ? <Loader2 size={12} className="animate-spin" /> : <Mic size={12} />}
+            {transcribing ? 'Trascrizione in corso…' : 'Trascrivi con Whisper'}
+          </button>
+          {transcribeError && (
+            <p className="text-[10px] font-mono text-[#ef4444] flex items-center gap-1">
+              <AlertCircle size={12} />
+              {transcribeError}
+            </p>
+          )}
+
+          <button
+            type="button"
             onClick={runAnalysis}
             disabled={analyzing}
             className="flex items-center gap-2 px-3 py-2 rounded text-[10px] font-mono border border-[#c9a84c]/40 text-[#c9a84c] hover:bg-[#c9a84c]/10 disabled:opacity-50"
@@ -517,6 +629,7 @@ export default function ReelAudioSection({
             <ReelAudioAnalysisResult
               analysis={analysis}
               hasLyrics={Boolean(lyrics?.trim())}
+              srt={srt}
             />
           )}
         </>

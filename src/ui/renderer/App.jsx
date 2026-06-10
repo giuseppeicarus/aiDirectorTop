@@ -22,6 +22,9 @@ import CreateReelScreen from './screens/CreateReelScreen'
 import ObsidianScreen from './screens/ObsidianScreen'
 import DashboardScreen from './screens/DashboardScreen'
 import CreateCharacterScreen from './screens/CreateCharacterScreen'
+import MusicVideoScreen from './screens/MusicVideoScreen'
+import ProvisioningScreen from './screens/ProvisioningScreen'
+import ComfyManagerScreen from './screens/ComfyManagerScreen'
 
 /** Nessun hook custom qui — evita warning HMR sull'ordine degli hook. */
 export default function App() {
@@ -52,7 +55,10 @@ export default function App() {
           <Route path="trailer"                 element={<TrailerScreen />} />
           <Route path="createreel"              element={<CreateReelScreen />} />
           <Route path="projects/:id/reel"       element={<CreateReelScreen />} />
+          <Route path="music-video"             element={<MusicVideoScreen />} />
           <Route path="obsidian"               element={<ObsidianScreen />} />
+          <Route path="provisioning"            element={<ProvisioningScreen />} />
+          <Route path="comfy-manager"           element={<ComfyManagerScreen />} />
           <Route path="settings"               element={<SettingsScreen />} />
         </Route>
       </Routes>

@@ -126,7 +126,10 @@ export function useAppBootstrap() {
         await runStep('backend', async () => {
           setProg(22)
           const ok = await waitForBackend(20000)
-          if (!ok) throw new Error('Backend non raggiungibile — avvia npm run dev')
+          if (!ok) {
+            const hint = import.meta.env.DEV ? ' — avvia npm run dev' : ' — riavvia l\'applicazione'
+            throw new Error(`Backend non raggiungibile${hint}`)
+          }
           return 'Backend online'
         })
 

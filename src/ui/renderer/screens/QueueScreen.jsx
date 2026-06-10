@@ -51,6 +51,7 @@ function StatusBadge({ status }) {
 function KindIcon({ kind }) {
   if (kind === 'reel') return <Film size={14} className="text-[var(--gold)]" />
   if (kind === 'trailer') return <Clapperboard size={14} className="text-[var(--gold)]" />
+  if (kind === 'tools') return <ImageIcon size={14} className="text-[var(--gold)]" />
   return <Layers size={14} className="text-[var(--text3)]" />
 }
 

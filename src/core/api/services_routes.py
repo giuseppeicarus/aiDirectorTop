@@ -3,11 +3,14 @@ API routes Servizi — status aggregato di tutti i servizi (LLM, ComfyUI, DB, FF
 """
 
 import asyncio
+import json
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from src.core.config import get_config
 from src.core.api.user_tools_routes import router as user_tools_router
@@ -231,3 +234,43 @@ def ai_toolkit_disk_info(path: str = ""):
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ── Whisper config ────────────────────────────────────────────────────────────
+
+_WHISPER_CONFIG_PATH = Path("~/.cinematic-studio/whisper_config.json").expanduser()
+
+
+class WhisperConfig(BaseModel):
+    model_size: str = "base"   # tiny / base / small / medium / large
+    language: Optional[str] = None
+    mode: str = "local"        # "local" | "remote"
+    remote_url: Optional[str] = None
+
+
+def _read_whisper_config() -> WhisperConfig:
+    """Legge whisper_config.json; ritorna defaults se assente o corrotto."""
+    if _WHISPER_CONFIG_PATH.exists():
+        try:
+            raw = json.loads(_WHISPER_CONFIG_PATH.read_text(encoding="utf-8"))
+            return WhisperConfig(**raw)
+        except Exception:
+            pass
+    return WhisperConfig()
+
+
+@router.get("/whisper-config")
+def whisper_config_get():
+    """Legge la configurazione Whisper da ~/.cinematic-studio/whisper_config.json."""
+    return _read_whisper_config().model_dump()
+
+
+@router.post("/whisper-config")
+def whisper_config_save(body: WhisperConfig):
+    """Salva la configurazione Whisper in ~/.cinematic-studio/whisper_config.json."""
+    _WHISPER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _WHISPER_CONFIG_PATH.write_text(
+        json.dumps(body.model_dump(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return {"ok": True}

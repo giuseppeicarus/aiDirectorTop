@@ -7,10 +7,23 @@ import re
 import asyncio
 from typing import AsyncIterator, Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from src.core.llm.base import BaseLLMAdapter, StoryboardRequest
 from src.core.config import get_config, LLMConfig
+
+
+def _anthropic_retryable(exc: BaseException) -> bool:
+    """400/401/403 e CancelledError/TimeoutError non devono essere riprovati."""
+    if isinstance(exc, (asyncio.CancelledError, asyncio.TimeoutError, TimeoutError)):
+        return False
+    try:
+        from anthropic import BadRequestError, AuthenticationError, PermissionDeniedError
+        if isinstance(exc, (BadRequestError, AuthenticationError, PermissionDeniedError)):
+            return False
+    except ImportError:
+        pass
+    return True
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -31,7 +44,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self._temperature = cfg.temperature
         self._max_tokens = cfg.max_tokens
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
     async def generate_json(
         self,
         system: str,
@@ -49,7 +62,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         )
         return self._parse_json(response.content[0].text)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
     async def generate_json_with_images(
         self,
         system: str,
@@ -86,7 +99,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         )
         return self._parse_json(text)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
     async def generate_storyboard(self, req: StoryboardRequest) -> dict:
         return await self.generate_json(
             system=self.SYSTEM_PROMPT,
@@ -154,4 +167,6 @@ class AnthropicAdapter(BaseLLMAdapter):
                             return json.loads(clean[start:i + 1])
                         except json.JSONDecodeError:
                             break
-        raise ValueError(f"No valid JSON found in LLM response: {raw[:200]!r}")
+        exc = ValueError(f"No valid JSON found in LLM response: {raw[:200]!r}")
+        exc.raw_response = raw  # type: ignore[attr-defined]
+        raise exc

@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronUp, Cpu, BookOpen, Clapperboard, Camera,
   PenLine, ClipboardCheck, ArrowRight, Sparkles, AlertTriangle,
   Zap, ListVideo, Eye, EyeOff, Palette, Hash, Clock,
-  Users, ArrowUpRight, Square, Pause,
+  Users, ArrowUpRight, Square, Pause, RefreshCw,
 } from 'lucide-react'
 import { usePipelineStore, useProjectStore } from '../stores/index'
 import clsx from 'clsx'
@@ -435,7 +435,7 @@ function SequenceRow({ seq, idx }) {
   )
 }
 
-function ShotListResult({ shots }) {
+function ShotListResult({ shots, shotStates }) {
   const [showAll, setShowAll] = useState(false)
   if (!shots?.length) return null
   const visible = showAll ? shots : shots.slice(0, 12)
@@ -444,7 +444,7 @@ function ShotListResult({ shots }) {
     <SectionCard title={`Shot List — ${shots.length} inquadrature`} icon={Camera} color="#34d399" defaultOpen={true}>
       <div className="mt-2 space-y-1">
         {visible.map((shot, i) => (
-          <ShotRow key={i} shot={shot} idx={i} />
+          <ShotRow key={i} shot={shot} idx={i} shotStates={shotStates} />
         ))}
         {shots.length > 12 && (
           <button
@@ -459,9 +459,10 @@ function ShotListResult({ shots }) {
   )
 }
 
-function ShotRow({ shot, idx }) {
+function ShotRow({ shot, idx, shotStates }) {
   const [open, setOpen] = useState(false)
   const cam = shot.camera || {}
+  const frames = usePipelineStore(s => s.frames)
 
   return (
     <div className="rounded border border-[var(--border)] overflow-hidden text-[10px]">
@@ -497,6 +498,29 @@ function ShotRow({ shot, idx }) {
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/30 border border-blue-500/20 text-blue-300 font-mono">
               ↩ usa last frame precedente
             </span>
+          )}
+          {/* Frame thumbnails from production */}
+          {(frames[shot.shot_id]?.first || shot.first_frame?.image_path) && (
+            <div className="flex gap-1.5 mb-2">
+              {[
+                { label: 'First', src: frames[shot.shot_id]?.first || shot.first_frame?.image_path },
+                { label: 'Last',  src: frames[shot.shot_id]?.last  || shot.last_frame?.image_path },
+              ].filter(f => f.src).map(f => (
+                <div key={f.label} className="relative group w-20 h-12 rounded overflow-hidden border border-[var(--border)] shrink-0">
+                  <img
+                    src={`${BACKEND_ORIGIN}/api/reel/source?path=${encodeURIComponent(f.src)}`}
+                    alt={`${shot.shot_id} ${f.label}`}
+                    className="w-full h-full object-cover"
+                  />
+                  <span className="absolute bottom-0 left-0 right-0 text-center text-[8px] font-mono bg-black/60 text-[var(--text3)] py-0.5">{f.label}</span>
+                </div>
+              ))}
+              {shotStates?.[shot.shot_id]?.video === 'done' && (
+                <div className="flex items-center gap-1 px-2 text-[9px] font-mono text-[var(--green)] bg-[var(--green)]/10 rounded border border-[var(--green)]/20">
+                  <span>✓ Clip</span>
+                </div>
+              )}
+            </div>
           )}
           {shot.first_frame?.prompt && (
             <div className="mt-1">
@@ -665,7 +689,7 @@ function ResultsTab({ pipelineData }) {
     <div className="space-y-2">
       <StoryAnalysisResult data={data.story_analysis} />
       <NarrativeArcResult data={data.story_arc} />
-      <ShotListResult shots={data.shot_list} />
+      <ShotListResult shots={data.shot_list} shotStates={pipelineData?.shot_states} />
       <PromptSummaryResult shots={data.shot_list} />
       <ContinuityResult data={data.continuity_report} />
     </div>
@@ -925,6 +949,38 @@ export default function PipelineScreen() {
     }
   }, [stage, id])
 
+  // Change A: Keep pipelineData fresh while production runs externally
+  useEffect(() => {
+    if (!id) return
+    const interval = setInterval(() => {
+      window.studio.pipeline.state(id)
+        .then(data => { if (data) setPipelineData(data) })
+        .catch(() => {})
+    }, 8000)
+    return () => clearInterval(interval)
+  }, [id])
+
+  // Change B: When pipelineData has shot image_paths, hydrate the store frames dict
+  useEffect(() => {
+    const shots = pipelineData?.data?.shot_list
+    if (!shots?.length) return
+    const newFrames = {}
+    for (const shot of shots) {
+      const first = shot.first_frame?.image_path
+      const last = shot.last_frame?.image_path
+      if (first || last) {
+        newFrames[shot.shot_id] = {
+          first: first || null,
+          last: last || null,
+        }
+      }
+    }
+    if (Object.keys(newFrames).length === 0) return
+    usePipelineStore.setState(s => ({
+      frames: { ...newFrames, ...s.frames },
+    }))
+  }, [pipelineData])
+
   useEffect(() => {
     if (!['idle', 'done', 'error'].includes(stage)) {
       setTab('feed')
@@ -973,7 +1029,22 @@ export default function PipelineScreen() {
   }
 
   const isRunning = !['idle', 'done', 'error'].includes(stage)
+
+  // Change C: Derive the real stage from pipelineData when the store is stale
+  const effectiveStage = useMemo(() => {
+    if (!isRunning) return stage
+    const completedStagesLocal = pipelineData?.completed_stages || []
+    const ss = pipelineData?.shot_states || {}
+    const hasAnyFrame = Object.values(ss).some(s => s.frame_first === 'done' || s.frame_last === 'done')
+    const hasAnyClip  = Object.values(ss).some(s => s.video === 'done')
+    if (completedStagesLocal.includes('assembly')) return 'assembly'
+    if (completedStagesLocal.includes('video_gen') || hasAnyClip) return 'video_gen'
+    if (completedStagesLocal.includes('frame_gen') || hasAnyFrame) return 'frame_gen'
+    return stage
+  }, [stage, isRunning, pipelineData])
+
   const frameCount = Object.keys(frames).length
+    || (pipelineData?.data?.shot_list || []).filter(s => s.first_frame?.image_path).length
   const clipCount  = Object.keys(clips).length
 
   const completedStages = pipelineData?.completed_stages || []
@@ -1040,7 +1111,9 @@ export default function PipelineScreen() {
     },
   })
 
-  const showReview      = storyboardDone && !productionDone && stage === 'idle'
+  // Show the approval banner when storyboard is done but production hasn't started.
+  // Accept both 'idle' (normal storyboard_complete path) and 'done' (legacy/reload case).
+  const showReview      = storyboardDone && !productionDone && (stage === 'idle' || stage === 'done')
 
   const projectReady = currentProject && currentProject.id === id
   const projectMode  = currentProject?.mode || 'full_auto'
@@ -1068,7 +1141,7 @@ export default function PipelineScreen() {
         )}
 
         <div className="flex-1 mb-4 overflow-y-auto">
-          <StageList currentStage={stage} completedStages={completedStages} />
+          <StageList currentStage={effectiveStage} completedStages={completedStages} />
         </div>
 
         <div className="mb-4">
@@ -1114,6 +1187,20 @@ export default function PipelineScreen() {
             </button>
           )}
 
+          {/* Stuck-in-LLM fix: show sync button when production is actually running */}
+          {isRunning && effectiveStage !== stage && (
+            <button
+              onClick={() => {
+                usePipelineStore.setState({ stage: effectiveStage })
+              }}
+              className="w-full flex items-center justify-center gap-2 py-2 text-xs rounded font-mono border border-[var(--gold)]/50 text-[var(--gold)] hover:bg-[var(--gold)]/10"
+              title="Lo store UI è desincronizzato dalla produzione reale — clicca per allineare"
+            >
+              <RefreshCw size={12} className="animate-spin" />
+              Sincronizza UI
+            </button>
+          )}
+
           {/* Pause / Resume button */}
           {isRunning && (
             <button
@@ -1155,7 +1242,7 @@ export default function PipelineScreen() {
           )}
         </div>
 
-        {(frameCount > 0 || clipCount > 0) && (
+        {(frameCount > 0 || clipCount > 0 || Object.keys(pipelineData?.shot_states || {}).length > 0) && (
           <div className="mt-3 pt-3 border-t border-[var(--border)] grid grid-cols-2 gap-2 text-center">
             <div>
               <div className="text-base font-mono text-[var(--gold)]">{frameCount}</div>
@@ -1219,16 +1306,19 @@ export default function PipelineScreen() {
           </div>
 
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg2)] flex-1 min-w-0">
-            {stage === 'error'   ? <XCircle size={13} className="text-[var(--red)] shrink-0" />
-             : stage === 'done'  ? <CheckCircle size={13} className="text-[var(--green)] shrink-0" />
+            {effectiveStage === 'error'   ? <XCircle size={13} className="text-[var(--red)] shrink-0" />
+             : effectiveStage === 'done'  ? <CheckCircle size={13} className="text-[var(--green)] shrink-0" />
              : isRunning         ? <Loader2 size={13} className="animate-spin text-[var(--gold)] shrink-0" />
              : <Film size={13} className="text-[var(--text3)] shrink-0" />}
             <span className={clsx('text-xs flex-1 truncate', {
-              'text-[var(--red)]':    stage === 'error',
-              'text-[var(--green)]':  stage === 'done',
-              'text-[var(--text2)]':  !['error','done'].includes(stage),
+              'text-[var(--red)]':    effectiveStage === 'error',
+              'text-[var(--green)]':  effectiveStage === 'done',
+              'text-[var(--text2)]':  !['error','done'].includes(effectiveStage),
             })}>
-              {error || (stage === 'done' ? 'Pipeline completata!' : message || 'In attesa...')}
+              {error || (effectiveStage === 'done' ? 'Pipeline completata!'
+                : effectiveStage === 'frame_gen' && !completedStages.includes('frame_gen') ? `Frame gen attiva — ${Object.keys(frames).length} frame pronti`
+                : effectiveStage === 'video_gen' ? 'Generazione clip video in corso...'
+                : message || 'In attesa...')}
             </span>
           </div>
         </div>

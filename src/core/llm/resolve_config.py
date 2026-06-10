@@ -11,6 +11,9 @@ PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "ollama": "http://127.0.0.1:11434",
     "openai": "https://api.openai.com/v1",
     "groq": "https://api.groq.com/openai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "google": "https://generativelanguage.googleapis.com/v1beta",
+    "google_gemini": "https://generativelanguage.googleapis.com/v1beta",
 }
 
 

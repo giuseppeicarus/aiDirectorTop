@@ -40,45 +40,98 @@ async def cancel_job(job_id: str, force: bool = False):
 
 # ── ComfyUI queue ─────────────────────────────────────────────────────────────
 
+def _extract_queue_item_meta(wf: dict) -> dict:
+    """Estrae prefix, clip_id, project_id da un workflow ComfyUI in coda."""
+    prefixes = []
+    for node in wf.values():
+        if not isinstance(node, dict):
+            continue
+        inp = node.get("inputs", {})
+        for field in ("filename_prefix", "audio"):
+            val = inp.get(field, "")
+            if isinstance(val, str) and val:
+                prefixes.append(val)
+    # Prendi il primo prefix significativo
+    prefix = next((p for p in prefixes if p and "/" not in p), prefixes[0] if prefixes else "")
+    # Ricostruisci clip_id dal prefix (es. "clip_003_slot_003_8ae74b_first" → "clip_003_slot_003_8ae74b")
+    clip_id = ""
+    project_id = ""
+    if prefix:
+        import re
+        m = re.match(r"(clip_\d+_slot_\d+(?:_[0-9a-f]+)?)", prefix)
+        if m:
+            clip_id = m.group(1)
+        # Cerca il progetto nei job attivi o su disco
+        try:
+            active = pipeline_registry.get_all_active()
+            for run in active:
+                jid = run.get("job_id", "")
+                if jid and clip_id:
+                    storage = run.get("storage_project_id") or run.get("project_id", "")
+                    frames_dir = Path.home() / ".cinematic-studio" / "projects" / storage / "frames"
+                    if frames_dir.exists():
+                        for f in frames_dir.iterdir():
+                            if clip_id in f.name:
+                                project_id = storage
+                                break
+        except Exception:
+            pass
+        # Fallback: cerca nei file system
+        if not project_id and clip_id:
+            projects_root = Path.home() / ".cinematic-studio" / "projects"
+            for proj_dir in projects_root.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                for sub in ("frames", "storyboard"):
+                    target = proj_dir / sub
+                    if target.exists() and any(clip_id in f.name for f in target.iterdir()):
+                        project_id = proj_dir.name
+                        break
+                if project_id:
+                    break
+    kind = "storyboard" if "_sb" in prefix else ("frame" if "_first" in prefix or "_last" in prefix else "video" if ".mp4" in prefix else "unknown")
+    return {"prefix": prefix, "clip_id": clip_id, "project_id": project_id, "kind": kind}
+
+
+def _simplify_queue_items(raw_items: list) -> list:
+    """Converte lista raw ComfyUI queue in formato semplice con attribuzione progetto."""
+    out = []
+    for item in raw_items:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        prompt_id = item[1] if len(item) > 1 else ""
+        wf = item[2] if len(item) > 2 else {}
+        meta = _extract_queue_item_meta(wf) if isinstance(wf, dict) else {}
+        out.append({
+            "prompt_id": str(prompt_id)[:16],
+            "clip_id": meta.get("clip_id", ""),
+            "project_id": meta.get("project_id", ""),
+            "kind": meta.get("kind", "unknown"),
+            "prefix": meta.get("prefix", ""),
+        })
+    return out
+
+
 @router.get("/comfyui")
 async def get_comfyui_queue():
     """
-    Interroga tutti i nodi ComfyUI configurati e restituisce lo stato della coda.
-    Ogni nodo riporta: queue_running, queue_pending, node_info.
+    Interroga tutti i nodi ComfyUI configurati e restituisce lo stato della coda
+    con attribuzione a progetto e clip.
     """
     import httpx
-    from src.core.comfyui.pool import _pool  # lazy import
 
-    try:
-        pool = _pool
-        nodes = pool.nodes if pool else []
-    except Exception:
-        nodes = []
-
-    if not nodes:
-        cfg = get_config()
-        raw_nodes = getattr(cfg.comfyui, "nodes", [])
-        nodes_info = [
-            {
-                "index": i,
-                "name": getattr(n, "name", f"Node {i}"),
-                "host": getattr(n, "host", "localhost"),
-                "port": getattr(n, "port", 8188),
-                "primary": getattr(n, "primary", i == 0),
-            }
-            for i, n in enumerate(raw_nodes)
-        ]
-    else:
-        nodes_info = [
-            {
-                "index": i,
-                "name": getattr(n, "name", f"Node {i}"),
-                "host": getattr(n, "host", "localhost"),
-                "port": getattr(n, "port", 8188),
-                "primary": getattr(n, "primary", i == 0),
-            }
-            for i, n in enumerate(nodes)
-        ]
+    cfg = get_config()
+    raw_nodes = getattr(cfg.comfyui, "nodes", [])
+    nodes_info = [
+        {
+            "index": i,
+            "name": getattr(n, "name", f"Node {i}"),
+            "host": getattr(n, "host", "localhost"),
+            "port": getattr(n, "port", 8188),
+            "primary": getattr(n, "primary", i == 0),
+        }
+        for i, n in enumerate(raw_nodes)
+    ]
 
     results = []
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -93,6 +146,8 @@ async def get_comfyui_queue():
                 "online": False,
                 "queue_running": [],
                 "queue_pending": [],
+                "total_running": 0,
+                "total_pending": 0,
                 "error": None,
             }
             try:
@@ -100,13 +155,19 @@ async def get_comfyui_queue():
                 r.raise_for_status()
                 data = r.json()
                 entry["online"] = True
-                entry["queue_running"] = data.get("queue_running", [])
-                entry["queue_pending"] = data.get("queue_pending", [])
+                running_raw = data.get("queue_running", [])
+                pending_raw = data.get("queue_pending", [])
+                entry["queue_running"] = _simplify_queue_items(running_raw)
+                entry["queue_pending"] = _simplify_queue_items(pending_raw)
+                entry["total_running"] = len(running_raw)
+                entry["total_pending"] = len(pending_raw)
             except Exception as exc:
                 entry["error"] = str(exc)
             results.append(entry)
 
-    return {"nodes": results}
+    total_running = sum(e["total_running"] for e in results)
+    total_pending = sum(e["total_pending"] for e in results)
+    return {"nodes": results, "total_running": total_running, "total_pending": total_pending}
 
 
 @router.post("/comfyui/interrupt")

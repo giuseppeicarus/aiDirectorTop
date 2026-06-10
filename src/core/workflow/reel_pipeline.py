@@ -38,6 +38,7 @@ from src.core.llm.reel_prompts import (
     REEL_DIRECTOR_SYSTEM_WITH_AUDIO,
     REEL_CINEMATOGRAPHER_SYSTEM,
     REEL_PROMPT_ENGINEER_SYSTEM,
+    REEL_SUBJECT_SYSTEM,
     build_reel_director_user_prompt,
     build_reel_cinematographer_prompt,
     build_reel_prompt_engineer_user,
@@ -139,7 +140,20 @@ def _reel_clip_sse_payload(
         "lighting": dop.get("lighting"),
         "emotion": dop.get("emotion") or dop.get("slot_emotion"),
         "scene_description": (dop.get("scene_description") or "")[:500],
+        "use_prev_last_frame": clip.use_prev_last_frame,
+        "scene_transition": clip.scene_transition,
     })
+    # Storyboard fields: populate so UI can show previews without detail API call
+    if clip.storyboard_path and Path(clip.storyboard_path).exists():
+        sb_path = Path(clip.storyboard_path)
+        api = pipeline._media_api_prefix() if pipeline else "reel"
+        out["storyboard_ok"] = True
+        out["storyboard_filename"] = sb_path.name
+        out["storyboard_clip_url"] = f"/api/{api}/storyboard-clip/{storage_project_id}/{clip.clip_id}"
+        if not out.get("storyboard_url"):
+            out["storyboard_url"] = f"/api/{api}/storyboard/{storage_project_id}/{sb_path.name}"
+        if out.get("status") is None:
+            out["status"] = "storyboard"
     if clip.audio_src_start_sec is not None:
         out["audio_src_start_sec"] = clip.audio_src_start_sec
         out["audio_src_end_sec"] = clip.audio_src_end_sec
@@ -178,6 +192,8 @@ class ReelRequest(BaseModel):
     character_mode: str = "none"  # none | reference | character | character_reference
     character_id: Optional[str] = None
     character_owner_id: str = "local_user"
+    regen_clip_id: Optional[str] = None      # fase regen_clip: clip_id da rigenerare
+    regen_asset: Optional[str] = None        # first | last | video
 
 
 def _build_visual_plans_from_edl(
@@ -208,6 +224,7 @@ def _build_visual_plans_from_edl(
 
     plans: dict[str, dict] = {}
     slot_total = len(slot_descs)
+    prev_scene_id: str = ""
     for slot_i, s in enumerate(slot_descs):
         slot_id = s["slot_id"]
         visual_hint = (s.get("visual_hint") or "").strip()
@@ -232,7 +249,7 @@ def _build_visual_plans_from_edl(
             "medium": "medium shot, establishing subject",
             "wide": "wide shot, environment revealed",
         }.get(shot, f"{shot} shot")
-        subject_ctx = anchor_str if anchor_str else "the primary subject"
+        subject_ctx = anchor_str if anchor_str else (brief[:80].split(".")[0].strip() or "the primary subject")
         hint_body = visual_hint or motif_str or visual_theme
         first_state = (
             f"{_shot_desc}, {subject_ctx}, {hint_body[:280]}, "
@@ -252,8 +269,13 @@ def _build_visual_plans_from_edl(
             cut = raw_scene[:400].rfind(".")
             raw_scene = raw_scene[:cut + 1] if cut > 100 else raw_scene[:400]
 
+        scene_id = s.get("scene_id") or slot_id
+        same_scene_as_prev = bool(scene_id and scene_id == prev_scene_id and slot_i > 0)
+        prev_scene_id = scene_id
+
         plan = {
             "slot_id": slot_id,
+            "scene_id": scene_id,
             "shot_type": shot,
             "lens_mm": lens,
             "depth_of_field": "shallow" if energy in ("high", "peak") else "medium",
@@ -265,6 +287,8 @@ def _build_visual_plans_from_edl(
             "last_frame_state": last_state,
             "motion_intent": f"{move}, {emotion} mood",
             "color_grade_note": f"cinematic grade, {mood}",
+            "use_prev_last_frame": same_scene_as_prev,
+            "scene_transition": "continuity" if same_scene_as_prev else "scene_cut",
         }
         plans[slot_id] = enrich_visual_plan_for_slot(
             plan,
@@ -496,6 +520,9 @@ class ReelPipeline(TrailerPipeline):
         self._last_result: Optional[dict] = None
         self._use_ffmpeg_clips: bool = False
         self._storyboard_approved: bool = False
+        self._subject_card: Optional[str] = None
+        self._subject_approved: bool = False
+        self._recover_cooldown: dict[str, float] = {}
         self._visual_plans_cache: dict[str, dict] = {}
         self._vision: dict[str, Any] = {}
         self._director_narrative: dict[str, Any] = {}
@@ -863,18 +890,22 @@ class ReelPipeline(TrailerPipeline):
             w = max(0.1, float(s.get("duration_weight", 1.0)))
             dur = target * (w / total_w)
             if i == len(slots_raw) - 1:
-                dur = max(1.5, target - t)
+                dur = max(1.0, target - t)
+            # Arrotonda la durata slot a interi (min 1s)
+            dur = max(1.0, float(round(dur)))
             end = min(t + dur, target)
             edl_slots.append(EDLSlot(
                 slot_id=s.get("slot_id") or f"slot_{i+1:03d}",
                 section_id="reel_main",
-                start_sec=round(t, 3),
-                end_sec=round(end, 3),
-                duration_sec=round(end - t, 3),
+                start_sec=float(round(t)),
+                end_sec=float(round(end)),
+                duration_sec=max(1.0, float(round(end - t))),
                 section_type="verse",
-                energy="medium",
+                energy=s.get("energy") or "medium",
                 emotion=s.get("emotion") or "cinematic",
                 visual_hint=s.get("visual_hint") or self._reel_req.description[:100],
+                scene_id=s.get("scene_id") or f"scene_{i:03d}",
+                narrative_role=s.get("narrative_role") or "",
             ))
             t = end
         return EDL(
@@ -920,9 +951,9 @@ class ReelPipeline(TrailerPipeline):
                     user,
                     role="narrative_director",
                     temperature=0.65,
-                    max_tokens=2048,
+                    max_tokens=2500,
                 ),
-                timeout=300.0,
+                timeout=240.0,
             )
             slots_raw = raw.get("slots") or []
             self._edl = self._edl_from_director_slots(slots_raw)
@@ -966,15 +997,22 @@ class ReelPipeline(TrailerPipeline):
             self._edl = self._edl_from_director_slots([])
             self._map_lyrics_to_slots()
             vis = getattr(self, "_vision", None) or {}
+            # Build a more cinematographic fallback narrative instead of copying the brief raw
+            _motifs = (vis.get("environment_anchors") or [])[:6] or self._extract_visual_motifs_from_brief()
+            _style_hint = (self._reel_req.style or "").split(",")[0].strip()[:60]
+            _logline_fallback = (
+                f"A {_style_hint or 'cinematic'} journey through irony and isolation, "
+                f"told through {_motifs[0] if _motifs else 'light and shadow'}.".strip()
+            )
             self._director_narrative = {
-                "logline":       self._reel_req.description[:220],
+                "logline":       _logline_fallback,
                 "mood":          "intense",
-                "visual_theme":  (vis.get("combined_style") or self._reel_req.style or self._reel_req.description)[:200],
-                "narrative_arc": self._reel_req.description[:400],
-                "visual_motifs": (
-                    (vis.get("environment_anchors") or [])[:6]
-                    or self._extract_visual_motifs_from_brief()
+                "visual_theme":  (vis.get("combined_style") or self._reel_req.style or "")[:200],
+                "narrative_arc": (
+                    f"The reel opens with restless intimacy and builds to ironic revelation, "
+                    f"closing on a quiet moment of self-awareness. "                    f"The viewer moves from detached observer to complicit witness."
                 ),
+                "visual_motifs": _motifs,
             }
             yield _reel_agent_event(
                 "narrative_director",
@@ -985,81 +1023,42 @@ class ReelPipeline(TrailerPipeline):
             yield {"event": "reel_plan_fallback", "pct": 0.22}
 
     async def _phase_reel_audio_compositor(self) -> AsyncGenerator[dict, None]:
-        """Monta audio reale dalla traccia sorgente (offset audio_start_sec)."""
+        """Estrae la finestra audio continua dalla sorgente (audio_start_sec → +duration_sec).
+
+        Usa un singolo cut ffmpeg invece di slicing per slot — garantisce audio continuo
+        senza artefatti alle giunture. I fade in/out vengono applicati sull'intera traccia.
+        """
         yield {"event": "phase", "phase": "audio_compositor", "pct": 0.26}
         audio_src = Path(self.req.audio_path)
         if not audio_src.exists():
             raise FileNotFoundError(f"Audio source missing: {audio_src}")
 
         target_dur = float(self._reel_req.duration_sec)
-        n_slots = len(self._edl.slots) if self._edl else 0
         FADE_IN = 0.15
         FADE_OUT = 0.35
-        XFADE = 0.12 if n_slots > 1 else 0.0
-        offset = self._audio_start_sec
-        slot_wavs: list[Path] = []
-
-        from src.core.workflow.trailer_pipeline import _run_ffmpeg
-
-        for i, slot in enumerate(self._edl.slots):
-            s, e = self._snap_slot_bounds(slot.start_sec, slot.end_sec)
-            s += offset
-            e += offset
-            dur = max(0.5, e - s)
-            out_wav = self._audio_dir / f"slot_{i:03d}_{slot.slot_id}.wav"
-            rc, err = await _run_ffmpeg(
-                "-y", "-ss", f"{s:.3f}", "-t", f"{dur:.3f}",
-                "-i", str(audio_src),
-                "-af", "dynaudnorm=f=75:g=15",
-                "-ar", "44100", "-ac", "2",
-                str(out_wav),
-            )
-            if rc != 0:
-                raise RuntimeError(f"ffmpeg audio slice failed: {err[-300:]}")
-            slot_wavs.append(out_wav)
-            yield {
-                "event": "audio_slice",
-                "slot": slot.slot_id,
-                "source_start_sec": round(s, 2),
-                "source_end_sec": round(e, 2),
-                "duration_sec": round(dur, 2),
-                "pct": round(0.26 + 0.02 * (i / max(n_slots, 1)), 3),
-            }
-
+        fo_start = max(0.0, target_dur - FADE_OUT)
         trailer_audio = self._audio_dir / f"reel_audio_{self.job_id}.wav"
-        if not slot_wavs:
-            raise RuntimeError("No audio slots to composite")
 
-        if len(slot_wavs) == 1:
-            fo_start = max(0.0, target_dur - FADE_OUT)
-            rc, err = await _run_ffmpeg(
-                "-y", "-i", str(slot_wavs[0]),
-                "-af",
-                f"afade=t=in:st=0:d={FADE_IN},afade=t=out:st={fo_start:.3f}:d={FADE_OUT},"
-                f"atrim=0:{target_dur:.3f}",
-                "-ar", "44100", "-ac", "2",
-                str(trailer_audio),
-            )
-        else:
-            concat_list = self._audio_dir / f"concat_{self.job_id}.txt"
-            concat_list.write_text(
-                "\n".join(f"file '{p.as_posix()}'" for p in slot_wavs),
-                encoding="utf-8",
-            )
-            rc, err = await _run_ffmpeg(
-                "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-                "-af",
-                f"afade=t=in:st=0:d={FADE_IN},afade=t=out:st={max(0, target_dur - FADE_OUT):.3f}:d={FADE_OUT},"
-                f"atrim=0:{target_dur:.3f}",
-                "-ar", "44100", "-ac", "2",
-                str(trailer_audio),
-            )
+        rc, err = await _run_ffmpeg(
+            "-y",
+            "-ss", f"{self._audio_start_sec:.3f}",
+            "-t", f"{target_dur:.3f}",
+            "-i", str(audio_src),
+            "-af", (
+                f"afade=t=in:st=0:d={FADE_IN},"
+                f"afade=t=out:st={fo_start:.3f}:d={FADE_OUT}"
+            ),
+            "-ar", "44100", "-ac", "2",
+            str(trailer_audio),
+        )
         if rc != 0:
             raise RuntimeError(f"reel audio composite failed: {err[-200:]}")
         self._trailer_audio_path = trailer_audio
         yield {
             "event": "audio_ready",
             "path": str(trailer_audio),
+            "source_start_sec": round(self._audio_start_sec, 2),
+            "source_end_sec": round(self._audio_start_sec + target_dur, 2),
             "duration_sec": target_dur,
             "pct": 0.30,
         }
@@ -1103,6 +1102,7 @@ class ReelPipeline(TrailerPipeline):
                 hint = f"{hint}\nLyrics in this window: {lyr}"
             slot_descs.append({
                 "slot_id": slot.slot_id,
+                "scene_id": getattr(slot, "scene_id", "") or slot.slot_id,
                 "section_type": slot.section_type,
                 "energy": slot.energy,
                 "emotion": slot.emotion,
@@ -1113,59 +1113,65 @@ class ReelPipeline(TrailerPipeline):
                 "lyrics_segment": lyr,
             })
 
-        visual_plans: Dict[str, dict] = {}
-        yield _reel_agent_event(
-            "cinematographer",
-            "working",
-            "Piano visivo e inquadrature per ogni slot…",
-            pct=0.33,
-        )
-        yield {"event": "progress", "msg": "Cinematographer — piano visivo reel…", "pct": 0.34}
-        try:
-            raw_dop = await asyncio.wait_for(
-                _llm_json(
-                    REEL_CINEMATOGRAPHER_SYSTEM,
-                    build_reel_cinematographer_prompt(
-                        slot_descs,
-                        style=self.req.style,
-                        aspect_ratio=self.req.aspect_ratio,
-                        vision=self._vision,
-                        brief=self._reel_req.description,
-                        director_narrative=self._director_narrative,
-                    ),
-                    role="cinematographer",
-                    temperature=0.65,
-                    max_tokens=4096,
-                ),
-                timeout=420.0,
+        # Restore visual_plans from checkpoint cache (avoids re-running cinematographer if already done)
+        visual_plans: Dict[str, dict] = dict(getattr(self, "_visual_plans_cache", None) or {})
+        if visual_plans:
+            log.info("reel_dop_from_cache", slots=len(visual_plans))
+            yield _reel_agent_event("cinematographer", "done", f"Piano DP da cache ({len(visual_plans)} slot)", pct=0.37)
+            yield {"event": "dop_plan_ready", "plans": list(visual_plans.values()), "pct": 0.38, "source": "cache"}
+        if not visual_plans:
+            yield _reel_agent_event(
+                "cinematographer",
+                "working",
+                "Piano visivo e inquadrature per ogni slot…",
+                pct=0.33,
             )
-            visual_plans = _normalize_dop_llm_result(raw_dop)
-            if visual_plans:
-                from src.core.llm.reel_slot_variety import (
-                    _hints_too_similar,
-                    enrich_visual_plan_for_slot,
+            yield {"event": "progress", "msg": "Cinematographer — piano visivo reel…", "pct": 0.34}
+            try:
+                raw_dop = await asyncio.wait_for(
+                    _llm_json(
+                        REEL_CINEMATOGRAPHER_SYSTEM,
+                        build_reel_cinematographer_prompt(
+                            slot_descs,
+                            style=self.req.style,
+                            aspect_ratio=self.req.aspect_ratio,
+                            vision=self._vision,
+                            brief=self._reel_req.description,
+                            director_narrative=self._director_narrative,
+                        ),
+                        role="cinematographer",
+                        temperature=0.65,
+                        max_tokens=4096,
+                    ),
+                    timeout=360.0,
                 )
-                if _hints_too_similar(slot_descs):
-                    for i, desc in enumerate(slot_descs):
-                        sid = desc["slot_id"]
-                        if sid in visual_plans:
-                            visual_plans[sid] = enrich_visual_plan_for_slot(
-                                visual_plans[sid],
-                                slot_index=i,
-                                slot_total=len(slot_descs),
-                                brief=self._reel_req.description,
-                                base_hint=desc.get("visual_hint") or "",
-                                force_variety=True,
-                            )
-                yield _reel_agent_event(
-                    "cinematographer",
-                    "done",
-                    f"Piano DP pronto ({len(visual_plans)} slot)",
-                    pct=0.37,
-                )
-                yield {"event": "dop_plan_ready", "plans": list(visual_plans.values()), "pct": 0.38}
-        except Exception as exc:
-            log.warning("reel_dop_failed", error=str(exc))
+                visual_plans = _normalize_dop_llm_result(raw_dop)
+                if visual_plans:
+                    from src.core.llm.reel_slot_variety import (
+                        _hints_too_similar,
+                        enrich_visual_plan_for_slot,
+                    )
+                    if _hints_too_similar(slot_descs):
+                        for i, desc in enumerate(slot_descs):
+                            sid = desc["slot_id"]
+                            if sid in visual_plans:
+                                visual_plans[sid] = enrich_visual_plan_for_slot(
+                                    visual_plans[sid],
+                                    slot_index=i,
+                                    slot_total=len(slot_descs),
+                                    brief=self._reel_req.description,
+                                    base_hint=desc.get("visual_hint") or "",
+                                    force_variety=True,
+                                )
+                    yield _reel_agent_event(
+                        "cinematographer",
+                        "done",
+                        f"Piano DP pronto ({len(visual_plans)} slot)",
+                        pct=0.37,
+                    )
+                    yield {"event": "dop_plan_ready", "plans": list(visual_plans.values()), "pct": 0.38}
+            except Exception as exc:
+                log.warning("reel_dop_failed", error=str(exc))
 
         # Fallback: build visual_plans from director's visual_hint when LLM times out
         if not visual_plans:
@@ -1178,6 +1184,11 @@ class ReelPipeline(TrailerPipeline):
                 brief=self._reel_req.description,
             )
             yield {"event": "dop_plan_ready", "plans": list(visual_plans.values()), "pct": 0.38, "source": "director_fallback"}
+
+        # Persist visual_plans to checkpoint (phase 4) so prompt_engineer restarts don't redo cinematographer
+        if visual_plans:
+            self._visual_plans_cache = visual_plans
+            self._save_checkpoint(4)  # Re-save phase 4 checkpoint with visual_plans populated
 
         prompt_map: Dict[str, dict] = {}
         if visual_plans:
@@ -1198,12 +1209,13 @@ class ReelPipeline(TrailerPipeline):
                             aspect_ratio=self.req.aspect_ratio,
                             vision=self._vision,
                             director_narrative=self._director_narrative,
+                            brief=self._reel_req.description,
                         ),
                         role="prompt_engineer",
                         temperature=0.60,
                         max_tokens=6000,
                     ),
-                    timeout=480.0,
+                    timeout=420.0,
                 )
                 prompt_map = _normalize_prompt_llm_result(raw_pe)
             except Exception as exc:
@@ -1264,15 +1276,40 @@ class ReelPipeline(TrailerPipeline):
                 clip_end = _nearest_downbeat(raw_e, self._downbeats)
                 if clip_end <= clip_start:
                     clip_end = raw_e
-                clip_dur = max(0.5, clip_end - clip_start)
-                clip_id = f"clip_{clip_global_idx:03d}_{slot.slot_id}"
+                clip_dur = max(1.0, float(round(clip_end - clip_start)))
+                clip_id = f"clip_{clip_global_idx:03d}_{slot.slot_id}_{self.job_id[-6:]}"
+
+                # First sub-clip of a slot: inherit director continuity decision.
+                # Override: if this slot shares scene_id with the previous slot,
+                # force continuity regardless of LLM output (same scene = shared frames).
+                is_first_subclip = c_idx == 0
+                use_prev = False
+                scene_trans = "scene_cut"
+                if is_first_subclip and clip_global_idx > 0:
+                    _raw_upf = dop.get("use_prev_last_frame", False)
+                    use_prev = (
+                        _raw_upf is True
+                        or str(_raw_upf).lower() == "true"
+                    )
+                    # Scene-id based override: same scene_id means visual continuity
+                    if not use_prev and slot_i > 0:
+                        prev_slot = self._edl.slots[slot_i - 1]
+                        if (
+                            slot.scene_id
+                            and slot.scene_id == prev_slot.scene_id
+                        ):
+                            use_prev = True
+                    scene_trans = "continuity" if use_prev else "scene_cut"
+                elif not is_first_subclip:
+                    use_prev = True
+                    scene_trans = "continuity"
 
                 clips.append(TrailerClip(
                     clip_id=clip_id,
                     slot_id=slot.slot_id,
                     start_sec=clip_start,
                     end_sec=clip_end,
-                    duration_sec=round(clip_dur, 3),
+                    duration_sec=int(clip_dur),
                     clip_index=clip_global_idx,
                     scene_prompt=clean["scene_prompt"],
                     first_frame_prompt=clean["first_frame_prompt"],
@@ -1280,6 +1317,8 @@ class ReelPipeline(TrailerPipeline):
                     motion_prompt=clean["motion_prompt"],
                     ltx_video_prompt=clean.get("ltx_video_prompt", ""),
                     negative_prompt=clean["negative_prompt"],
+                    use_prev_last_frame=use_prev,
+                    scene_transition=scene_trans,
                 ))
                 if self._has_source_audio and audio_src and audio_src.exists():
                     src_ss = audio_cursor
@@ -1450,11 +1489,91 @@ class ReelPipeline(TrailerPipeline):
         """Rigenera prompt densi su clip già in checkpoint (approvazione → produzione)."""
         self.regenerate_all_clip_prompts()
 
+    def _validate_frames_before_production(self) -> None:
+        """Invalida clip il cui frame è un placeholder (<4KB) così viene rigenerato."""
+        from src.core.utils.comfyui_outputs import is_real_comfy_image, COMFY_REAL_IMAGE_MIN_BYTES
+        for clip in self._clips_list:
+            ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
+            # Se il frame è placeholder/mancante azzera il path per forzare rigenera
+            if not is_real_comfy_image(ff_path, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                clip.first_frame_path = None
+                clip.last_frame_path = None
+            # Se il video è un placeholder (<50KB) azzeralo per forzare rigenera
+            if clip.clip_path:
+                from src.core.utils.comfyui_outputs import is_real_comfy_video
+                if not is_real_comfy_video(Path(clip.clip_path)):
+                    clip.clip_path = None
+
+    def _propagate_prev_last_frames(self) -> None:
+        """For clips with use_prev_last_frame=True, copy the previous clip's last frame
+        as this clip's first frame (if the previous frame exists and is valid)."""
+        import shutil
+        from src.core.utils.comfyui_outputs import is_real_comfy_image, COMFY_REAL_IMAGE_MIN_BYTES
+        for i, clip in enumerate(self._clips_list):
+            if not clip.use_prev_last_frame or i == 0:
+                continue
+            prev = self._clips_list[i - 1]
+            # Find the previous clip's last frame (prefer explicit path, fall back to canon file)
+            prev_lf: Optional[Path] = None
+            if prev.last_frame_path:
+                p = Path(prev.last_frame_path)
+                if is_real_comfy_image(p, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                    prev_lf = p
+            if prev_lf is None:
+                canon = self._frames_dir / f"{prev.clip_id}_last.png"
+                if is_real_comfy_image(canon, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                    prev_lf = canon
+            if prev_lf is None:
+                # Last frame file missing — try to extract it from the existing video clip.
+                # This recovers from runs where video was generated but last-frame extraction
+                # failed silently (e.g. ffmpeg error or _hd_frame_ok wrongly rejected it).
+                if prev.clip_path:
+                    video_p = Path(prev.clip_path)
+                    if video_p.is_file() and video_p.stat().st_size > 50_000:
+                        canon = self._frames_dir / f"{prev.clip_id}_last.png"
+                        try:
+                            import subprocess as _sp
+                            _sp.run(
+                                [
+                                    "ffmpeg", "-y", "-sseof", "-0.1",
+                                    "-i", str(video_p),
+                                    "-vframes", "1", "-q:v", "2", str(canon),
+                                ],
+                                capture_output=True,
+                                timeout=30,
+                            )
+                        except Exception as _exc:
+                            log.warning("propagate_last_frame_extract_failed",
+                                        clip_id=prev.clip_id, error=str(_exc))
+                        if is_real_comfy_image(canon, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                            prev.last_frame_path = str(canon)
+                            prev_lf = canon
+                            log.info("last_frame_extracted_from_video",
+                                     clip_id=prev.clip_id, dest=str(canon))
+            if prev_lf is None:
+                # Last frame not ready yet — skip (will inherit during generation if available)
+                continue
+            dest = self._frames_dir / f"{clip.clip_id}_first.png"
+            if is_real_comfy_image(dest, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
+                # First frame already generated — no override needed
+                continue
+            try:
+                shutil.copy2(prev_lf, dest)
+                clip.first_frame_path = str(dest)
+                clip.first_frame_comfy = None  # force re-upload to ComfyUI
+                log.info("prev_last_frame_propagated",
+                         clip_id=clip.clip_id, src=str(prev_lf), dest=str(dest))
+            except Exception as exc:
+                log.warning("prev_last_frame_propagate_failed",
+                            clip_id=clip.clip_id, error=str(exc))
+
     async def run(self) -> AsyncGenerator[dict, None]:
         self._save_job(status="running")
         phase = self._reel_req.phase
         production = phase == "production" and self._load_checkpoint()
         storyboard_only = phase == "storyboard" and self._load_checkpoint()
+        assemble_only = phase == "assemble_only" and self._load_checkpoint()
+        regen_clip = phase == "regen_clip" and bool(self._reel_req.regen_clip_id) and self._load_checkpoint()
         pipeline_completed = False
 
         from src.core.utils.project_paths import ensure_project_directory as _ensure_proj
@@ -1510,6 +1629,10 @@ class ReelPipeline(TrailerPipeline):
                     pct=0.46,
                 )
                 await self._comfyui_free_vram(wait_sec=5.0)
+                # Invalida frame/video placeholder prima della generazione HD
+                self._validate_frames_before_production()
+                # Propaga last frame precedente come first frame per clip in continuità
+                self._propagate_prev_last_frames()
                 yield _reel_agent_event(
                     "comfyui",
                     "working",
@@ -1521,6 +1644,77 @@ class ReelPipeline(TrailerPipeline):
                 async for ev in self._phase7_video_assembler():
                     yield ev
                 pipeline_completed = True
+
+            elif assemble_only:
+                # Solo riassembla le clip esistenti → nuovo video finale
+                self._validate_frames_before_production()
+                yield {"event": "resume", "job_id": self.job_id, "phase": "assemble_only", "pct": 0.88}
+                async for ev in self._phase7_video_assembler():
+                    yield ev
+                pipeline_completed = True
+
+            elif regen_clip:
+                # Rigenera una singola clip e poi riassembla il video finale
+                regen_id = self._reel_req.regen_clip_id
+                clip_obj = next((c for c in self._clips_list if c.clip_id == regen_id), None)
+                if clip_obj is None:
+                    yield {"event": "error", "msg": f"clip_id {regen_id!r} non trovata nel checkpoint", "pct": 0}
+                else:
+                    regen_asset = (self._reel_req.regen_asset or "video").lower()
+                    if regen_asset not in {"first", "last", "video"}:
+                        regen_asset = "video"
+                    yield {
+                        "event": "resume",
+                        "job_id": self.job_id,
+                        "phase": "regen_clip",
+                        "clip_id": regen_id,
+                        "regen_asset": regen_asset,
+                        "pct": 0.50,
+                    }
+                    # Invalida solo l'asset richiesto. Se cambia un frame,
+                    # il video della clip va rigenerato perché usa quei frame.
+                    if regen_asset == "first":
+                        clip_obj.first_frame_path = None
+                        clip_obj.first_frame_comfy = None
+                        clip_obj.clip_path = None
+                    elif regen_asset == "last":
+                        clip_obj.last_frame_path = None
+                        clip_obj.last_frame_comfy = None
+                        clip_obj.clip_path = None
+                    else:
+                        clip_obj.clip_path = None
+                    if self._has_source_audio:
+                        self.req.img2video_workflow = self._reel_req.img_audio2video_workflow or "ltx_img_audio2video"
+                    # For continuity clips (use_prev_last_frame) Phase A is skipped:
+                    # propagate the previous clip's last frame so Phase C has a valid input.
+                    self._propagate_prev_last_frames()
+                    yield _reel_agent_event("comfyui", "working", f"Rigenero clip {regen_id}…", pct=0.52)
+                    await self._comfyui_free_vram(wait_sec=3.0)
+                    clip_dest = self._clips_dir / f"{clip_obj.clip_id}.mp4"
+                    try:
+                        clip_dest.unlink(missing_ok=True)
+                    except OSError as exc:
+                        log.warning(
+                            "regen_clip_delete_old_video_failed",
+                            clip_id=clip_obj.clip_id,
+                            path=str(clip_dest),
+                            error=str(exc),
+                        )
+                    all_clips = self._clips_list
+                    self._clips_list = [clip_obj]
+                    self._regen_asset_filter = regen_asset
+                    try:
+                        async for ev in self._phase6_comfyui_generation():
+                            yield ev
+                    finally:
+                        self._regen_asset_filter = None
+                        self._clips_list = all_clips
+                    self._save_checkpoint(6)
+                    if regen_asset in {"first", "last", "video"}:
+                        yield _reel_agent_event("comfyui", "working", "Riassemblo video finale…", pct=0.88)
+                        async for ev in self._phase7_video_assembler():
+                            yield ev
+                    pipeline_completed = True
 
             elif storyboard_only:
                 yield {"event": "resume", "job_id": self.job_id, "phase": "storyboard", "pct": 0.42}
@@ -1647,10 +1841,7 @@ class ReelPipeline(TrailerPipeline):
 
             if pipeline_completed:
                 self._save_checkpoint(99)
-                self._save_job(status="done", result=self._last_result)
-                cp = self._checkpoint_path()
-                if cp.exists():
-                    cp.unlink(missing_ok=True)
+                self._save_job(status="done", result=self._job_result_snapshot())
         except asyncio.CancelledError:
             self._save_job(
                 status="interrupted",
@@ -1693,6 +1884,8 @@ class ReelPipeline(TrailerPipeline):
                 "clips_list": [c.model_dump() for c in self._clips_list],
                 "trailer_audio_path": str(self._trailer_audio_path) if self._trailer_audio_path else None,
                 "storyboard_approved": getattr(self, "_storyboard_approved", False),
+                "subject_card": getattr(self, "_subject_card", None) or "",
+                "subject_approved": getattr(self, "_subject_approved", False),
                 "visual_plans": getattr(self, "_visual_plans_cache", None) or {},
                 "final_deliverable": getattr(self, "_last_result", None),
             }
@@ -1753,6 +1946,8 @@ class ReelPipeline(TrailerPipeline):
         self._storyboard_approved = bool(data.get("storyboard_approved", False))
         vp = data.get("visual_plans")
         self._visual_plans_cache = vp if isinstance(vp, dict) else {}
+        self._subject_card = data.get("subject_card") or None
+        self._subject_approved = bool(data.get("subject_approved", False))
 
     def _restore_from_checkpoint_file(self) -> int:
         """Ripristina stato parziale da checkpoint; ritorna numero fase (0 se assente)."""

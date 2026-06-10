@@ -57,6 +57,12 @@ def _current_nodes_raw() -> list[dict]:
             "auth_type": n.auth_type,
             "auth":      n.auth,
             "token":     n.token,
+            "provisioning_enabled": n.provisioning_enabled,
+            "ssh_port":          n.ssh_port,
+            "ssh_user":          n.ssh_user,
+            "ssh_password":      n.ssh_password,
+            "ssh_private_key":   n.ssh_private_key,
+            "ssh_comfyui_path":  n.ssh_comfyui_path,
         }
         for n in get_config().comfyui.nodes
     ]
@@ -71,6 +77,12 @@ class NodeConfigIn(BaseModel):
     auth_type: str = "none"
     auth: Optional[str] = None
     token: Optional[str] = None
+    provisioning_enabled: bool = False
+    ssh_port: int = 22
+    ssh_user: str = "root"
+    ssh_password: Optional[str] = None
+    ssh_private_key: Optional[str] = None
+    ssh_comfyui_path: Optional[str] = None
 
 
 # ── Node config CRUD ──────────────────────────────────────────────────────────

@@ -26,6 +26,14 @@ LMSTUDIO_LOAD_ACK_GRACE_SEC = 8.0
 LMSTUDIO_CHAT_MAX_ATTEMPTS = 12
 LMSTUDIO_CHAT_RETRY_BASE_SEC = 2.0
 LMSTUDIO_CHAT_TIMEOUT = 180.0
+_LMSTUDIO_LOAD_LOCKS: dict[str, asyncio.Lock] = {}
+# One-at-a-time semaphore per endpoint: serializes load + inference so LM Studio
+# never receives concurrent requests while switching or loading models.
+_LMSTUDIO_INFERENCE_SEMS: dict[str, asyncio.Semaphore] = {}
+
+
+def get_lmstudio_inference_sem(native_base: str) -> asyncio.Semaphore:
+    return _LMSTUDIO_INFERENCE_SEMS.setdefault(native_base, asyncio.Semaphore(1))
 
 
 def lmstudio_native_base(base_url: Optional[str]) -> str:
@@ -281,6 +289,75 @@ async def _lmstudio_list_models(
     return list(data.get("models") or [])
 
 
+def _find_lmstudio_catalog_model(
+    catalog: list[dict[str, Any]],
+    model: str,
+) -> Optional[dict[str, Any]]:
+    for entry in catalog:
+        key = str(entry.get("key") or "")
+        variant = str(entry.get("selected_variant") or "")
+        display = str(entry.get("display_name") or "")
+        if (
+            _model_keys_match(model, key)
+            or (variant and _model_keys_match(model, variant))
+            or (display and _model_keys_match(model, display))
+        ):
+            return entry
+    return None
+
+
+async def ensure_lmstudio_model_loaded(cfg) -> dict[str, Any]:
+    """Load the configured LM Studio model if installed but not currently in RAM."""
+    model = str(cfg.model or "").strip()
+    if not model:
+        raise RuntimeError("Nessun modello LM Studio configurato")
+
+    native_base = lmstudio_native_base(cfg.base_url)
+    headers = _auth_headers(cfg.api_key)
+    lock = _LMSTUDIO_LOAD_LOCKS.setdefault(native_base, asyncio.Lock())
+
+    async with lock:
+        async with httpx.AsyncClient(timeout=LMSTUDIO_LOAD_TIMEOUT) as client:
+            catalog = await _lmstudio_list_models(client, native_base, headers)
+            entry = _find_lmstudio_catalog_model(catalog, model)
+            if entry is None:
+                available = [
+                    str(item.get("key") or "").strip()
+                    for item in catalog
+                    if str(item.get("key") or "").strip()
+                ]
+                preview = ", ".join(available[:8]) or "nessuno"
+                raise RuntimeError(
+                    f"Modello LM Studio '{model}' non installato. "
+                    f"Seleziona un modello disponibile in Impostazioni > LLM. "
+                    f"Disponibili: {preview}"
+                )
+            # Scarica tutti i modelli caricati che NON sono il modello richiesto
+            unloaded_count = await _lmstudio_unload_others(client, native_base, headers, model)
+
+            if entry.get("loaded_instances"):
+                return {
+                    "loaded": False,
+                    "already_loaded": True,
+                    "model": model,
+                    "unloaded_others": unloaded_count,
+                }
+
+            data = await _lmstudio_load(
+                client,
+                native_base,
+                model,
+                headers,
+                openai_base_url=cfg.base_url,
+            )
+            return {
+                "loaded": True,
+                "already_loaded": False,
+                "model": model,
+                "instance_id": data.get("instance_id"),
+            }
+
+
 async def _lmstudio_wait_ready(
     client: httpx.AsyncClient,
     native_base: str,
@@ -393,6 +470,36 @@ async def _lmstudio_unload_all_loaded(
     return len(instance_ids)
 
 
+async def _lmstudio_unload_others(
+    client: httpx.AsyncClient,
+    native_base: str,
+    headers: dict[str, str],
+    keep_model: str,
+    timeout: float = 120.0,
+) -> int:
+    """Scarica dalla RAM tutti i modelli caricati tranne keep_model. Ritorna il numero scaricato."""
+    catalog = await _lmstudio_list_models(client, native_base, headers)
+    all_ids = _collect_loaded_instance_ids(catalog)
+    to_unload = [iid for iid in all_ids if not _model_keys_match(keep_model, iid)]
+    if not to_unload:
+        return 0
+
+    for iid in to_unload:
+        await _lmstudio_unload(client, native_base, iid, headers)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            updated = await _lmstudio_list_models(client, native_base, headers)
+            remaining = _collect_loaded_instance_ids(updated)
+            if not any(iid in remaining for iid in to_unload):
+                return len(to_unload)
+        except Exception:
+            pass
+        await asyncio.sleep(LMSTUDIO_LOAD_POLL_INTERVAL)
+    return len(to_unload)
+
+
 def _is_retryable_probe_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     markers = (
@@ -447,7 +554,7 @@ async def _lmstudio_load(
 ) -> dict[str, Any]:
     r = await client.post(
         f"{native_base}/api/v1/models/load",
-        json={"model": model},
+        json={"model": model, "configuration": {"numParallelRequests": 1}},
         headers=headers,
         timeout=LMSTUDIO_LOAD_TIMEOUT,
     )
