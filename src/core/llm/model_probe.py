@@ -554,7 +554,7 @@ async def _lmstudio_load(
 ) -> dict[str, Any]:
     r = await client.post(
         f"{native_base}/api/v1/models/load",
-        json={"model": model, "configuration": {"numParallelRequests": 1}},
+        json={"model": model},
         headers=headers,
         timeout=LMSTUDIO_LOAD_TIMEOUT,
     )
