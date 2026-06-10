@@ -325,6 +325,51 @@ async def start_ssh_provisioning(body: ProvisionRequest):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class LocalStatusRequest(BaseModel):
+    comfyui_path: str
+
+
+@router.post("/models/local-status")
+async def get_models_local_status(body: LocalStatusRequest):
+    """
+    Controlla quali modelli sono già presenti nella cartella ComfyUI locale.
+    Ritorna per ogni modello: present (bool) e found_path (str|None).
+    """
+    from src.core.utils.local_provisioner import find_model_in_comfyui
+
+    base = Path(body.comfyui_path)
+    if not base.exists():
+        return {"ok": False, "error": f"Path non trovato: {body.comfyui_path}", "models": {}}
+
+    all_models = _build_manifest()
+    result: dict[str, dict] = {}
+
+    def _check_model(m: dict) -> tuple[str, dict]:
+        filename = m["filename"]
+        target_dir = m.get("target_dir", "models/checkpoints")
+        dest = base / target_dir / filename
+        if dest.exists() and dest.stat().st_size > 1024:
+            return filename, {"present": True, "found_path": str(dest), "in_target": True}
+        found = find_model_in_comfyui(base, filename)
+        if found:
+            return filename, {"present": True, "found_path": str(found), "in_target": False}
+        return filename, {"present": False, "found_path": None, "in_target": False}
+
+    for m in all_models:
+        fname, status = await asyncio.to_thread(_check_model, m)
+        result[fname] = status
+
+    present_count = sum(1 for s in result.values() if s["present"])
+    return {
+        "ok": True,
+        "comfyui_path": body.comfyui_path,
+        "total": len(all_models),
+        "present": present_count,
+        "missing": len(all_models) - present_count,
+        "models": result,
+    }
+
+
 @router.post("/start-local")
 async def start_local_provisioning(body: LocalProvisionRequest):
     """Provisioning locale — scarica modelli direttamente nella cartella ComfyUI. SSE stream."""

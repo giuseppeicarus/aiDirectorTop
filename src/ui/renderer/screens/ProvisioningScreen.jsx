@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE } from '../utils/apiClient'
+import { useProvisioningStore } from '../stores/provisioningStore'
 
 const API = `${API_BASE}/provisioning`
 
@@ -376,7 +377,6 @@ export default function ProvisioningScreen() {
   const [findingComfyUI, setFindingComfyUI] = useState(false)
 
   // Local
-  const [localPath, setLocalPath] = useState('')
   const [findingLocal, setFindingLocal] = useState(false)
 
   // Models
@@ -387,12 +387,12 @@ export default function ProvisioningScreen() {
   const [saveStatus, setSaveStatus] = useState(null)  // null | 'saving' | 'saved' | 'error'
   const autoSaveTimer = useRef(null)
 
-  // Terminal
-  const [termLines, setTermLines] = useState([])
-  const [termPct, setTermPct] = useState(0)
-  const [running, setRunning] = useState(false)
-  const [currentProgress, setCurrentProgress] = useState(null)
-  const [report, setReport] = useState(null)
+  // Terminal + running state — persistito nello store cross-navigazione
+  const {
+    termLines, termPct, running, currentProgress, report, activeMode,
+    localPath, setLocalPath,
+    startStream, clearOutput,
+  } = useProvisioningStore()
 
   // ── Auto-save SSH config con debounce 800ms ──────────────────────────────
   const doSaveSSH = useCallback(async (nodeIdx, fields) => {
@@ -462,10 +462,13 @@ export default function ProvisioningScreen() {
       })
       .catch(() => { setAllNodes([]); setRemoteNodes([]) })
 
-    fetch(`${API}/find-local-comfyui`)
-      .then(r => r.json())
-      .then(d => { if (d.found && d.path) setLocalPath(d.path) })
-      .catch(() => {})
+    // Prova a trovare ComfyUI locale solo se il path non è già salvato
+    if (!localPath) {
+      fetch(`${API}/find-local-comfyui`)
+        .then(r => r.json())
+        .then(d => { if (d.found && d.path) setLocalPath(d.path) })
+        .catch(() => {})
+    }
   }, [])
 
   const sshCredentials = () => ({
@@ -505,60 +508,8 @@ export default function ProvisioningScreen() {
     } catch {} finally { setFindingLocal(false) }
   }
 
-  const canSSH = sshStatus?.ok && host && user && comfyuiPath && selectedIds.size > 0 && !running
+  const canSSH   = sshStatus?.ok && host && user && comfyuiPath && selectedIds.size > 0 && !running
   const canLocal = localPath && selectedIds.size > 0 && !running
-
-  function startStream(url, body) {
-    setTermLines([]); setTermPct(0); setRunning(true)
-    setCurrentProgress(null); setReport(null)
-
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      .then(async resp => {
-        const reader = resp.body.getReader()
-        const dec = new TextDecoder()
-        let buf = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buf += dec.decode(value, { stream: true })
-          const parts = buf.split('\n\n'); buf = parts.pop() || ''
-          for (const part of parts) {
-            const line = part.trim()
-            if (!line.startsWith('data:')) continue
-            try {
-              const ev = JSON.parse(line.slice(5).trim())
-
-              // Aggiorna progress bar live aria2c/wget
-              if (ev.tag === 'PROGRESS' && ev.extra) {
-                setCurrentProgress(ev.extra)
-              } else if (ev.tag === 'DONE' || ev.tag === 'SKIP' || ev.tag === 'ERROR') {
-                setCurrentProgress(null)  // reset progress dopo ogni modello
-              }
-
-              // Non aggiungere le linee PROGRESS al terminal (troppo verbose)
-              // ma tieni le righe significative
-              if (ev.tag !== 'PROGRESS') {
-                setTermLines(prev => [...prev, ev])
-              }
-
-              if (ev.pct != null) setTermPct(ev.pct)
-
-              if (ev.type === 'complete' || ev.type === 'error') {
-                setRunning(false)
-                setCurrentProgress(null)
-                if (ev.report) setReport(ev.report)
-                if (ev.type === 'complete') setTermPct(1)
-              }
-            } catch {}
-          }
-        }
-        setRunning(false)
-      })
-      .catch(e => {
-        setTermLines(prev => [...prev, { text: `Errore connessione: ${e}`, tag: 'ERROR' }])
-        setRunning(false)
-      })
-  }
 
   const totalGB = totalSize(manifest.models || [], selectedIds)
 
@@ -585,7 +536,7 @@ export default function ProvisioningScreen() {
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      <div className="flex-1 flex overflow-hidden min-h-0 relative">
 
         {/* ── Col 1: Config (280px) ── */}
         <div className="w-[280px] shrink-0 border-r border-[#252533] flex flex-col overflow-y-auto">
@@ -721,6 +672,14 @@ export default function ProvisioningScreen() {
           onRefresh={loadManifest}
         />
 
+        {/* Banner provisioning in corso su altro modo */}
+        {running && activeMode && activeMode !== mode && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-4 py-2 bg-[#c9a84c]/20 border border-[#c9a84c]/40 rounded-lg text-xs text-[#c9a84c] font-mono shadow-lg">
+            <Loader2 size={11} className="animate-spin shrink-0" />
+            Provisioning {activeMode === 'ssh' ? 'SSH' : 'locale'} in corso in background — vai alla tab {activeMode === 'ssh' ? 'SSH Remoto' : 'Locale'} per vedere il log
+          </div>
+        )}
+
         {/* ── Col 3: Health + Terminal (360px) ── */}
         <div className="w-[360px] shrink-0 flex flex-col overflow-hidden">
           <div className="h-[40%] p-4 border-b border-[#252533] overflow-y-auto shrink-0">
@@ -746,12 +705,12 @@ export default function ProvisioningScreen() {
             {/* CTA */}
             <div className="mb-3 shrink-0">
               {mode === 'ssh' ? (
-                <button onClick={() => startStream(`${API}/start`, { ...sshCredentials(), comfyui_path: comfyuiPath, model_ids: [...selectedIds] })} disabled={!canSSH} className={clsx('w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors', canSSH ? 'bg-[#22c55e] hover:bg-[#16a34a] text-white' : 'bg-[#16161f] border border-[#252533] text-[#555568] cursor-not-allowed')}>
-                  {running ? <><Loader2 size={14} className="animate-spin" />SSH in corso...</> : <><Download size={14} />SSH — {selectedIds.size} modelli ({fmtGB(totalGB)})</>}
+                <button onClick={() => startStream(`${API}/start`, { ...sshCredentials(), comfyui_path: comfyuiPath, model_ids: [...selectedIds] }, 'ssh')} disabled={!canSSH} className={clsx('w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors', canSSH ? 'bg-[#22c55e] hover:bg-[#16a34a] text-white' : 'bg-[#16161f] border border-[#252533] text-[#555568] cursor-not-allowed')}>
+                  {running && activeMode === 'ssh' ? <><Loader2 size={14} className="animate-spin" />SSH in corso...</> : <><Download size={14} />SSH — {selectedIds.size} modelli ({fmtGB(totalGB)})</>}
                 </button>
               ) : (
-                <button onClick={() => startStream(`${API}/start-local`, { comfyui_path: localPath, model_ids: [...selectedIds] })} disabled={!canLocal} className={clsx('w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors', canLocal ? 'bg-[#3b82f6] hover:bg-[#2563eb] text-white' : 'bg-[#16161f] border border-[#252533] text-[#555568] cursor-not-allowed')}>
-                  {running ? <><Loader2 size={14} className="animate-spin" />Download in corso...</> : <><HardDrive size={14} />Locale — {selectedIds.size} modelli ({fmtGB(totalGB)})</>}
+                <button onClick={() => startStream(`${API}/start-local`, { comfyui_path: localPath, model_ids: [...selectedIds] }, 'local')} disabled={!canLocal} className={clsx('w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors', canLocal ? 'bg-[#3b82f6] hover:bg-[#2563eb] text-white' : 'bg-[#16161f] border border-[#252533] text-[#555568] cursor-not-allowed')}>
+                  {running && activeMode === 'local' ? <><Loader2 size={14} className="animate-spin" />Download in corso...</> : <><HardDrive size={14} />Locale — {selectedIds.size} modelli ({fmtGB(totalGB)})</>}
                 </button>
               )}
               {mode === 'ssh' && !sshStatus?.ok && <p className="text-[10px] text-[#555568] text-center mt-1">Testa SSH prima di procedere</p>}
@@ -765,7 +724,7 @@ export default function ProvisioningScreen() {
                 running={running}
                 currentProgress={currentProgress}
                 report={report}
-                onClear={() => { setTermLines([]); setTermPct(0); setReport(null); setCurrentProgress(null) }}
+                onClear={clearOutput}
               />
             </div>
           </div>

@@ -14,6 +14,21 @@ import structlog
 
 log = structlog.get_logger("local.provisioner")
 
+
+def find_model_in_comfyui(base: Path, filename: str) -> Optional[Path]:
+    """
+    Cerca `filename` in tutta la struttura models/ di ComfyUI.
+    Ritorna il Path trovato oppure None.
+    """
+    models_root = base / "models"
+    if not models_root.exists():
+        return None
+    for found in models_root.rglob(filename):
+        if found.is_file() and found.stat().st_size > 1024:
+            return found
+    return None
+
+
 # Path comuni per ComfyUI su Windows e Linux
 _COMMON_PATHS = [
     # Windows
@@ -156,13 +171,28 @@ async def run_local_provision(
 
         elapsed = round(time.monotonic() - t_global, 1)
 
-        # Già presente
+        # Controlla nel path esatto prima
         if dest.exists() and dest.stat().st_size > 1024:
             done += 1
             yield {
                 "type": "skip",
-                "text": f"[SKIP] {filename} — già presente",
+                "text": f"[SKIP] {filename} — già presente in {target_dir}",
                 "filename": filename, "name": name,
+                "pct": round(done / total, 3),
+                "elapsed_sec": elapsed, "tag": "SKIP",
+            }
+            continue
+
+        # Cerca in tutta la struttura models/ di ComfyUI
+        found_elsewhere = find_model_in_comfyui(base, filename)
+        if found_elsewhere:
+            done += 1
+            rel = found_elsewhere.relative_to(base)
+            yield {
+                "type": "skip",
+                "text": f"[SKIP] {filename} — trovato in {rel}",
+                "filename": filename, "name": name,
+                "found_path": str(found_elsewhere),
                 "pct": round(done / total, 3),
                 "elapsed_sec": elapsed, "tag": "SKIP",
             }
