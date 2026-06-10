@@ -6,13 +6,43 @@ Usabile anche per LM Studio e qualsiasi endpoint OpenAI-compatibile.
 import json
 import re
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from src.core.llm.base import BaseLLMAdapter, StoryboardRequest
 from src.core.config import get_config, LLMConfig
+
+# ── Ollama per-host semaphore (serializza load+inference su stessa istanza) ───
+_ollama_sems: dict[str, asyncio.Semaphore] = {}
+_ollama_sems_mu: threading.Lock = threading.Lock()
+
+
+def _get_ollama_sem(host_key: str) -> asyncio.Semaphore:
+    with _ollama_sems_mu:
+        if host_key not in _ollama_sems:
+            _ollama_sems[host_key] = asyncio.Semaphore(1)
+        return _ollama_sems[host_key]
+
+
+def _ollama_root_url(base_url: str) -> str:
+    u = base_url.rstrip("/")
+    if u.endswith("/v1"):
+        u = u[:-3]
+    return u
+
+
+def _ollama_same_model(a: str, b: str) -> bool:
+    """Confronto robusto nomi Ollama: llama3 == llama3:latest."""
+    def _norm(s: str) -> str:
+        s = s.strip().lower()
+        if ":" not in s:
+            s += ":latest"
+        return s
+    return _norm(a) == _norm(b)
 
 
 def _openai_retryable(exc: BaseException) -> bool:
@@ -58,31 +88,80 @@ class OpenAIAdapter(BaseLLMAdapter):
         self._max_tokens = cfg.max_tokens
         self._config = cfg
         self._provider = (cfg.provider or "").lower()
-        # json_object mode: supported by openai, groq, ollama; not by lmstudio or unknown proxies
+        # json_object mode: only openai and groq guarantee it; ollama/lmstudio vary by model
         _p = (cfg.provider or "").lower()
-        self._use_json_format = _p in ("openai", "groq", "ollama") or cfg.base_url is None
+        self._use_json_format = _p in ("openai", "groq") or cfg.base_url is None
 
     @asynccontextmanager
     async def _lmstudio_lock(self):
-        """
-        Serializes the entire load+inference cycle for LM Studio.
-        When provider is not LM Studio, behaves as a no-op context manager.
-        This prevents concurrent requests from loading multiple models simultaneously.
-        """
-        if self._provider not in ("lmstudio", "lm_studio"):
+        """Backward-compat alias → _local_model_lock."""
+        async with self._local_model_lock():
             yield
+
+    @asynccontextmanager
+    async def _local_model_lock(self):
+        """
+        Serializza load+inference per provider locali.
+        - LM Studio: semaphore globale per host + ensure model loaded
+        - Ollama:    semaphore globale per host + unload modelli diversi
+        """
+        if self._provider in ("lmstudio", "lm_studio"):
+            from src.core.llm.model_probe import get_lmstudio_inference_sem, lmstudio_native_base
+            sem = get_lmstudio_inference_sem(lmstudio_native_base(self._config.base_url))
+            async with sem:
+                yield
+        elif self._provider == "ollama":
+            root = _ollama_root_url(self._config.base_url or "http://localhost:11434/v1")
+            sem = _get_ollama_sem(root)
+            async with sem:
+                await self._ensure_ollama_exclusive(root)
+                yield
+        else:
+            yield
+
+    async def _ensure_ollama_exclusive(self, root: str) -> None:
+        """
+        Scarica dalla VRAM qualsiasi modello Ollama che non sia quello richiesto.
+        Usa GET /api/ps per vedere cosa è caricato, POST /api/generate keep_alive=0 per scaricare.
+        """
+        if not self._model:
             return
-        from src.core.llm.model_probe import get_lmstudio_inference_sem, lmstudio_native_base
-        sem = get_lmstudio_inference_sem(lmstudio_native_base(self._config.base_url))
-        async with sem:
-            yield
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{root}/api/ps")
+                if r.status_code != 200:
+                    return
+                running: list[dict] = r.json().get("models", [])
+                for m in running:
+                    name = m.get("name") or m.get("model") or ""
+                    if name and not _ollama_same_model(name, self._model):
+                        # keep_alive=0 → Ollama scarica subito il modello dalla VRAM
+                        await client.post(
+                            f"{root}/api/generate",
+                            json={"model": name, "keep_alive": 0},
+                            timeout=15.0,
+                        )
+        except Exception:
+            pass  # non-critical: se non riesce a scaricare, procede comunque
+
+    async def _chat_create(self, **kwargs):
+        """Chiama chat.completions.create con fallback automatico se response_format è rifiutato."""
+        try:
+            return await self._client.chat.completions.create(**kwargs)
+        except Exception as _exc:
+            if "response_format" in kwargs:
+                _msg = str(_exc).lower()
+                if any(k in _msg for k in ("response_format", "format", "unrecognized", "json_object", "unsupported")):
+                    kwargs.pop("response_format")
+                    self._use_json_format = False
+                    return await self._client.chat.completions.create(**kwargs)
+            raise
 
     async def _ensure_model_ready(self) -> None:
-        if self._provider not in ("lmstudio", "lm_studio"):
-            return
-        from src.core.llm.model_probe import ensure_lmstudio_model_loaded
-
-        await ensure_lmstudio_model_loaded(self._config)
+        if self._provider in ("lmstudio", "lm_studio"):
+            from src.core.llm.model_probe import ensure_lmstudio_model_loaded
+            await ensure_lmstudio_model_loaded(self._config)
+        # Ollama: l'unload esclusivo è già gestito in _local_model_lock prima dell'inferenza
 
     @retry(
         stop=stop_after_attempt(3),
@@ -110,7 +189,7 @@ class OpenAIAdapter(BaseLLMAdapter):
             )
             if self._use_json_format:
                 kwargs["response_format"] = {"type": "json_object"}
-            response = await self._client.chat.completions.create(**kwargs)
+            response = await self._chat_create(**kwargs)
             from src.core.llm.style_improve import openai_message_text
 
             raw = openai_message_text(response.choices[0].message)
@@ -154,7 +233,7 @@ class OpenAIAdapter(BaseLLMAdapter):
             )
             if self._use_json_format:
                 kwargs["response_format"] = {"type": "json_object"}
-            response = await self._client.chat.completions.create(**kwargs)
+            response = await self._chat_create(**kwargs)
             from src.core.llm.style_improve import openai_message_text
 
             raw = openai_message_text(response.choices[0].message)

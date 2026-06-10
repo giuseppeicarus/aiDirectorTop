@@ -380,6 +380,8 @@ async def run_tool(req: ToolRunRequest):
 @router.post("/enhance-prompt")
 async def enhance_prompt(req: EnhanceRequest):
     """Migliora prompt con il modello LLM della regia più adatto al tool/contesto."""
+    import structlog as _sl
+    _log = _sl.get_logger("api.tools.enhance")
     from src.core.llm.prompt_enhance_service import run_prompt_enhance
 
     try:
@@ -394,6 +396,15 @@ async def enhance_prompt(req: EnhanceRequest):
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
+    except Exception as exc:
+        _log.error("enhance_prompt_error", error=str(exc), exc_info=True)
+        msg = str(exc)
+        # Surfacing provider errors (openai.BadRequestError, httpx, etc.)
+        if hasattr(exc, "message"):
+            msg = exc.message  # type: ignore[attr-defined]
+        elif hasattr(exc, "body") and isinstance(exc.body, dict):  # type: ignore[attr-defined]
+            msg = exc.body.get("message") or msg  # type: ignore[attr-defined]
+        raise HTTPException(500, f"Errore LLM: {msg}") from exc
 
 
 @router.post("/upload")
