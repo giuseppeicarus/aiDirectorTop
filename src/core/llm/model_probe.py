@@ -335,12 +335,12 @@ async def ensure_lmstudio_model_loaded(cfg) -> dict[str, Any]:
             # Scarica tutti i modelli caricati che NON sono il modello richiesto
             unloaded_count = await _lmstudio_unload_others(client, native_base, headers, model)
 
-            # Ri-leggi il catalogo dopo l'unload per avere lo stato fresco
-            if unloaded_count > 0:
-                catalog = await _lmstudio_list_models(client, native_base, headers)
-                entry = _find_lmstudio_catalog_model(catalog, model) or entry
+            # Ri-leggi SEMPRE il catalogo per avere lo stato fresco dopo il possibile unload
+            catalog = await _lmstudio_list_models(client, native_base, headers)
 
-            if entry.get("loaded_instances"):
+            # Usa _instance_loaded_anywhere (controlla TUTTI gli entry, non solo il match primario)
+            # per evitare falsi "not loaded" dovuti a instance_id diversi dal model key
+            if _instance_loaded_anywhere(catalog, model):
                 return {
                     "loaded": False,
                     "already_loaded": True,

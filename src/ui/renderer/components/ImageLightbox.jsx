@@ -154,7 +154,7 @@ export default function ImageLightbox({
 
   const ui = (
     <div
-      className="fixed inset-0 z-[9999] flex flex-col bg-black/95 select-none"
+      className="fixed inset-x-0 bottom-0 top-8 z-[9999] flex flex-col bg-black/95 select-none"
       role="dialog"
       aria-modal="true"
       aria-label="Anteprima immagine"
