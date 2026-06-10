@@ -537,35 +537,20 @@ async def _improve_style_llm_call(adapter, user_prompt: str) -> dict:
     if hasattr(adapter, "_inject_language"):
         system = adapter._inject_language(system)
 
-    if hasattr(adapter, "_client"):
-        kwargs = dict(
-            model=adapter._model,
-            temperature=0.7,
-            max_tokens=512,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        if getattr(adapter, "_use_json_format", False):
-            kwargs["response_format"] = {"type": "json_object"}
-        response = await adapter._client.chat.completions.create(**kwargs)
-        raw = openai_message_text(response.choices[0].message)
-        parsed = _try_parse_json(raw)
-        if isinstance(parsed, dict):
-            return parsed
-        if raw.strip():
-            style, _ = extract_improved_style(raw)
-            if style:
-                return {"style": style, "rationale": ""}
-        raise ValueError("Empty or invalid LLM response")
-
-    return await adapter.generate_json(
+    result = await adapter.generate_json(
         system=system,
         user=user_prompt,
         temperature=0.7,
         max_tokens=512,
     )
+    if isinstance(result, dict) and ("style" in result or "rationale" in result):
+        return result
+    # Tolleranza: se il JSON non ha le chiavi attese, prova a estrarre lo stile dal testo
+    raw_str = str(result)
+    style, _ = extract_improved_style(raw_str)
+    if style:
+        return {"style": style, "rationale": ""}
+    raise ValueError("Empty or invalid LLM response")
 
 
 class GenerateReelDescriptionRequest(BaseModel):
@@ -616,32 +601,17 @@ async def generate_reel_description(req: GenerateReelDescriptionRequest):
 
     try:
         adapter = get_llm_adapter()
-        if hasattr(adapter, "_client"):
-            kwargs = dict(
-                model=adapter._model,
-                temperature=0.82,
-                max_tokens=600,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-            if getattr(adapter, "_use_json_format", False):
-                kwargs["response_format"] = {"type": "json_object"}
-            response = await adapter._client.chat.completions.create(**kwargs)
-            raw = openai_message_text(response.choices[0].message)
-        else:
-            raw_obj = await adapter.generate_json(
-                system=system,
-                user=user_prompt,
-                temperature=0.82,
-                max_tokens=600,
-            )
-            if isinstance(raw_obj, dict):
-                desc = raw_obj.get("description", "")
-                if desc:
-                    return {"ok": True, "description": desc}
-            raw = str(raw_obj)
+        raw_obj = await adapter.generate_json(
+            system=system,
+            user=user_prompt,
+            temperature=0.82,
+            max_tokens=600,
+        )
+        if isinstance(raw_obj, dict):
+            desc = raw_obj.get("description", "")
+            if desc:
+                return {"ok": True, "description": desc}
+        raw = str(raw_obj)
 
         parsed = _try_parse_json(raw)
         if isinstance(parsed, dict) and parsed.get("description"):

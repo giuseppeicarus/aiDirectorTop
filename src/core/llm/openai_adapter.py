@@ -253,13 +253,18 @@ class OpenAIAdapter(BaseLLMAdapter):
         )
 
     async def stream_storyboard(self, req: StoryboardRequest) -> AsyncIterator[str]:
-        # Use explicit acquire/release (not async-with) so the semaphore is always
-        # released even if the caller abandons the generator mid-stream.
+        # Use explicit acquire/release so the semaphore is always released
+        # even if the caller abandons the generator mid-stream.
         sem = None
         if self._provider in ("lmstudio", "lm_studio"):
             from src.core.llm.model_probe import get_lmstudio_inference_sem, lmstudio_native_base
             sem = get_lmstudio_inference_sem(lmstudio_native_base(self._config.base_url))
             await sem.acquire()
+        elif self._provider == "ollama":
+            root = _ollama_root_url(self._config.base_url or "http://localhost:11434/v1")
+            sem = _get_ollama_sem(root)
+            await sem.acquire()
+            await self._ensure_ollama_exclusive(root)
         try:
             await self._ensure_model_ready()
             stream = await self._client.chat.completions.create(
@@ -281,22 +286,33 @@ class OpenAIAdapter(BaseLLMAdapter):
                 sem.release()
 
     async def health_check_detail(self) -> tuple[bool, str | None]:
-        """Full check: verifies the server is up AND loads the configured model.
-        Acquires the inference semaphore so it never races with active pipeline inference.
+        """Verifica che il server sia raggiungibile e il modello sia installato.
+        Per LM Studio NON carica il modello in RAM: il caricamento avviene solo
+        al momento dell'inferenza, per evitare istanze duplicate tra health poll.
         """
         try:
             if self._provider in ("lmstudio", "lm_studio"):
                 from src.core.llm.model_probe import (
-                    ensure_lmstudio_model_loaded,
-                    get_lmstudio_inference_sem,
                     lmstudio_native_base,
+                    _auth_headers,
+                    _lmstudio_list_models,
+                    _find_lmstudio_catalog_model,
                 )
-                sem = get_lmstudio_inference_sem(lmstudio_native_base(self._config.base_url))
-                async with sem:
-                    await asyncio.wait_for(
-                        ensure_lmstudio_model_loaded(self._config),
-                        timeout=320.0,
+                native_base = lmstudio_native_base(self._config.base_url)
+                headers = _auth_headers(self._config.api_key)
+                async with httpx.AsyncClient() as client:
+                    catalog = await asyncio.wait_for(
+                        _lmstudio_list_models(client, native_base, headers),
+                        timeout=12.0,
                     )
+                if self._model:
+                    entry = _find_lmstudio_catalog_model(catalog, self._model)
+                    if entry is None:
+                        available = [str(e.get("key") or "") for e in catalog[:5]]
+                        return False, (
+                            f"Modello '{self._model}' non installato in LM Studio. "
+                            f"Disponibili: {', '.join(available)}"
+                        )
             else:
                 await asyncio.wait_for(self._client.models.list(), timeout=12.0)
             return True, None

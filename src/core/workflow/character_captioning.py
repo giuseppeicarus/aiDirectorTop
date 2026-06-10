@@ -307,59 +307,32 @@ async def _generate_single_image_caption_fallback(adapter, record: CharacterReco
         return ""
     encoded = _encode_image(path)
     
-    fallback_system = """You are a professional dataset captioner for character LoRA training.
-Analyze the attached image and write a concise, factual caption.
-CRITICAL RULES:
-1. The caption MUST start exactly with the character name (e.g., "[Character Name], ...").
-2. Write in a factual, clean, and highly descriptive style. Describe face features, hair, wardrobe, pose/action, framing, and background.
-3. Keep the caption to one descriptive sentence, between 25 and 55 words.
-4. Output ONLY the raw caption text. Do not output JSON, markdown or code blocks.
-"""
-    user_prompt = f"Character name: {record.name}\nProfile: {record.profile}\nGenerate a caption starting with: '{record.name}, '"
+    fallback_system = (
+        'You are a professional dataset captioner for character LoRA training. '
+        'Analyze the image and write a concise, factual caption. '
+        'RULES: caption MUST start with the character name. '
+        'Describe face, hair, wardrobe, pose, framing, background. '
+        'One sentence, 25-55 words. '
+        'Respond with exactly: {"caption": "<text>"}'
+    )
+    user_prompt = (
+        f"Character name: {record.name}\n"
+        f"Profile: {record.profile}\n"
+        f"Generate a caption starting with: '{record.name}, '"
+    )
 
-    if hasattr(adapter, "_client") and hasattr(adapter, "_model") and not "anthropic" in str(type(adapter._client)).lower():
-        content = [
-            {"type": "text", "text": user_prompt},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{encoded['mime']};base64,{encoded['b64']}", "detail": "high"}
-            }
-        ]
-        response = await adapter._client.chat.completions.create(
-            model=adapter._model,
+    try:
+        result = await adapter.generate_json_with_images(
+            fallback_system,
+            user_prompt,
+            images=[{"mime": encoded["mime"], "b64": encoded["b64"]}],
             temperature=0.25,
             max_tokens=300,
-            messages=[
-                {"role": "system", "content": fallback_system},
-                {"role": "user", "content": content},
-            ]
         )
-        from src.core.llm.style_improve import openai_message_text
-        raw_text = openai_message_text(response.choices[0].message)
+        raw_text = result.get("caption", "") if isinstance(result, dict) else str(result)
         return _normalize_caption_prefix(raw_text, record.name)
-        
-    elif hasattr(adapter, "_client") and hasattr(adapter, "_model") and "anthropic" in str(type(adapter._client)).lower():
-        blocks = [
-            {"type": "text", "text": user_prompt},
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": encoded["mime"],
-                    "data": encoded["b64"],
-                }
-            }
-        ]
-        response = await adapter._client.messages.create(
-            model=adapter._model,
-            max_tokens=300,
-            temperature=0.25,
-            system=fallback_system,
-            messages=[{"role": "user", "content": blocks}],
-        )
-        raw_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
-        return _normalize_caption_prefix(raw_text, record.name)
-        
+    except NotImplementedError:
+        pass
     return ""
 
 

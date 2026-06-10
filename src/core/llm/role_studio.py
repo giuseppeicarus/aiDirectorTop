@@ -176,29 +176,6 @@ async def call_role_studio_llm(adapter, user_prompt: str) -> dict:
     if hasattr(adapter, "_inject_language"):
         system = adapter._inject_language(system)
 
-    if hasattr(adapter, "_client"):
-        kwargs: dict = dict(
-            model=adapter._model,
-            temperature=0.4,
-            max_tokens=2500,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        if getattr(adapter, "_use_json_format", False):
-            kwargs["response_format"] = {"type": "json_object"}
-        response = await adapter._client.chat.completions.create(**kwargs)
-        raw = openai_message_text(response.choices[0].message)
-        parsed = _try_parse_json(raw)
-        if isinstance(parsed, dict):
-            return parsed
-        if raw.strip():
-            parsed2 = _try_parse_json(re.sub(r"```json?\s*", "", raw).replace("```", ""))
-            if isinstance(parsed2, dict):
-                return parsed2
-        raise ValueError("Risposta LLM vuota o non JSON")
-
     return await adapter.generate_json(
         system=system,
         user=user_prompt,

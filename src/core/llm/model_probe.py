@@ -335,6 +335,11 @@ async def ensure_lmstudio_model_loaded(cfg) -> dict[str, Any]:
             # Scarica tutti i modelli caricati che NON sono il modello richiesto
             unloaded_count = await _lmstudio_unload_others(client, native_base, headers, model)
 
+            # Ri-leggi il catalogo dopo l'unload per avere lo stato fresco
+            if unloaded_count > 0:
+                catalog = await _lmstudio_list_models(client, native_base, headers)
+                entry = _find_lmstudio_catalog_model(catalog, model) or entry
+
             if entry.get("loaded_instances"):
                 return {
                     "loaded": False,
@@ -477,10 +482,29 @@ async def _lmstudio_unload_others(
     keep_model: str,
     timeout: float = 120.0,
 ) -> int:
-    """Scarica dalla RAM tutti i modelli caricati tranne keep_model. Ritorna il numero scaricato."""
+    """Scarica dalla RAM tutti i modelli caricati tranne keep_model.
+    Itera per catalog ENTRY (non per instance_id) per evitare falsi non-match
+    tra il nome modello configurato e gli instance_id interni di LM Studio.
+    """
     catalog = await _lmstudio_list_models(client, native_base, headers)
-    all_ids = _collect_loaded_instance_ids(catalog)
-    to_unload = [iid for iid in all_ids if not _model_keys_match(keep_model, iid)]
+    to_unload: list[str] = []
+    for entry in catalog:
+        key = str(entry.get("key") or "")
+        variant = str(entry.get("selected_variant") or "")
+        display = str(entry.get("display_name") or "")
+        # Se questa entry è il modello da tenere, lascia tutte le sue istanze
+        if (
+            _model_keys_match(keep_model, key)
+            or (variant and _model_keys_match(keep_model, variant))
+            or (display and _model_keys_match(keep_model, display))
+        ):
+            continue
+        # Scarica tutte le istanze caricate di altri modelli
+        for inst in entry.get("loaded_instances") or []:
+            iid = str(inst.get("id") or "").strip()
+            if iid:
+                to_unload.append(iid)
+
     if not to_unload:
         return 0
 
@@ -491,8 +515,13 @@ async def _lmstudio_unload_others(
     while time.monotonic() < deadline:
         try:
             updated = await _lmstudio_list_models(client, native_base, headers)
-            remaining = _collect_loaded_instance_ids(updated)
-            if not any(iid in remaining for iid in to_unload):
+            remaining_ids: set[str] = set()
+            for entry in updated:
+                for inst in entry.get("loaded_instances") or []:
+                    iid = str(inst.get("id") or "").strip()
+                    if iid:
+                        remaining_ids.add(iid)
+            if not any(iid in remaining_ids for iid in to_unload):
                 return len(to_unload)
         except Exception:
             pass
