@@ -92,6 +92,19 @@ export default function ImageLightbox({
     return () => { document.body.style.overflow = prev }
   }, [open])
 
+  // Safety net: if native fullscreen is triggered (F key, video control bypass…)
+  // exit immediately so the custom header stays visible
+  useEffect(() => {
+    if (!open) return
+    function onFsChange() {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {})
+      }
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [open])
+
   const zoomBy = useCallback((factor) => {
     setScale(s => {
       const next = clamp(s * factor, MIN_SCALE, MAX_SCALE)
@@ -159,8 +172,8 @@ export default function ImageLightbox({
       aria-modal="true"
       aria-label="Anteprima immagine"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b border-white/10">
+      {/* Header — relative z-10 keeps it above video stacking context */}
+      <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b border-white/10 relative z-10">
         <div className="min-w-0 flex-1 pr-4">
           <p className="text-sm text-white/90 truncate font-mono">{current.alt || 'Anteprima'}</p>
           {list.length > 1 && (
@@ -233,8 +246,11 @@ export default function ImageLightbox({
             src={current.src}
             controls
             autoPlay
-            className="max-w-[92vw] max-h-[78vh] pointer-events-auto"
+            controlsList="nofullscreen nodownload nopictureinpicture"
+            disablePictureInPicture
+            className="max-w-full max-h-full pointer-events-auto"
             onClick={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}
           />
         )}
       </div>
