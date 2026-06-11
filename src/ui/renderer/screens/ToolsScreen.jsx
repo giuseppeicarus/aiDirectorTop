@@ -745,7 +745,10 @@ export default function ToolsScreen() {
   const toolFromUrl = searchParams.get('tool')
   const initialTool = TOOLS.some(t => t.id === toolFromUrl) ? toolFromUrl : 'txt2img'
   const [activeTool, setActiveTool]   = useState(initialTool)
-  const [prompt, setPrompt]           = useState('')
+  const [prompt, setPrompt]           = useState(() => {
+    try { return localStorage.getItem(`cinematic:tools:prompt:${initialTool}`) || '' }
+    catch { return '' }
+  })
   const [aspectRatio, setAspectRatio] = useState('16:9')
   const [resolution, setResolution]   = useState(RESOLUTIONS_BY_RATIO['16:9'][1])
   const [quality, setQuality]         = useState('medium')
@@ -776,6 +779,8 @@ export default function ToolsScreen() {
   const [promptExpanded, setPromptExpanded] = useState(false)
   const textareaRef                         = useRef(null)
   const expandedTextareaRef                 = useRef(null)
+  // Tracks current tool for localStorage save (avoids stale closure in save effect)
+  const activeToolRef                       = useRef(initialTool)
 
   // Enhance overlay progress
   const [enhancing, setEnhancing]         = useState(false)
@@ -882,6 +887,26 @@ export default function ToolsScreen() {
       expandedTextareaRef.current.setSelectionRange(len, len)
     }
   }, [promptExpanded])
+
+  // ── Prompt auto-save per tool ─────────────────────────────────────────────
+  // Save whenever the prompt text changes
+  useEffect(() => {
+    try { localStorage.setItem(`cinematic:tools:prompt:${activeToolRef.current}`, prompt) }
+    catch {}
+  }, [prompt])
+
+  // On tool switch: save current prompt under the old tool key, then load the
+  // saved prompt for the new tool (so each tool remembers its own last prompt)
+  useEffect(() => {
+    if (activeToolRef.current === activeTool) return
+    try { localStorage.setItem(`cinematic:tools:prompt:${activeToolRef.current}`, prompt) }
+    catch {}
+    activeToolRef.current = activeTool
+    try { setPrompt(localStorage.getItem(`cinematic:tools:prompt:${activeTool}`) || '') }
+    catch { setPrompt('') }
+    // prompt intentionally excluded: we capture it for the save, not to re-run
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool])
 
   // Load all media when switch is toggled ON
   useEffect(() => {

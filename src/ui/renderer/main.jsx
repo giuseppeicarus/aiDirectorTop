@@ -6,7 +6,7 @@ import './index.css'
 
 // StrictMode disabilitato: doppio mount + bootstrap async causava crash hook in dev/HMR
 createRoot(document.getElementById('root')).render(
-  <HashRouter>
+  <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
     <App />
   </HashRouter>
 )
