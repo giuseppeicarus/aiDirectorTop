@@ -1,5 +1,5 @@
 """
-Adapter OpenAI — supporta GPT-4o, GPT-4o-mini, GPT-4-turbo.
+Adapter OpenAI — supporta GPT-4o, GPT-4o-mini, GPT-4-turbo, o1, o3, o4-mini.
 Usabile anche per LM Studio e qualsiasi endpoint OpenAI-compatibile.
 """
 
@@ -15,6 +15,22 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from src.core.llm.base import BaseLLMAdapter, StoryboardRequest
 from src.core.config import get_config, LLMConfig
+
+# ── OpenAI reasoning model detection ─────────────────────────────────────────
+# o-series models (o1, o3, o4-mini…) require max_completion_tokens, not max_tokens.
+# o1-preview / o1-mini additionally reject temperature and response_format.
+_O_SERIES_RE = re.compile(r"^o\d", re.IGNORECASE)
+_O1_LEGACY_RE = re.compile(r"^o1-(preview|mini)", re.IGNORECASE)
+
+
+def _is_o_series(model: str) -> bool:
+    return bool(_O_SERIES_RE.match(model or ""))
+
+
+def _is_o1_legacy(model: str) -> bool:
+    """o1-preview and o1-mini: also reject temperature and response_format."""
+    return bool(_O1_LEGACY_RE.match(model or ""))
+
 
 # ── Ollama per-host semaphore (serializza load+inference su stessa istanza) ───
 _ollama_sems: dict[str, asyncio.Semaphore] = {}
@@ -145,12 +161,33 @@ class OpenAIAdapter(BaseLLMAdapter):
             pass  # non-critical: se non riesce a scaricare, procede comunque
 
     async def _chat_create(self, **kwargs):
-        """Chiama chat.completions.create con fallback automatico se response_format è rifiutato."""
+        """Chiama chat.completions.create con fallback automatico se response_format è rifiutato.
+
+        Gestisce i modelli o-series OpenAI (o1, o3, o4-mini…):
+        - max_tokens → max_completion_tokens
+        - o1-preview / o1-mini: rimuove temperature e response_format (non supportati)
+        """
+        model = str(kwargs.get("model") or self._model or "")
+        if _is_o_series(model):
+            if "max_tokens" in kwargs:
+                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+            if _is_o1_legacy(model):
+                kwargs.pop("temperature", None)
+                kwargs.pop("response_format", None)
+
         try:
             return await self._client.chat.completions.create(**kwargs)
         except Exception as _exc:
+            _msg = str(_exc).lower()
+            # Fallback: API ha rifiutato max_tokens → riprova con max_completion_tokens
+            if "max_tokens" in kwargs and (
+                "max_completion_tokens" in _msg or "max_tokens" in _msg
+            ):
+                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+                kwargs.pop("temperature", None)
+                kwargs.pop("response_format", None)
+                return await self._client.chat.completions.create(**kwargs)
             if "response_format" in kwargs:
-                _msg = str(_exc).lower()
                 if any(k in _msg for k in ("response_format", "format", "unrecognized", "json_object", "unsupported")):
                     kwargs.pop("response_format")
                     self._use_json_format = False

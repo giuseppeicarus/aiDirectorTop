@@ -942,9 +942,12 @@ export default function ToolsScreen() {
     runningRef.current = true
     updateJob(job.id, { status: 'running', progress: 0, progressMsg: 'Avvio…' })
 
+    let doneReceived = false
+
     const cleanup = window.studio.tools.onProgress((data) => {
       if (queueEpochRef.current !== epoch || cancelledJobIdsRef.current.has(job.id)) return
       if (data.done) {
+        doneReceived = true
         const result = {
           type: data.type,
           filename: data.filename,
@@ -958,6 +961,7 @@ export default function ToolsScreen() {
         notify('CinematicAI Studio', `${TOOLS.find(t => t.id === job.tool)?.label} completato`)
         runNextJob()
       } else if (data.error) {
+        doneReceived = true
         updateJob(job.id, { status: 'error', error: data.error, progress: 0 })
         cleanup?.()
         runningRef.current = false
@@ -1004,8 +1008,10 @@ export default function ToolsScreen() {
         cleanup?.()
         return
       }
-      // safety-net
+      // safety-net: scatta solo se nessun evento done/error è già arrivato via tools:progress
+      // (doneReceived=false significa che il backend non ha inviato done — connessione persa)
       if (
+        !doneReceived &&
         runningRef.current &&
         queueEpochRef.current === epoch &&
         !cancelledJobIdsRef.current.has(job.id)

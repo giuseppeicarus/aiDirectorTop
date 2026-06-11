@@ -408,19 +408,27 @@ function registerIpcHandlers() {
 
         let buf = ''
         res.setEncoding('utf8')
+
+        function dispatchLine(line) {
+          if (!line.startsWith('data: ')) return
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (!event.sender.isDestroyed()) event.sender.send('tools:progress', data)
+          } catch {}
+        }
+
         res.on('data', (chunk) => {
           buf += chunk
           const lines = buf.split('\n'); buf = lines.pop()
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6))
-                if (!event.sender.isDestroyed()) event.sender.send('tools:progress', data)
-              } catch {}
-            }
-          }
+          for (const line of lines) dispatchLine(line)
         })
-        res.on('end', () => resolve({ done: true }))
+        res.on('end', () => {
+          // Flush the remaining buffer: last SSE line may arrive without trailing \n
+          if (buf) { dispatchLine(buf.trim()); buf = '' }
+          // Small delay so all tools:progress IPC messages reach the renderer
+          // before this tools:run resolve — the two channels have no ordering guarantee
+          setTimeout(() => resolve({ done: true }), 80)
+        })
         res.on('error', reject)
       })
       request.on('error', (err) => {
