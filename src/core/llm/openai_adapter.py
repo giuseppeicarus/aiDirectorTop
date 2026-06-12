@@ -204,6 +204,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
         retry=retry_if_exception(_openai_retryable),
+        reraise=True,
     )
     async def generate_json(
         self,
@@ -236,6 +237,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
         retry=retry_if_exception(_openai_retryable),
+        reraise=True,
     )
     async def generate_json_with_images(
         self,
@@ -280,6 +282,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
         retry=retry_if_exception(_openai_retryable),
+        reraise=True,
     )
     async def generate_storyboard(self, req: StoryboardRequest) -> dict:
         return await self.generate_json(
@@ -324,8 +327,9 @@ class OpenAIAdapter(BaseLLMAdapter):
 
     async def health_check_detail(self) -> tuple[bool, str | None]:
         """Verifica che il server sia raggiungibile e il modello sia installato.
-        Per LM Studio NON carica il modello in RAM: il caricamento avviene solo
-        al momento dell'inferenza, per evitare istanze duplicate tra health poll.
+        Per LM Studio: prova prima la native catalog API; se non disponibile (versione
+        vecchia o native REST disabilitato) ricade sull'endpoint OpenAI-compatible.
+        Non carica il modello in RAM.
         """
         try:
             if self._provider in ("lmstudio", "lm_studio"):
@@ -336,20 +340,45 @@ class OpenAIAdapter(BaseLLMAdapter):
                     _find_lmstudio_catalog_model,
                 )
                 native_base = lmstudio_native_base(self._config.base_url)
+                compat_base = (self._config.base_url or "http://127.0.0.1:1234/v1").rstrip("/")
                 headers = _auth_headers(self._config.api_key)
-                async with httpx.AsyncClient() as client:
-                    catalog = await asyncio.wait_for(
-                        _lmstudio_list_models(client, native_base, headers),
-                        timeout=12.0,
-                    )
-                if self._model:
-                    entry = _find_lmstudio_catalog_model(catalog, self._model)
-                    if entry is None:
-                        available = [str(e.get("key") or "") for e in catalog[:5]]
-                        return False, (
-                            f"Modello '{self._model}' non installato in LM Studio. "
-                            f"Disponibili: {', '.join(available)}"
+
+                # ── Try native catalog API (/api/v1/models) ──────────────────
+                catalog: list | None = None
+                try:
+                    async with httpx.AsyncClient() as client:
+                        catalog = await asyncio.wait_for(
+                            _lmstudio_list_models(client, native_base, headers),
+                            timeout=8.0,
                         )
+                except Exception:
+                    catalog = None
+
+                if catalog is not None:
+                    # Native API available: check model presence in catalog
+                    if self._model:
+                        entry = _find_lmstudio_catalog_model(catalog, self._model)
+                        if entry is None:
+                            available = [str(e.get("key") or "") for e in catalog[:5]]
+                            return False, (
+                                f"Modello '{self._model}' non installato in LM Studio. "
+                                f"Disponibili: {', '.join(available)}"
+                            )
+                    return True, None
+
+                # ── Fallback: OpenAI-compatible /v1/models ───────────────────
+                compat_headers: dict[str, str] = {}
+                if self._config.api_key:
+                    compat_headers["Authorization"] = f"Bearer {self._config.api_key}"
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        f"{compat_base}/models",
+                        headers=compat_headers,
+                        timeout=8.0,
+                    )
+                if r.status_code >= 400:
+                    return False, f"LM Studio non raggiungibile (HTTP {r.status_code})"
+                return True, None
             else:
                 await asyncio.wait_for(self._client.models.list(), timeout=12.0)
             return True, None
@@ -359,20 +388,17 @@ class OpenAIAdapter(BaseLLMAdapter):
 
     async def health_check(self) -> bool:
         """Fast ping — verifies the server is reachable WITHOUT loading the model.
-        Used by the services status poll (8 s timeout) so it must not block on model loading.
+        Uses the OpenAI-compatible /v1/models endpoint (universally supported by all
+        LM Studio versions); native /api/v1 is used only for load/unload operations.
         """
         try:
             if self._provider in ("lmstudio", "lm_studio"):
-                import httpx
-                from src.core.llm.model_probe import lmstudio_native_base, _auth_headers
-                native_base = lmstudio_native_base(self._config.base_url)
-                headers = _auth_headers(self._config.api_key)
+                base = (self._config.base_url or "http://127.0.0.1:1234/v1").rstrip("/")
+                headers: dict[str, str] = {}
+                if self._config.api_key:
+                    headers["Authorization"] = f"Bearer {self._config.api_key}"
                 async with httpx.AsyncClient() as client:
-                    r = await client.get(
-                        f"{native_base}/api/v1/models",
-                        headers=headers,
-                        timeout=8.0,
-                    )
+                    r = await client.get(f"{base}/models", headers=headers, timeout=8.0)
                     return r.status_code < 400
             else:
                 ok, _ = await self.health_check_detail()

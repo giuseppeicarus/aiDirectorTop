@@ -2911,14 +2911,16 @@ class TrailerPipeline:
                 }
 
                 clip_dest = self._clips_dir / f"{clip.clip_id}.mp4"
-                # Remove stale clip from a previous run that was too small
-                if clip_dest.exists() and not _artifact_ok(clip_dest, min_bytes=50_000):
+                # Remove stale clips: both too-small AND static-image fallbacks (<400KB).
+                # Real LTX videos are always ≥ 500KB; static FFmpeg loops are < 300KB.
+                _ltx_min = 400_000 if self.req.clip_backend == "comfyui" else 50_000
+                if clip_dest.exists() and not _artifact_ok(clip_dest, min_bytes=_ltx_min):
                     try:
                         clip_dest.unlink(missing_ok=True)
                     except OSError:
                         pass
 
-                if _artifact_ok(clip_dest, min_bytes=50_000):
+                if _artifact_ok(clip_dest, min_bytes=_ltx_min):
                     clip.clip_path = str(clip_dest)
                     yield {
                         "event": "clip_skip",
@@ -3006,7 +3008,10 @@ class TrailerPipeline:
             except Exception as exc:
                 err_msg = str(exc) or repr(exc)
                 log.error("clip_generation_failed", clip_id=clip.clip_id, error=err_msg)
-                if self.req.allow_ffmpeg_fallback:
+                # For ComfyUI backend: never substitute a failed LTX clip with a static
+                # image loop — a freeze-frame is not cinematically acceptable.
+                # FFmpeg fallback is only allowed for the explicit ffmpeg backend.
+                if self.req.allow_ffmpeg_fallback and self.req.clip_backend != "comfyui":
                     try:
                         ff_p, lf_p = _resolve_frame_paths(clip)
                         if _artifact_ok(ff_p):
@@ -3048,14 +3053,28 @@ class TrailerPipeline:
             # Small cooldown so ComfyUI output queue is fully flushed before next job.
             await asyncio.sleep(1.5)
 
-        # Recovery: clips still missing video → ffmpeg fallback
-        if self.req.allow_ffmpeg_fallback:
-            missing = [
-                c for c in self._clips_list
-                if not c.clip_path or not Path(c.clip_path).exists()
-                or Path(c.clip_path).stat().st_size < 50_000
-            ]
-            if missing:
+        # Recovery: clips still missing video after main loop.
+        # For ComfyUI backend: never substitute with static image loops.
+        # For ffmpeg backend: use _gen_video_ffmpeg as before.
+        _recovery_min = 400_000 if self.req.clip_backend == "comfyui" else 50_000
+        missing = [
+            c for c in self._clips_list
+            if not c.clip_path or not Path(c.clip_path).exists()
+            or Path(c.clip_path).stat().st_size < _recovery_min
+        ]
+        if missing:
+            if self.req.clip_backend == "comfyui":
+                # Log failed clips but do NOT create static-image placeholders.
+                for clip in missing:
+                    log.warning(
+                        "clip_ltx_failed_no_fallback",
+                        clip_id=clip.clip_id,
+                        reason="ComfyUI LTX did not produce a video — clip skipped",
+                    )
+                    clip.clip_path = None
+                    yield {"event": "clip_error", "clip_id": clip.clip_id,
+                           "error": "LTX generation failed — clip excluded from assembly"}
+            elif self.req.allow_ffmpeg_fallback:
                 yield {
                     "event": "clip_recovery",
                     "backend": "ffmpeg",

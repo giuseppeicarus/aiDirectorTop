@@ -53,17 +53,41 @@ def _word_count(text: str) -> int:
 
 
 def _join_unique(parts: list[str], *, sep: str = ", ") -> str:
-    seen: set[str] = set()
+    """Deduplicate prompt parts by keyword overlap, not prefix truncation.
+
+    Two parts are considered duplicates if:
+    - One is a substring of the other (after lowercasing), OR
+    - They share more than 60% of their significant keywords (len>3)
+    """
+    import re as _re_ju
+    seen_keys: list[set[str]] = []
+    seen_full: list[str] = []
     out: list[str] = []
     for p in parts:
         p = (p or "").strip()
         if not p or len(p) < 4:
             continue
-        key = p.lower()[:80]
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
+        p_lower = p.lower()
+        # Check substring containment against already-accepted parts
+        is_dup = False
+        for accepted_lower in seen_full:
+            if p_lower in accepted_lower or accepted_lower in p_lower:
+                is_dup = True
+                break
+        if not is_dup:
+            # Check keyword-set overlap
+            p_kw = set(_re_ju.findall(r"[a-z]{4,}", p_lower))
+            if p_kw:
+                for accepted_kw in seen_keys:
+                    if accepted_kw:
+                        overlap = len(p_kw & accepted_kw) / min(len(p_kw), len(accepted_kw))
+                        if overlap > 0.6:
+                            is_dup = True
+                            break
+        if not is_dup:
+            seen_full.append(p_lower)
+            seen_keys.append(set(_re_ju.findall(r"[a-z]{4,}", p_lower)))
+            out.append(p)
     return sep.join(out)
 
 

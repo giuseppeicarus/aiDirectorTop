@@ -82,8 +82,37 @@ async def _fetch_provider_models(provider: str, base_url: str, api_key: str) -> 
             r = await client.get(url)
             r.raise_for_status()
             return [m["name"] for m in r.json().get("models", [])]
+
+        elif p in ("lmstudio", "lm_studio"):
+            # Try native catalog API first (/api/v1/models) — lists ALL installed
+            # models, not just the currently loaded one.
+            from src.core.llm.model_probe import lmstudio_native_base
+            native_base = lmstudio_native_base(base_url)
+            try:
+                r = await client.get(
+                    f"{native_base}/api/v1/models",
+                    headers=headers,
+                    timeout=6.0,
+                )
+                if r.status_code < 400:
+                    raw = r.json().get("models") or []
+                    ids = [
+                        str(m.get("id") or m.get("key") or "").strip()
+                        for m in raw
+                    ]
+                    ids = sorted(x for x in ids if x)
+                    if ids:
+                        return ids
+            except Exception:
+                pass
+            # Fallback: OpenAI-compatible /v1/models (returns loaded models only)
+            url = base_url.rstrip("/") + "/models"
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            return sorted(m["id"] for m in r.json().get("data", []))
+
         else:
-            # OpenAI-compatible: /models
+            # Generic OpenAI-compatible endpoint
             url = base_url.rstrip("/") + "/models"
             r = await client.get(url, headers=headers)
             r.raise_for_status()

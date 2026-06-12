@@ -44,7 +44,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self._temperature = cfg.temperature
         self._max_tokens = cfg.max_tokens
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable), reraise=True)
     async def generate_json(
         self,
         system: str,
@@ -62,7 +62,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         )
         return self._parse_json(response.content[0].text)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable), reraise=True)
     async def generate_json_with_images(
         self,
         system: str,
@@ -99,7 +99,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         )
         return self._parse_json(text)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30), retry=retry_if_exception(_anthropic_retryable), reraise=True)
     async def generate_storyboard(self, req: StoryboardRequest) -> dict:
         return await self.generate_json(
             system=self.SYSTEM_PROMPT,

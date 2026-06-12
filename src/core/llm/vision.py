@@ -83,12 +83,15 @@ async def analyze_reference_images(
                     style=style,
                     image_names=[],
                 )
-                raw = await _llm_json(
-                    REEL_VISION_SYSTEM,
-                    user_text_brief + "\n\n(No reference images provided — synthesize character_anchors and environment_anchors strictly from the brief text above.)",
-                    role="narrative_director",
-                    temperature=0.4,
-                    max_tokens=1024,
+                raw = await asyncio.wait_for(
+                    _llm_json(
+                        REEL_VISION_SYSTEM,
+                        user_text_brief + "\n\n(No reference images provided — synthesize character_anchors and environment_anchors strictly from the brief text above.)",
+                        role="narrative_director",
+                        temperature=0.4,
+                        max_tokens=1024,
+                    ),
+                    timeout=60.0,
                 )
                 raw.setdefault("images", [])
                 raw.setdefault("combined_style", style or "cinematic, photorealistic")

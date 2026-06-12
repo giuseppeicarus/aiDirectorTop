@@ -397,13 +397,24 @@ async def enhance_prompt(req: EnhanceRequest):
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
     except Exception as exc:
-        _log.error("enhance_prompt_error", error=str(exc), exc_info=True)
-        msg = str(exc)
-        # Surfacing provider errors (openai.BadRequestError, httpx, etc.)
-        if hasattr(exc, "message"):
-            msg = exc.message  # type: ignore[attr-defined]
-        elif hasattr(exc, "body") and isinstance(exc.body, dict):  # type: ignore[attr-defined]
-            msg = exc.body.get("message") or msg  # type: ignore[attr-defined]
+        # Unwrap Tenacity RetryError in case reraise=True was not set on older adapters
+        actual = exc
+        try:
+            from tenacity import RetryError as _RE
+            if isinstance(exc, _RE) and exc.last_attempt.failed:
+                actual = exc.last_attempt.exception()
+        except Exception:
+            pass
+        _log.error("enhance_prompt_error", error=str(actual), exc_info=True)
+        msg = str(actual)
+        if hasattr(actual, "message"):
+            msg = actual.message  # type: ignore[attr-defined]
+        elif hasattr(actual, "body") and isinstance(actual.body, dict):  # type: ignore[attr-defined]
+            msg = actual.body.get("message") or msg  # type: ignore[attr-defined]
+        # Include raw LLM snippet when parse failed (attached by _parse_json)
+        raw_resp = getattr(actual, "raw_response", None)
+        if raw_resp and isinstance(raw_resp, str):
+            msg = f"{msg} | risposta: {raw_resp[:200]!r}"
         raise HTTPException(500, f"Errore LLM: {msg}") from exc
 
 

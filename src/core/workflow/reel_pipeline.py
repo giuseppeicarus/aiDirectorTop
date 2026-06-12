@@ -45,6 +45,9 @@ from src.core.llm.reel_prompts import (
 )
 from src.core.llm.vision import analyze_reference_images
 
+
+_STRIP_PUNCT = ".,!?;: " + chr(34) + chr(39)  # Chars to strip from brief words
+
 log = structlog.get_logger()
 
 _REEL_COMFYUI_GENERATION_LOCK = asyncio.Lock()
@@ -273,6 +276,20 @@ def _build_visual_plans_from_edl(
         same_scene_as_prev = bool(scene_id and scene_id == prev_scene_id and slot_i > 0)
         prev_scene_id = scene_id
 
+        # Environment-aware lighting based on brief keywords
+        _brief_low = (brief or "").lower()
+        if any(k in _brief_low for k in ("antart", "arctic", "polar", "ghiaccio", "iceberg", "tundra", "penguin", "pinguino")):
+            _lighting = f"pale blue-white overcast polar light, diffused, no warm tones, flat horizon glow, {mood}"
+        elif any(k in _brief_low for k in ("desert", "deserto", "sabbia", "sahara")):
+            _lighting = f"harsh golden directional sunlight, hard shadows, bleached sky, {mood}"
+        elif any(k in _brief_low for k in ("night", "notte", "aurora", "stars", "stelle", "moon", "luna")):
+            _lighting = f"deep blue ambient night, practical light sources, aurora glow, {mood}"
+        elif any(k in _brief_low for k in ("forest", "foresta", "jungle", "giungla", "woods")):
+            _lighting = f"dappled green-filtered natural light, soft diffusion, {mood}"
+        elif any(k in _brief_low for k in ("sunset", "tramonto", "golden hour", "dawn", "alba")):
+            _lighting = f"warm golden hour directional light, long shadows, rich saturation, {mood}"
+        else:
+            _lighting = f"soft cinematic directional key light, controlled shadows, {mood}"
         plan = {
             "slot_id": slot_id,
             "scene_id": scene_id,
@@ -280,7 +297,7 @@ def _build_visual_plans_from_edl(
             "lens_mm": lens,
             "depth_of_field": "shallow" if energy in ("high", "peak") else "medium",
             "camera_movement": move,
-            "lighting": f"warm directional light, {mood}",
+            "lighting": _lighting,
             "composition": "rule of thirds, subject in focus",
             "scene_description": raw_scene,
             "first_frame_state": first_state,
@@ -997,21 +1014,53 @@ class ReelPipeline(TrailerPipeline):
             self._edl = self._edl_from_director_slots([])
             self._map_lyrics_to_slots()
             vis = getattr(self, "_vision", None) or {}
-            # Build a more cinematographic fallback narrative instead of copying the brief raw
-            _motifs = (vis.get("environment_anchors") or [])[:6] or self._extract_visual_motifs_from_brief()
-            _style_hint = (self._reel_req.style or "").split(",")[0].strip()[:60]
+            brief_text = (self._reel_req.description or "").strip()
+            # Build a brief-specific fallback narrative derived from the user's brief
+            _motifs_from_brief = self._extract_visual_motifs_from_brief()
+            _motifs_from_vis = (vis.get("environment_anchors") or [])[:6]
+            _motifs = _motifs_from_vis if _motifs_from_vis else _motifs_from_brief
+            # Extract key nouns/places from brief for a specific logline
+            import re as _re_fb
+            _brief_words = [w.strip(_STRIP_PUNCT).lower() for w in brief_text.split() if len(w) > 3]
+            _key_subjects = [w for w in _brief_words if w not in (
+                "with", "and", "the", "that", "this", "from", "into", "through", "across", "under",
+                "over", "about", "their", "there", "where", "while", "every", "each", "some",
+            )][:8]
+            _brief_anchor = " ".join(_key_subjects[:4]) if _key_subjects else "a cinematic world"
+            # Build character anchor from brief for the logline
+            from src.core.llm.reel_prompts import _extract_character_anchor_from_brief
+            _char_anchor = _extract_character_anchor_from_brief(brief_text) or ""
+            _char_hint = _char_anchor.split(",")[0].strip() if _char_anchor else ""
+            _logline_subject = _char_hint if _char_hint else _brief_anchor[:50]
+            _motif_hint = _motifs[0][:60] if _motifs else "the surrounding world"
             _logline_fallback = (
-                f"A {_style_hint or 'cinematic'} journey through irony and isolation, "
-                f"told through {_motifs[0] if _motifs else 'light and shadow'}.".strip()
+                f"A {_logline_subject} moves through {_motif_hint}, "
+                f"revealing the emotional truth of {_brief_anchor[:40] if _key_subjects else 'the moment'}."
+            ).strip()
+            # Build mood from brief keywords
+            _cold_env = any(k in brief_text.lower() for k in (
+                "antarc", "antart", "arctic", "polar", "ghiaccio", "ice", "snow", "neve",
+                "tundra", "penguin", "pinguino", "aurora austral", "aurora boreal",
+                "glacier", "ghiacciaio", "blizzard", "permafrost",
+            ))
+            _mood = "cold isolation" if _cold_env else "intense"
+            _visual_theme = (vis.get("combined_style") or "").strip()
+            if not _visual_theme:
+                # derive from brief: first 2 environment nouns
+                _visual_theme = ", ".join(_motifs[:2]) if _motifs else brief_text[:100]
+            # Build narrative arc that reflects the actual brief content
+            _arc_env = "Antarctic polar landscape" if _cold_env else _brief_anchor[:60]
+            _narrative_arc = (
+                f"The reel opens on a wide establishing shot of {_arc_env}, grounding the viewer in the environment. "
+                f"As the reel progresses, the camera moves closer to the human or animal subject at its centre, "
+                f"building emotional intimacy. The final beats reveal the relationship between subject and environment, "
+                f"leaving the viewer with a sense of {'isolation and wonder' if _cold_env else 'narrative resolution'}."
             )
             self._director_narrative = {
                 "logline":       _logline_fallback,
-                "mood":          "intense",
-                "visual_theme":  (vis.get("combined_style") or self._reel_req.style or "")[:200],
-                "narrative_arc": (
-                    f"The reel opens with restless intimacy and builds to ironic revelation, "
-                    f"closing on a quiet moment of self-awareness. "                    f"The viewer moves from detached observer to complicit witness."
-                ),
+                "mood":          _mood,
+                "visual_theme":  _visual_theme[:200],
+                "narrative_arc": _narrative_arc,
                 "visual_motifs": _motifs,
             }
             yield _reel_agent_event(
@@ -1490,18 +1539,25 @@ class ReelPipeline(TrailerPipeline):
         self.regenerate_all_clip_prompts()
 
     def _validate_frames_before_production(self) -> None:
-        """Invalida clip il cui frame è un placeholder (<4KB) così viene rigenerato."""
+        """Invalida clip il cui frame è un placeholder o il cui video è statico."""
         from src.core.utils.comfyui_outputs import is_real_comfy_image, COMFY_REAL_IMAGE_MIN_BYTES
         for clip in self._clips_list:
             ff_path = self._frames_dir / f"{clip.clip_id}_first.png"
-            # Se il frame è placeholder/mancante azzera il path per forzare rigenera
             if not is_real_comfy_image(ff_path, min_bytes=COMFY_REAL_IMAGE_MIN_BYTES):
                 clip.first_frame_path = None
                 clip.last_frame_path = None
-            # Se il video è un placeholder (<50KB) azzeralo per forzare rigenera
             if clip.clip_path:
+                p = Path(clip.clip_path)
+                # Invalida sia clip troppo piccoli (<50KB) che fallback statici FFmpeg
+                # (<400KB). Real LTX clips sono sempre ≥ 500KB.
+                is_static_fallback = p.exists() and p.stat().st_size < 400_000
                 from src.core.utils.comfyui_outputs import is_real_comfy_video
-                if not is_real_comfy_video(Path(clip.clip_path)):
+                if not is_real_comfy_video(p) or is_static_fallback:
+                    # Delete the file so phase C doesn't skip it
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                     clip.clip_path = None
 
     def _propagate_prev_last_frames(self) -> None:
@@ -1642,16 +1698,22 @@ class ReelPipeline(TrailerPipeline):
                 async for ev in self._phase6_comfyui_generation():
                     yield ev
                 async for ev in self._phase7_video_assembler():
+                    if ev.get("done"):
+                        pipeline_completed = True
+                        self._save_checkpoint(99)
+                        self._save_job(status="done", result=self._job_result_snapshot())
                     yield ev
-                pipeline_completed = True
 
             elif assemble_only:
                 # Solo riassembla le clip esistenti → nuovo video finale
                 self._validate_frames_before_production()
                 yield {"event": "resume", "job_id": self.job_id, "phase": "assemble_only", "pct": 0.88}
                 async for ev in self._phase7_video_assembler():
+                    if ev.get("done"):
+                        pipeline_completed = True
+                        self._save_checkpoint(99)
+                        self._save_job(status="done", result=self._job_result_snapshot())
                     yield ev
-                pipeline_completed = True
 
             elif regen_clip:
                 # Rigenera una singola clip e poi riassembla il video finale

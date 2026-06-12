@@ -12,6 +12,9 @@ import re
 from typing import Any, Optional
 
 
+
+_STRIP_PUNCT = ".,!?;: " + chr(34) + chr(39)  # Chars to strip from brief words
+
 _BEAT_ARC = [
     {
         "role": "intro",
@@ -20,7 +23,7 @@ _BEAT_ARC = [
         "lens": 24,
         "movement": "slow dolly in",
         "dof": "deep",
-        "subject_action": "the protagonist enters the main world, hesitant and drawn forward",
+        "subject_action": "the subject steps forward across the environment, pausing to look up and take in the surroundings",
         "scene_suffix": "establishing the central environment and its recurring visual symbols",
     },
     {
@@ -30,7 +33,7 @@ _BEAT_ARC = [
         "lens": 50,
         "movement": "tracking",
         "dof": "shallow",
-        "subject_action": "the protagonist moves through the world as pressure builds around them",
+        "subject_action": "the subject walks through the environment, turns their head side to side, and adjusts their pace",
         "scene_suffix": "supporting figures and symbolic details begin to close in",
     },
     {
@@ -50,7 +53,7 @@ _BEAT_ARC = [
         "lens": 85,
         "movement": "slow orbit",
         "dof": "medium",
-        "subject_action": "the protagonist pauses as the emotional cost becomes visible",
+        "subject_action": "the subject stands still, turns their head slowly and looks toward the horizon with a composed expression",
         "scene_suffix": "the aftermath reveals the story's central transformation",
     },
     {
@@ -60,7 +63,7 @@ _BEAT_ARC = [
         "lens": 18,
         "movement": "drone_push",
         "dof": "deep",
-        "subject_action": "the transformed protagonist holds the final image",
+        "subject_action": "the subject steps forward, raises their chin, and holds their position facing the landscape",
         "scene_suffix": "the final tableau resolves the main metaphor in one clear image",
     },
 ]
@@ -86,6 +89,7 @@ def _brief_is_circus_horror(brief: str) -> bool:
 
 
 def _subject_anchor_from_brief(brief: str, vision: Optional[dict] = None) -> str:
+    """Return a concrete character anchor from vision anchors or by parsing the brief."""
     vis = vision or {}
     anchors = (vis.get("character_anchors") or [])[:2]
     if anchors:
@@ -96,9 +100,36 @@ def _subject_anchor_from_brief(brief: str, vision: Optional[dict] = None) -> str
             "with the thin emotionless clown, the unstable acrobatic woman, the old circus "
             "director in black top hat with cane, and disturbing freak performers"
         )
-    if re.search(r"\bprotagonista|protagonist|main character|personaggio principale\b", brief or "", re.I):
-        return "the protagonist described in the brief, preserving wardrobe and physical traits exactly"
-    return "the central subject described in the user's brief"
+    # Use the universal character extractor to get a concrete description from the brief
+    try:
+        from src.core.llm.reel_prompts import _extract_character_anchor_from_brief
+        extracted = _extract_character_anchor_from_brief(brief or "")
+        if extracted:
+            return extracted[:180]
+    except Exception:
+        pass
+    # Fallback: known non-human subjects (animals, natural phenomena)
+    brief_lower = (brief or "").lower()
+    _subject_kw_map = [
+        ("penguin", "emperor penguins standing motionless on blue-white Antarctic ice"),
+        ("pinguino", "emperor penguins standing motionless on blue-white Antarctic ice"),
+        ("wolf", "a lone wolf standing on a rocky windswept ridge"),
+        ("lupo", "a lone wolf standing on a rocky windswept ridge"),
+        ("horse", "a horse galloping across an open landscape"),
+        ("cavallo", "a horse galloping across an open landscape"),
+        ("eagle", "an eagle soaring against an open sky"),
+        ("aquila", "an eagle soaring against an open sky"),
+        ("bear", "a bear moving across the terrain"),
+        ("orso", "a bear moving across the terrain"),
+    ]
+    for kw, subj in _subject_kw_map:
+        if kw in brief_lower:
+            return subj
+    # Final fallback: use meaningful words from the brief — never a placeholder
+    words = [w.strip(_STRIP_PUNCT) for w in (brief or '').split() if len(w.strip(_STRIP_PUNCT)) > 3]
+    if words:
+        return " ".join(words[:5])
+    return "the primary subject of the scene"
 
 
 def _scene_suffix_for_index(brief: str, index: int, total: int, default_suffix: str) -> str:
@@ -232,7 +263,7 @@ def enrich_visual_plan_for_slot(
     out["scene_description"] = (
         f"{hint_body}. {scene_suffix}. Camera: {out.get('camera_movement', beat['movement'])}."
     )[:520]
-    out["primary_visual_focus"] = f"{anchor} as visual protagonist, {emotion} expression"
+    out["primary_visual_focus"] = f"{anchor}, {emotion} expression in the scene"
     out["emotional_beat"] = emotion
     return out
 
@@ -271,4 +302,19 @@ def motion_for_clip(
 def ltx_audio_line(brief: str) -> str:
     if is_performance_brief(brief):
         return "Music drives the movement, with breath, fabric and room tone under the vocal."
-    return "Ambient room tone and subtle environmental sound underscore the moment."
+    b = brief.lower()
+    if any(k in b for k in ("antart", "arctic", "polar", "ghiaccio", "iceberg", "pinguino", "penguin", "tundra")):
+        return "polar wind howl, distant ice shelf creaking, muffled footsteps on compressed snow, complete absence of human noise"
+    if any(k in b for k in ("forest", "foresta", "jungle", "giungla", "woods", "bosco", "rainforest")):
+        return "forest ambience, birdsong, wind through leaves, soft ground movement"
+    if any(k in b for k in ("desert", "deserto", "sahara", "sand dunes", "sabbia")):
+        return "dry hot wind, sand grains skittering across rock, distant hawk cry, deep silence"
+    if any(k in b for k in ("ocean", "mare", "sea", "beach", "spiaggia", "waves", "onde")):
+        return "ocean waves, salt wind, distant seabirds, water on sand"
+    if any(k in b for k in ("city", "città", "urban", "street", "strada", "metro", "subway")):
+        return "city ambience, distant traffic, footsteps on pavement, muffled voices"
+    if any(k in b for k in ("night", "notte", "dark", "buio", "stella", "star", "luna", "moon")):
+        return "deep night silence, crickets, subtle wind, low frequency hum of the earth"
+    if any(k in b for k in ("rain", "pioggia", "storm", "temporale", "thunder", "tuono")):
+        return "heavy rainfall on surfaces, thunder rumble in distance, water rushing"
+    return "ambient room tone and subtle environmental sound underscore the moment."

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -26,6 +26,13 @@ import {
   normalizeUnifiedPrompt,
   splitPositiveAndNegative,
 } from '../utils/promptEnhance'
+import { useToolsJobStore } from '../stores/toolsJobStore'
+
+// ── Module-level queue state (survives navigation) ────────────────────────────
+const _runningRef      = { current: false }
+const _queueRef        = { current: [] }
+const _queueEpochRef   = { current: 0 }
+const _cancelledJobIds = { current: new Set() }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -759,16 +766,25 @@ export default function ToolsScreen() {
   const [uploadingImage, setUploadingImage] = useState(false)
   const [uploadingAudio, setUploadingAudio] = useState(false)
 
-  // Queue system — each job has its own status/progress
-  const [jobs, setJobs]               = useState([])
-  const runningRef                    = useRef(false)
-  const queueRef                      = useRef([])
-  const queueEpochRef                 = useRef(0)
-  const cancelledJobIdsRef            = useRef(new Set())
+  // Queue system — jobs live in a persistent Zustand store so they survive navigation
+  const jobs        = useToolsJobStore(s => s.jobs)
+  const storeAddJob = useToolsJobStore(s => s.addJob)
+  const storeUpdate = useToolsJobStore(s => s.updateJob)
 
-  // Detail sidebar
-  const [selectedJob, setSelectedJob]         = useState(null)
+  // Aliases to module-level queue refs (no useState — they must not reset on mount)
+  const runningRef        = _runningRef
+  const queueRef          = _queueRef
+  const queueEpochRef     = _queueEpochRef
+  const cancelledJobIdsRef = _cancelledJobIds
+
+  // Detail sidebar — selectedJobId is local (fine: it's just a selection)
+  const [selectedJobId, setSelectedJobId]     = useState(null)
   const [selectedLibItem, setSelectedLibItem] = useState(null)
+
+  const selectedJob = useMemo(
+    () => jobs.find(j => j.id === selectedJobId) ?? null,
+    [jobs, selectedJobId]
+  )
 
   // Media switch
   const [showAllMedia, setShowAllMedia]   = useState(false)
@@ -950,8 +966,7 @@ export default function ToolsScreen() {
   }
 
   function updateJob(id, patch) {
-    setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j))
-    setSelectedJob(prev => prev?.id === id ? { ...prev, ...patch } : prev)
+    storeUpdate(id, patch)
   }
 
   // ── Queue runner ──────────────────────────────────────────────────────────
@@ -1068,12 +1083,7 @@ export default function ToolsScreen() {
     activeJobs.forEach(j => cancelledJobIdsRef.current.add(j.id))
 
     const patch = { status: 'cancelled', progress: 0, progressMsg: 'Cancellata', error: null }
-    setJobs(prev => prev.map(j =>
-      activeJobs.some(active => active.id === j.id) ? { ...j, ...patch } : j
-    ))
-    setSelectedJob(prev =>
-      prev && activeJobs.some(active => active.id === prev.id) ? { ...prev, ...patch } : prev
-    )
+    activeJobs.forEach(j => storeUpdate(j.id, patch))
 
     try {
       const res = await fetch(`${BACKEND_ORIGIN}/api/queue/comfyui`)
@@ -1231,8 +1241,8 @@ export default function ToolsScreen() {
       result: null,
     }
 
-    setJobs(prev => [job, ...prev])
-    setSelectedJob(job)
+    storeAddJob(job)
+    setSelectedJobId(jobId)
     setSelectedLibItem(null)
 
     queueRef.current.push(job)
@@ -1278,7 +1288,7 @@ export default function ToolsScreen() {
     setImageSource(source)
     setShowAllMedia(false)
     setSelectedLibItem(null)
-    setSelectedJob(null)
+    setSelectedJobId(null)
     setCtxMenu(null)
     setError(null)
   }
@@ -1290,7 +1300,7 @@ export default function ToolsScreen() {
     setImageSource(source)
     setShowAllMedia(false)
     setSelectedLibItem(null)
-    setSelectedJob(null)
+    setSelectedJobId(null)
     setCtxMenu(null)
     setError(null)
   }
@@ -1303,7 +1313,7 @@ export default function ToolsScreen() {
     setWorkflowId(workflows.find(w => w.type === 'img2img')?.id || null)
     setShowAllMedia(false)
     setSelectedLibItem(null)
-    setSelectedJob(null)
+    setSelectedJobId(null)
     setCtxMenu(null)
     setError(null)
   }
@@ -1333,16 +1343,16 @@ export default function ToolsScreen() {
   }
 
   function handleSelectJob(job) {
-    setSelectedJob(job)
+    setSelectedJobId(job?.id ?? null)
     setSelectedLibItem(null)
   }
 
   function handleSelectLibItem(item) {
     setSelectedLibItem(item)
-    setSelectedJob(null)
+    setSelectedJobId(null)
   }
 
-  const showDetail = selectedJob !== null || selectedLibItem !== null
+  const showDetail = selectedJobId !== null || selectedLibItem !== null
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1669,7 +1679,7 @@ export default function ToolsScreen() {
         <DetailSidebar
           job={selectedJob}
           libraryItem={selectedLibItem}
-          onClose={() => { setSelectedJob(null); setSelectedLibItem(null) }}
+          onClose={() => { setSelectedJobId(null); setSelectedLibItem(null) }}
           onOpenPreview={openPreview}
         />
       )}

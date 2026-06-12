@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import re as _re
 
 from src.core.llm.reel_prompt_structure import REEL_SHOT_FRAMING_RULES
 
@@ -57,6 +58,24 @@ CRITICAL JSON OUTPUT RULES:
   Each slot_hint must be UNIQUE — describe different framings, different moments, different actions.
 - NEVER copy the brief text into any JSON field — always transform it into cinematic direction.
 
+ENVIRONMENT AWARENESS: Extract the physical environment from the brief. Map it to REAL lighting conditions:
+- Arctic/Antarctic/polar = pale blue-white diffused light, no warm tones, flat polar horizon, ice reflections
+- Desert = harsh golden directional light, hard shadows, bleached sky
+- Forest = dappled green-filtered light, soft diffusion
+- Interior = practical warm sources (lamp, window, candle)
+- Urban night = neon mixed color, wet pavement reflections
+NEVER use "warm directional" for cold outdoor environments like polar, mountain, or deep water.
+
+SLOT DIFFERENTIATION RULE: Every slot MUST have a different scene_description focus. Advance the story:
+- Slot 1 (intro): wide establishing — environment, scale, isolation
+- Slot 2 (build): medium — character introduced in context
+- Slot 3 (peak): close-up — emotion, detail, intimacy
+- Slot 4 (resolution): wide or medium — narrative payoff
+Use the brief's specific elements (animals, landscape features, weather, objects) to differentiate each slot.
+
+CHARACTER SPECIFICITY: Always describe the physical subject (clothing color, hair, distinguishing features)
+in every visual_hint. NEVER use generic phrases like "the protagonist" alone without physical description.
+
 OUTPUT: Valid JSON only. No markdown.
 Schema:
 {
@@ -102,6 +121,22 @@ CRITICAL JSON OUTPUT RULES:
 - "narrative_arc" MUST be 2-3 original sentences describing emotional journey (NOT a copy of the brief).
 - "slots[].visual_hint" MUST describe a SPECIFIC VISUAL MOMENT in English. NEVER copy the brief text.
 - Each slot must be UNIQUE — different framing, different moment, advancing action.
+
+ENVIRONMENT AWARENESS: Extract the physical environment from the brief. Map it to REAL lighting conditions:
+- Arctic/Antarctic/polar = pale blue-white diffused light, no warm tones, flat polar horizon, ice reflections
+- Desert = harsh golden directional light, hard shadows, bleached sky
+- Forest = dappled green-filtered light, soft diffusion
+- Interior = practical warm sources (lamp, window, candle)
+- Urban night = neon mixed color, wet pavement reflections
+NEVER use "warm directional" for cold outdoor environments like polar, mountain, or deep water.
+
+SLOT DIFFERENTIATION RULE: Every slot MUST advance the story with a different visual focus and a
+different combination of shot_type + camera_movement. No two consecutive slots may share the same pairing.
+Use EVERY distinct element in the brief (characters, animals, landscape features, weather, objects) —
+each element should anchor at least one slot.
+
+CHARACTER SPECIFICITY: Always describe the physical subject (clothing color, hair, distinguishing features)
+in every visual_hint. NEVER use phrases like "the protagonist" alone without physical description.
 
 OUTPUT: Valid JSON only. No markdown.
 Schema:
@@ -167,41 +202,202 @@ def _build_section_lyric_map(lyrics: str, sections: list[dict], duration_sec: fl
 
 
 def _extract_character_anchor_from_brief(brief: str, style: str = "") -> str | None:
-    """Detect Italian/Mediterranean subject from brief and return a character anchor string."""
+    """
+    Extract a character anchor from a user brief in any language.
+
+    Strategy:
+    1. Detect a physical person using universal subject keywords (any language).
+    2. Extract physical descriptors (hair, clothing, age, color) from the brief text.
+    3. Return a structured anchor string, or None if no person-like subject is found.
+    """
     combined = (brief + " " + style).lower()
-    italian_keywords = [
-        "italian", "italiano", "italiana", "uomo italian", "ragazzo italian",
-        "giovane italian", "soggetto italian", "non cinese", "non cines",
-        "mio viso", "miei occhi", "mi vedo", "bar italian", "contesto urban",
-        "mediter",
+
+    # --- Step 1: Detect a physical person subject ---
+    # Universal subject keywords: English, Italian, French, Spanish, German, Portuguese
+    _SUBJECT_FEMALE = [
+        "woman", "girl", "female", "lady", "donna", "ragazza", "femme", "fille",
+        "mujer", "chica", "frau", "mädchen", "mulher", "menina",
     ]
-    is_italian = any(kw in combined for kw in italian_keywords)
-    if not is_italian:
+    _SUBJECT_MALE = [
+        "man", "guy", "male", "boy", "gentleman", "uomo", "ragazzo", "maschio",
+        "homme", "garçon", "hombre", "chico", "mann", "junge", "homem", "rapaz",
+    ]
+    _SUBJECT_NEUTRAL = [
+        "person", "figure", "subject", "character", "protagonist", "individual",
+        "persona", "personaggio", "personne", "personne", "pessoa",
+        # self-referential (user refers to themselves)
+        "myself", "me ", "my ", "mio", "mia", "miei", "viso", "faccia",
+        # professional/role identifiers
+        "blogger", "vlogger", "photographer", "filmmaker", "journalist",
+        "fotograf", "giornalist", "traveler", "viaggiatrice", "viaggiatore",
+        "explorer", "esploratrice", "esploratore", "creator", "influencer",
+        "athlete", "atleta", "dancer", "ballerina", "singer", "cantante",
+        "artist", "artista", "chef", "detective", "soldier", "soldato",
+    ]
+
+    # Use word-boundary aware matching to avoid "man" inside "woman", "boy" inside "nobody", etc.
+    import re as _re_local
+    def _word_match(text: str, keywords: list[str]) -> bool:
+        for kw in keywords:
+            if _re_local.search(r"(?<!\w)" + _re_local.escape(kw) + r"(?!\w)", text):
+                return True
+        return False
+
+    is_female = _word_match(combined, _SUBJECT_FEMALE)
+    is_male = _word_match(combined, _SUBJECT_MALE)
+    is_person = is_female or is_male or _word_match(combined, _SUBJECT_NEUTRAL)
+
+    if not is_person:
         return None
-    import re
-    age_match = re.search(r"(\d{2})\s*[-]\s*(\d{2})\s*(anni|years|yo)", combined)
-    age_range = (
-        f"{age_match.group(1)}-{age_match.group(2)} years old"
-        if age_match else "25-35 years old"
+
+    # Determine gender
+    if is_female and not is_male:
+        gender = "female"
+    elif is_male and not is_female:
+        gender = "male"
+    else:
+        # Both or neutral — prefer female if explicit female keyword present
+        gender = "female" if is_female else "person"
+
+    # --- Step 2: Extract physical descriptors ---
+
+    # Age range
+    age_match = _re.search(
+        r"(\d{2})\s*[-–]\s*(\d{2})\s*(?:anni|years|años|jahre|ans|yo\b)",
+        combined,
     )
-    male_kw = ["uomo", "ragazzo", "maschio", "man ", "guy", " male", "viso", "mi vedo", "mio"]
-    is_male = any(kw in combined for kw in male_kw)
-    gender = "male" if is_male else "female"
-    tired_kw = ["stanc", "stanchezza", "tired", "weary", "exhaust"]
-    ironic_kw = ["ironic", "ironico", "ironia", "sarcas"]
-    is_tired = any(kw in combined for kw in tired_kw)
-    is_ironic = any(kw in combined for kw in ironic_kw)
+    single_age = _re.search(r"\b(\d{2})\s*(?:anni|years|años|jahre|yo\b)", combined)
+    if age_match:
+        age_str = f"{age_match.group(1)}-{age_match.group(2)} years old"
+    elif single_age:
+        age_str = f"approximately {single_age.group(1)} years old"
+    else:
+        age_str = "adult"
+
+    # Hair color
+    _HAIR_COLORS: dict[str, str] = {
+        "red hair": "red hair", "capelli rossi": "red hair", "rousse": "red hair",
+        "roja": "red hair", "rotes haar": "red hair",
+        "blonde": "blonde hair", "blond": "blonde hair", "bionda": "blonde hair",
+        "rubia": "blonde hair", "blondes haar": "blonde hair",
+        "dark hair": "dark hair", "capelli scuri": "dark hair", "capelli neri": "dark black hair",
+        "black hair": "dark black hair", "cheveux noirs": "dark black hair",
+        "brown hair": "brown hair", "castana": "brown hair", "brünett": "brown hair",
+        "white hair": "white hair", "capelli bianchi": "white hair",
+        "grey hair": "grey hair", "capelli grigi": "grey hair",
+        "curly": "curly hair", "ricci": "curly hair", "frisé": "curly hair",
+        "wavy": "wavy hair", "ondulat": "wavy hair",
+    }
+    hair_desc = ""
+    for kw, label in _HAIR_COLORS.items():
+        if kw in combined:
+            hair_desc = label
+            break
+
+    # Clothing color / key garment
+    _CLOTHING: dict[str, str] = {
+        "orange jacket": "bright orange jacket",
+        "giacca arancione": "bright orange jacket",
+        "arancione": "bright orange jacket",  # any orange garment
+        "red jacket": "red jacket", "giacca rossa": "red jacket",
+        "blue jacket": "blue jacket", "giacca blu": "blue jacket",
+        "black jacket": "black jacket", "giacca nera": "black jacket",
+        "white coat": "white coat", "cappotto bianco": "white coat",
+        "red coat": "red coat", "cappotto rosso": "red coat",
+        "red dress": "red dress", "vestito rosso": "red dress",
+        "white dress": "white dress", "vestito bianco": "white dress",
+    }
+    clothing_desc = ""
+    # First pass: exact substring match
+    for kw, label in _CLOTHING.items():
+        if kw in combined:
+            clothing_desc = label
+            break
+    # Second pass: color+garment proximity match (e.g. "giacca arctica arancione")
+    if not clothing_desc:
+        _garments = ["jacket", "giacca", "coat", "cappotto", "dress", "vestito", "suit", "abito"]
+        _colors_map = {
+            "orange": "orange jacket", "arancione": "orange jacket",
+            "red": "red jacket", "rossa": "red jacket", "rosso": "red jacket",
+            "blue": "blue jacket", "blu": "blue jacket",
+            "black": "black jacket", "nero": "black jacket", "nera": "black jacket",
+            "white": "white jacket", "bianco": "white jacket", "bianca": "white jacket",
+        }
+        words = combined.split()
+        for i, w in enumerate(words):
+            if any(g in w for g in _garments):
+                # Look for color in nearby words (±4 positions)
+                window = words[max(0, i-4):i+5]
+                for cw, clabel in _colors_map.items():
+                    if cw in " ".join(window):
+                        clothing_desc = clabel
+                        break
+            if clothing_desc:
+                break
+
+    # Nationality / ethnicity
+    _ETHNICITY: dict[str, str] = {
+        "italian": "Italian",
+        "italiano": "Italian", "italiana": "Italian",
+        "mediter": "Mediterranean",
+        "french": "French", "français": "French",
+        "spanish": "Spanish", "español": "Spanish",
+        "german": "German", "deutsch": "German",
+        "japanese": "Japanese", "korean": "Korean",
+        "chinese": "Chinese", "asian": "Asian",
+        "american": "American", "british": "British",
+        "russian": "Russian", "brazilian": "Brazilian",
+        "nordic": "Nordic", "scandinavian": "Scandinavian",
+    }
+    ethnicity_desc = ""
+    for kw, label in _ETHNICITY.items():
+        if kw in combined:
+            ethnicity_desc = label
+            break
+
+    # Expression / personality traits
+    _TRAITS: dict[str, str] = {
+        "tired": "tired expression", "stanc": "tired expression", "weary": "weary expression",
+        "exhaust": "exhausted expression",
+        "ironic": "ironic demeanor", "ironico": "ironic demeanor", "sarcast": "sardonic expression",
+        "happy": "bright expression", "felice": "bright expression",
+        "sad": "melancholic expression", "triste": "melancholic expression",
+        "angry": "intense expression", "arrabbiato": "intense expression",
+        "pensive": "pensive gaze", "pensieroso": "pensive gaze",
+        "determined": "determined expression", "deciso": "determined expression",
+    }
     traits = []
-    if is_tired:
-        traits.append("tired expression")
-    if is_ironic:
-        traits.append("ironic demeanor")
-    trait_str = ", ".join(traits) if traits else "expressive face"
-    return (
-        f"Italian {gender}, {age_range}, Mediterranean features, olive skin, dark brown eyes, "
-        f"dark hair, {trait_str}. NOT Asian, NOT Chinese, NOT East Asian. "
-        f"European Mediterranean appearance. Photorealistic Italian {gender}."
-    )
+    for kw, label in _TRAITS.items():
+        if kw in combined and label not in traits:
+            traits.append(label)
+    trait_str = ", ".join(traits[:2]) if traits else "expressive presence"
+
+    # --- Step 3: Build the anchor string ---
+    parts = []
+    if ethnicity_desc:
+        parts.append(f"{ethnicity_desc} {gender}")
+    else:
+        parts.append(gender if gender != "person" else "person")
+    parts.append(age_str)
+    if hair_desc:
+        parts.append(hair_desc)
+    if clothing_desc:
+        parts.append(clothing_desc)
+    parts.append(trait_str)
+
+    # Add ethnicity-specific appearance notes
+    if ethnicity_desc in ("Italian", "Mediterranean", "Spanish", "French"):
+        parts.append("olive skin, dark eyes, European Mediterranean features")
+    elif ethnicity_desc in ("Nordic", "Scandinavian"):
+        parts.append("fair skin, light eyes, Northern European features")
+    elif ethnicity_desc == "Japanese":
+        parts.append("East Asian features, Japanese")
+    elif ethnicity_desc == "Korean":
+        parts.append("East Asian features, Korean")
+
+    anchor = ", ".join(p for p in parts if p)
+    return anchor if anchor else None
+
 
 def build_reel_director_user_prompt(
     *,
@@ -303,6 +499,25 @@ SHOT VARIETY RULE (MANDATORY):
   Low BPM or instrumental → prefer medium, wide, slow dolly.
 - Each shot must have a distinct camera_movement — no more than 2 identical movements in a row.
 
+SLOT DIFFERENTIATION RULE: Every slot MUST have a different shot_type AND different camera_movement.
+No two consecutive slots can share the same shot_type + camera_movement combination.
+
+LIGHTING RULE: lighting_description MUST match the physical environment of the scene.
+Extract location cues from scene_description and apply appropriate lighting:
+- Polar/Antarctic/Arctic scenes = pale blue-white overcast diffused light, zero warm tones, flat horizon glow
+- Desert/arid = harsh golden directional, hard cast shadows, high contrast
+- Forest = soft dappled green-filtered light, low contrast
+- Interior = practical sources (warm lamp, window blue, candle flicker)
+NEVER write "warm directional light" for cold outdoor polar or high-altitude environments.
+
+PHYSICAL MOTION RULE: motion_intent MUST contain physical action verbs (walks, runs, turns, reaches,
+looks up, raises camera, bends down, steps forward, lifts arm, exhales, pivots) + camera movement +
+environment interaction. NO metaphorical language ("emotional cost becomes visible", "protagonist enters
+the world of").
+
+COMPLETE SENTENCES RULE: All text fields must be complete sentences. Never truncate mid-word or
+mid-clause. If a sentence ends with a comma, replace it with a period.
+
 SCENE CONTINUITY RULE (CRITICAL):
 - Slots that share the same scene_id are parts of the SAME SCENE (same location, continuous time).
 - For every slot AFTER the first in a scene_id group: set use_prev_last_frame = true and scene_transition = "continuity".
@@ -331,7 +546,8 @@ scene_id (copy from the slot input — carry it forward for continuity tracking)
 
 FORBIDDEN: bare emotion labels, platform names, listing full room layout in a close-up shot.
 FORBIDDEN: setting use_prev_last_frame=false for a slot that shares scene_id with the previous slot.
-FORBIDDEN: Asian/Chinese/East Asian subjects when brief specifies Italian or Mediterranean characters."""
+FORBIDDEN: Asian/Chinese/East Asian subjects when brief specifies Italian or Mediterranean characters.
+FORBIDDEN: "warm directional" or "golden" lighting for polar, snowy, Antarctic, or Arctic environments."""
 
 
 def build_reel_cinematographer_prompt(
@@ -376,7 +592,7 @@ VISUAL MOTIFS (recurring elements — weave into shots): {"; ".join(dn_motifs) i
     anchors_block = (
         "\n".join(f"  - {a}" for a in anchors_list)
         if anchors_list
-        else "  (none — infer from brief; default to Italian male 25-35 if brief specifies)"
+        else "  (none — infer from brief; describe subjects based on brief text)"
     )
 
     return f"""=== REEL BRIEF ===
@@ -550,7 +766,9 @@ def build_reel_prompt_engineer_user(
     is_italian_brief = bool(brief and _extract_character_anchor_from_brief(brief))
     ethnicity_note = ""
     if is_italian_brief:
-        ethnicity_note = "\nETHNICITY ENFORCEMENT: Subject is Italian/Mediterranean. Add 'asian, chinese, east asian, korean, japanese' to negative_prompt for EVERY slot."
+        anchor_check = _extract_character_anchor_from_brief(brief) or ""
+        if any(eth in anchor_check.lower() for eth in ("italian", "mediterranean", "spanish", "french", "european")):
+            ethnicity_note = "\nETHNICITY ENFORCEMENT: Subject is Italian/Mediterranean/European. Add 'asian, chinese, east asian, korean, japanese' to negative_prompt for EVERY slot."
 
     # Director narrative context
     narrative_context = ""

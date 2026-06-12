@@ -143,19 +143,73 @@ def _camera_sentence(movement: str, lens_mm: int | str) -> str:
     return f"{sentence} on a {lens}mm lens."
 
 
-def _lighting_phrase(dop: dict, mood: str) -> str:
-    lighting = dop.get("lighting") or {}
-    if isinstance(lighting, dict):
-        parts = [
-            lighting.get("time_of_day") or "",
-            lighting.get("mood") or "",
-            ", ".join(lighting.get("sources") or []) if isinstance(lighting.get("sources"), list) else "",
-        ]
-        light = " ".join(p for p in parts if p).strip()
+def _lighting_phrase(dop: dict, mood: str, *, brief: str = "") -> str:
+    # Always check environment first — override any fallback "warm directional" with physically accurate lighting
+    _env_ctx = (
+        (dop.get("scene_description") or "")
+        + " " + (dop.get("first_frame_state") or "")
+        + " " + (brief or "")
+    ).lower()
+    _polar = any(k in _env_ctx for k in (
+        "antarc", "antart", "arctic", "polar", "penguin", "pinguino", "ghiaccio",
+        "ice ", "tundra", "neve ", "glacier", "ghiacciaio", "blizzard", "iceberg",
+        "permafrost", "aurora austral", "aurora boreal",
+    ))
+    _desert = any(k in _env_ctx for k in ("desert", "sahara", "dune", "arid", "scorching"))
+    _forest = any(k in _env_ctx for k in ("forest", "jungle", "bosco", "foresta", "canopy"))
+    _night = any(k in _env_ctx for k in ("night", "notte", "nuit", "noche", "dark street", "neon", "moonlight"))
+
+    if _polar:
+        light = "pale blue-white overcast diffused polar light, flat horizon glow, no warm tones, zero directional shadows"
+    elif _desert:
+        light = "harsh golden directional sunlight, hard cast shadows, bleached high-contrast sky"
+    elif _forest:
+        light = "soft dappled green-filtered light filtering through the canopy, low contrast, diffused"
+    elif _night:
+        light = "deep blue ambient night with scattered practical light sources, high contrast"
     else:
-        light = str(lighting).strip()
+        lighting = dop.get("lighting") or {}
+        if isinstance(lighting, dict):
+            parts = [
+                lighting.get("time_of_day") or "",
+                lighting.get("mood") or "",
+                ", ".join(lighting.get("sources") or []) if isinstance(lighting.get("sources"), list) else "",
+            ]
+            light = " ".join(p for p in parts if p).strip()
+        else:
+            light = str(lighting).strip()
+
     if not light:
-        light = "warm directional key light with controlled shadows"
+        # Derive physically accurate lighting from environment cues in scene_description or brief
+        _scene_ctx = (
+            (dop.get("scene_description") or "")
+            + " " + (dop.get("first_frame_state") or "")
+            + " " + (brief or "")
+        ).lower()
+        _polar = any(k in _scene_ctx for k in (
+            "antarc", "antart", "arctic", "polar", "penguin", "pinguino", "ghiaccio",
+            "ice ", "tundra", "snow", "neve ", "glacier", "ghiacciaio", "blizzard",
+            "permafrost", "aurora austral", "aurora boreal",
+        ))
+        _desert = any(k in _scene_ctx for k in (
+            "desert", "sahara", "dune", "arid", "scorching", "bleached",
+        ))
+        _forest = any(k in _scene_ctx for k in (
+            "forest", "jungle", "bosco", "foresta", "jungle", "canopy", "undergrowth",
+        ))
+        _night = any(k in _scene_ctx for k in (
+            "night", "notte", "nuit", "noche", "dark street", "neon", "moonlight",
+        ))
+        if _polar:
+            light = "pale blue-white overcast diffused polar light, flat horizon glow, no warm tones, zero directional shadows"
+        elif _desert:
+            light = "harsh golden directional sunlight, hard cast shadows, bleached high-contrast sky"
+        elif _forest:
+            light = "soft dappled green-filtered light filtering through the canopy, low contrast, diffused"
+        elif _night:
+            light = "deep blue ambient night with scattered practical light sources, high contrast"
+        else:
+            light = "soft directional key light with controlled shadows, cinematic exposure"
     mood_bit = _clean_clause(mood, 40) if mood else "cinematic intensity"
     article = "an" if mood_bit[:1].lower() in "aeiou" else "a"
     return f"The lighting is {light}, creating {article} {mood_bit} atmosphere."
@@ -380,7 +434,7 @@ def build_ltx23_txt2video_prompt(
         visual_hint or dop.get("scene_description") or dop.get("first_frame_state") or brief,
         280,
     )
-    lighting = _lighting_phrase(dop, mood_use)
+    lighting = _lighting_phrase(dop, mood_use, brief=brief)
     camera = _camera_sentence(
         str(dop.get("camera_movement") or "slow push-in"),
         dop.get("lens_mm") or 50,
@@ -430,7 +484,7 @@ def build_ltx23_video_prompt(
     mood_use = mood or slot_emotion or (dop.get("emotion") or "intense")
     shot = _shot_phrase(str(dop.get("shot_type") or "medium"))
     subject = _subject_clause(dop, visual_hint)
-    lighting = _lighting_phrase(dop, mood_use)
+    lighting = _lighting_phrase(dop, mood_use, brief=brief)
     camera = _camera_sentence(
         str(dop.get("camera_movement") or "slow dolly in"),
         dop.get("lens_mm") or 50,
@@ -464,15 +518,94 @@ def build_ltx_video_prompt_fallback(
     duration_sec: float = 5.0,
     brief: str = "",
 ) -> str:
-    """Compat: delega al builder LTX 2.3."""
-    return build_ltx23_video_prompt(
-        dop,
-        style=style,
-        slot_emotion=slot_emotion,
-        brief=brief,
-        duration_sec=duration_sec,
-        mood=slot_emotion,
+    """
+    Generate a flowing prose LTX 2.3 video prompt.
+
+    Format (as per LTX 2.3 guide):
+    "Camera [movement] as [subject] [physical_action]. [Environment detail].
+     [Lighting]. [Secondary motion]. Sound: [ambient]."
+
+    Example for Antarctic scene:
+    "Wide angle camera dollies forward slowly as a young woman in an orange jacket
+     walks across blue-white Antarctic ice. Emperor penguins stand motionless on the
+     right side of frame. Cold polar diffused light, pale blue-white with no warm tones,
+     flat horizon glow. Fine snow powder drifts from the ice surface in the wind.
+     Sound: polar wind, distant ice creaking, muffled footsteps on compressed snow."
+    """
+    shot_type = str(dop.get("shot_type") or "medium")
+    movement = str(dop.get("camera_movement") or "slow dolly in")
+    lens = dop.get("lens_mm") or 50
+    mood_use = slot_emotion or (dop.get("emotion") or "cinematic")
+
+    # Subject: prefer primary_visual_focus → scene_description → brief
+    subject_raw = (
+        dop.get("primary_visual_focus")
+        or dop.get("first_frame_state")
+        or dop.get("scene_description")
+        or brief
+        or "the primary subject"
     )
+    subject_clause = _clean_clause(str(subject_raw), 200)
+    # Strip stray shot type labels
+    subject_clause = re.sub(r"(?:wide|medium|close[- ]?up)\s+shot", "", subject_clause, flags=re.I)
+    subject_clause = re.sub(r"\s+", " ", subject_clause).strip(" ,.")
+
+    # Physical action — extract from motion_intent or dop
+    motion_raw = (dop.get("motion_intent") or dop.get("subject_action") or "").strip()
+    if not motion_raw:
+        # Build a minimal physical action
+        _env = (dop.get("scene_description") or brief or "").lower()
+        if any(k in _env for k in ("walk", "cammin", "step")):
+            motion_raw = "walks forward across the terrain"
+        elif any(k in _env for k in ("stand", "rest", "still")):
+            motion_raw = "stands still, then slowly turns their head"
+        else:
+            motion_raw = "moves through the scene, pausing to look around"
+
+    # Camera movement sentence
+    camera_verb = _CAMERA_VERBS.get(
+        movement.lower().replace(" ", "_"),
+        f"The camera {movement}"
+    )
+    camera_sentence = f"{camera_verb} on a {lens}mm lens."
+
+    # Environment detail from scene_description or brief
+    env_ctx = (dop.get("scene_description") or brief or "").strip()
+    env_clause = _clean_clause(env_ctx, 160) if env_ctx else "in a cinematic environment"
+    env_clause = re.sub(r"\s+", " ", env_clause).strip(" ,.")
+
+    # Lighting
+    lighting = _lighting_phrase(dop, mood_use, brief=brief)
+
+    # Secondary motion (environment micro-motion)
+    env_motion = _environment_motion(dop)
+
+    # Texture
+    texture = _texture_phrase(dop)
+
+    # Audio
+    audio = _audio_line(brief, mood_use)
+
+    # Assemble flowing prose
+    shot_label = _SHOT_LABELS.get(
+        shot_type.lower().replace(" ", "_").replace("-", "_"),
+        shot_type.replace("_", " ")
+    )
+    # Avoid "wide shot shot:" duplication — _SHOT_LABELS values already include "shot"
+    shot_intro = shot_label.capitalize() if shot_label.endswith("shot") else f"{shot_label.capitalize()} shot"
+    sentences = [
+        f"{shot_intro}: {camera_verb.lower()} as {subject_clause} {motion_raw}.",
+        f"{env_clause}.",
+        lighting,
+        texture,
+        env_motion,
+        audio,
+    ]
+    paragraph = " ".join(s.rstrip() for s in sentences if s and s.strip())
+    paragraph = re.sub(r"\s+", " ", paragraph).strip()
+    if len(paragraph) > 1200:
+        paragraph = paragraph[:1197].rsplit(" ", 1)[0] + "."
+    return paragraph
 
 
 def refine_ltx23_video_prompt(

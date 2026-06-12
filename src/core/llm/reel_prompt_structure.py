@@ -7,6 +7,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+
+_STRIP_PUNCT = ".,!?;: " + chr(34) + chr(39)  # Chars to strip from brief words
+
 # Cosa può comparire in frame per scala inquadratura (guida LLM + validazione)
 _SHOT_SCALE: dict[str, dict[str, Any]] = {
     "extreme_close": {
@@ -215,17 +218,40 @@ def _first_sentence(text: str, max_words: int = 40) -> str:
 
 
 def _join_parts(parts: list[str], *, sep: str = " ") -> str:
-    seen: set[str] = set()
+    """Deduplicate prompt parts by keyword overlap instead of prefix truncation.
+
+    Two parts are duplicates if one is a substring of the other, or they share
+    more than 60% of their significant keywords (length > 3).
+    """
+    import re as _re_jp
+    seen_full: list[str] = []
+    seen_keys: list[set[str]] = []
     out: list[str] = []
     for p in parts:
-        p = (p or "").strip()
+        if isinstance(p, dict):
+            p = next((v for v in p.values() if isinstance(v, str)), "") or ""
+        p = (str(p) if p is not None else "").strip()
         if not p or len(p) < 3:
             continue
-        key = p.lower()[:100]
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
+        p_lower = p.lower()
+        is_dup = False
+        for accepted_lower in seen_full:
+            if p_lower in accepted_lower or accepted_lower in p_lower:
+                is_dup = True
+                break
+        if not is_dup:
+            p_kw = set(_re_jp.findall(r"[a-z]{4,}", p_lower))
+            if p_kw:
+                for accepted_kw in seen_keys:
+                    if accepted_kw:
+                        overlap = len(p_kw & accepted_kw) / min(len(p_kw), len(accepted_kw))
+                        if overlap > 0.6:
+                            is_dup = True
+                            break
+        if not is_dup:
+            seen_full.append(p_lower)
+            seen_keys.append(set(_re_jp.findall(r"[a-z]{4,}", p_lower)))
+            out.append(p)
     return sep.join(out)
 
 
@@ -257,11 +283,30 @@ def build_structured_frame_prompt(
     motion = (dop.get("motion_intent") or "").strip()
     _raw_primary = (dop.get("primary_visual_focus") or dop.get("visual_focus") or "").strip()
     # Discard LLM-generated placeholder text that doesn't describe actual appearance
-    _GENERIC_MARKERS = ("described in the brief", "protagonist described", "as described", "preserving wardrobe")
+    _GENERIC_MARKERS = (
+        "described in the brief", "protagonist described", "as described",
+        "preserving wardrobe", "the central subject described in the user",
+        "visual protagonist", "described in the brief", "as visual protagonist",
+        "the subject described", "described in the user's brief",
+        "primary subject of the scene",
+    )
     primary = "" if any(m in _raw_primary.lower() for m in _GENERIC_MARKERS) else _raw_primary
+    # If primary was discarded due to generic markers, attempt to resolve from character_anchor or brief
+    if not primary and (vis.get("character_anchors") or brief):
+        _ca = (vis.get("character_anchors") or [])
+        if _ca:
+            _ca0 = _ca[0]
+            if isinstance(_ca0, dict):
+                _ca0 = next((v for v in _ca0.values() if isinstance(v, str)), "") or str(_ca0)
+            primary = str(_ca0)[:180]
+        elif brief:
+            # Extract first meaningful noun phrase from brief as a concrete subject
+            import re as _re_ps
+            _brief_words = [w.strip(_STRIP_PUNCT) for w in brief.split() if len(w.strip(_STRIP_PUNCT)) > 3]
+            primary = " ".join(_brief_words[:4]) if _brief_words else ""
     secondary = (dop.get("secondary_subject") or "").strip()
-    anchors = list(vis.get("character_anchors") or [])[:2]
-    env_anchors = list(vis.get("environment_anchors") or [])[:2]
+    anchors = [str(a) for a in (vis.get("character_anchors") or []) if a][:2]
+    env_anchors = [str(a) for a in (vis.get("environment_anchors") or []) if a][:2]
     theme = (dn.get("visual_theme") or "").strip()
     emotion_beat = (dop.get("emotional_beat") or mood or dn.get("mood") or "cinematic tension").strip()
     wardrobe = (vis.get("wardrobe_notes") or "").strip()
