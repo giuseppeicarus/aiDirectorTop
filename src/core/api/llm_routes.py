@@ -677,19 +677,58 @@ async def improve_style(req: ImproveStyleRequest):
         return {"ok": False, "error": friendly_llm_error(e), "style": ""}
 
 
+def _ollama_base() -> str:
+    cfg = get_config().llm
+    return (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
+
+
 @router.get("/ollama/models")
 async def list_ollama_models():
-    """Elenca i modelli Ollama installati localmente."""
-    cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
+    """Elenca i modelli Ollama con metadata completi (name, size, details)."""
+    base = _ollama_base()
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
             r = await client.get(_ollama_root(base) + "/api/tags")
             r.raise_for_status()
-            models = [m["name"] for m in r.json().get("models", [])]
+            models = r.json().get("models", [])
             return {"ok": True, "models": models, "base_url": base}
     except Exception as e:
         return {"ok": False, "models": [], "error": str(e), "base_url": base}
+
+
+@router.get("/ollama/version")
+async def ollama_version():
+    """Ritorna la versione di Ollama."""
+    base = _ollama_base()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(_ollama_root(base) + "/api/version")
+            r.raise_for_status()
+            return {"ok": True, "version": r.json().get("version", "")}
+    except Exception as e:
+        return {"ok": False, "version": None, "error": str(e)}
+
+
+class OllamaDeleteRequest(BaseModel):
+    model: str
+
+
+@router.delete("/ollama/delete")
+async def delete_ollama_model(req: OllamaDeleteRequest):
+    """Elimina un modello Ollama."""
+    base = _ollama_base()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.delete(
+                _ollama_root(base) + "/api/delete",
+                json={"name": req.model},
+            )
+            if r.status_code in (200, 404):
+                return {"ok": True}
+            r.raise_for_status()
+            return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class OllamaPullRequest(BaseModel):
@@ -699,8 +738,7 @@ class OllamaPullRequest(BaseModel):
 @router.post("/ollama/pull")
 async def pull_ollama_model(req: OllamaPullRequest):
     """Avvia il download di un modello Ollama (bloccante fino al completamento)."""
-    cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
+    base = _ollama_base()
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(
@@ -724,8 +762,7 @@ async def pull_ollama_model_stream(model: str):
     """
     import json as _json
 
-    cfg = get_config().llm
-    base = (cfg.base_url if cfg.provider == "ollama" else None) or "http://localhost:11434/v1"
+    base = _ollama_base()
 
     async def _stream():
         try:

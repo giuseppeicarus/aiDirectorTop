@@ -8,6 +8,59 @@ import re as _re
 from src.core.llm.reel_prompt_structure import REEL_SHOT_FRAMING_RULES
 
 
+def _sl(lst: object, *, sep: str = "; ", max_items: int = 0) -> str:
+    """Converti una lista (potenzialmente di dict) in una stringa joinata.
+
+    Gestisce i formati che l'LLM a volte restituisce:
+      - list[str]  → join diretto
+      - list[dict] → estrae il primo valore stringa di ogni dict
+      - str        → ritorna as-is
+      - None       → ""
+    """
+    if not lst:
+        return ""
+    if isinstance(lst, str):
+        return lst
+    items = []
+    for item in lst:
+        if isinstance(item, str):
+            items.append(item)
+        elif isinstance(item, dict):
+            # Prendi il primo valore stringa non vuoto
+            val = next((v for v in item.values() if isinstance(v, str) and v), None)
+            if val:
+                items.append(val)
+            else:
+                items.append(str(item))
+        else:
+            s = str(item).strip()
+            if s:
+                items.append(s)
+    if max_items:
+        items = items[:max_items]
+    return sep.join(items)
+
+
+def _str_list(lst: object, max_items: int = 0) -> list[str]:
+    """Come _sl ma ritorna list[str] invece di una stringa joinata."""
+    if not lst:
+        return []
+    if isinstance(lst, str):
+        return [lst] if lst else []
+    result = []
+    for item in lst:
+        if isinstance(item, str):
+            result.append(item)
+        elif isinstance(item, dict):
+            val = next((v for v in item.values() if isinstance(v, str) and v), None)
+            result.append(val or str(item))
+        else:
+            result.append(str(item).strip())
+    if max_items:
+        result = result[:max_items]
+    return [r for r in result if r]
+
+
 REEL_VISION_SYSTEM = """You are a professional visual researcher for short-form cinematic reels.
 Analyze each reference image for: subjects, wardrobe, environment, lighting, color palette, mood, camera angle, and style.
 Synthesize a coherent visual bible for ONE reel video that must stay consistent across all shots.
@@ -563,14 +616,13 @@ def build_reel_cinematographer_prompt(
     slots_json = _json.dumps(slots, indent=2, ensure_ascii=True)
 
     # Merge character anchors — also inject from brief if empty
-    vision_anchors = list(vision.get("character_anchors") or [])
+    vision_anchors = _str_list(vision.get("character_anchors"), max_items=6)
     if not vision_anchors:
         extracted = _extract_character_anchor_from_brief(brief)
         if extracted:
             vision_anchors = [extracted]
-    vision_anchors = vision_anchors[:6]
 
-    dn_motifs = (dn.get("visual_motifs") or [])[:6]
+    dn_motifs = _str_list(dn.get("visual_motifs"), max_items=6)
     combined_style = vision.get("combined_style", "")
     motifs_str = (
         "; ".join(dn_motifs) if dn_motifs
@@ -588,10 +640,9 @@ NARRATIVE ARC: {dn.get("narrative_arc", "")}
 VISUAL MOTIFS (recurring elements — weave into shots): {"; ".join(dn_motifs) if dn_motifs else "see brief"}
 """
 
-    anchors_list = vision_anchors
     anchors_block = (
-        "\n".join(f"  - {a}" for a in anchors_list)
-        if anchors_list
+        "\n".join(f"  - {a}" for a in vision_anchors)
+        if vision_anchors
         else "  (none — infer from brief; describe subjects based on brief text)"
     )
 
@@ -749,12 +800,11 @@ def build_reel_prompt_engineer_user(
     plans_json = _json.dumps(visual_plans, indent=2, ensure_ascii=True)
 
     # Build a rich character anchor block — inject from brief if vision anchors are empty
-    vision_anchors = list(vision.get("character_anchors") or [])
+    vision_anchors = _str_list(vision.get("character_anchors"), max_items=8)
     if not vision_anchors and brief:
         extracted = _extract_character_anchor_from_brief(brief)
         if extracted:
             vision_anchors = [extracted]
-    vision_anchors = vision_anchors[:8]
 
     anchors_block = (
         "\n".join(f"  - {a}" for a in vision_anchors)
@@ -773,7 +823,7 @@ def build_reel_prompt_engineer_user(
     # Director narrative context
     narrative_context = ""
     if dn:
-        motifs = "; ".join((dn.get("visual_motifs") or [])[:6])
+        motifs = _sl(dn.get("visual_motifs"), sep="; ", max_items=6)
         narrative_context = f"""
 === DIRECTOR NARRATIVE CONTEXT (inject into prompts) ===
 LOGLINE: {dn.get("logline", "")}
@@ -783,8 +833,8 @@ NARRATIVE ARC: {dn.get("narrative_arc", "")}
 VISUAL MOTIFS: {motifs or "see brief"}
 """
 
-    palette = vision.get("palette_hex") or []
-    palette_note = f"PALETTE: {', '.join(palette[:6])}" if palette else ""
+    palette = _str_list(vision.get("palette_hex"), max_items=6)
+    palette_note = f"PALETTE: {', '.join(palette)}" if palette else ""
 
     return f"""GLOBAL STYLE: {style}
 ASPECT RATIO: {aspect_ratio}

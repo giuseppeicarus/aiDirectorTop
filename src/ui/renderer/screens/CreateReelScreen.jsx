@@ -2726,6 +2726,56 @@ export default function CreateReelScreen() {
   const clipsRef = useRef([])
   useEffect(() => { clipsRef.current = clips }, [clips])
 
+  // ── Draft persist ───────────────────────────────────────────────────────────
+  const _draftKey = `reel_form_draft_${catalogProjectId}`
+  const _saveDraftTimer = useRef(null)
+
+  // Restore draft on mount (only once; skip if we're resuming a live job)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(_draftKey)
+      if (!raw) return
+      const d = JSON.parse(raw)
+      if (d.title)              setTitle(d.title)
+      if (d.description)        setDescription(d.description)
+      if (d.lyrics)             setLyrics(d.lyrics)
+      if (d.config)             setConfig(c => ({ ...DEFAULT_CONFIG, ...d.config }))
+      if (d.characterMode)      setCharacterMode(d.characterMode)
+      if (d.selectedCharacterId) setSelectedCharacterId(d.selectedCharacterId)
+      if (d.audioStartSec)      setAudioStartSec(d.audioStartSec)
+      if (d.audioAnalysis)      setAudioAnalysis(d.audioAnalysis)
+      if (d.modelOverrides)     setModelOverrides(d.modelOverrides)
+      if (d.refs?.length)       setRefs(d.refs.map(r => ({ path: r.path, name: r.name, preview: null })))
+      if (d.audioFile)          setAudioFile({ path: d.audioFile.path, name: d.audioFile.name })
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Auto-save draft on every form change (debounced 600ms, only in setup view)
+  useEffect(() => {
+    if (view !== 'setup') return
+    clearTimeout(_saveDraftTimer.current)
+    _saveDraftTimer.current = setTimeout(() => {
+      try {
+        localStorage.setItem(_draftKey, JSON.stringify({
+          title,
+          description,
+          lyrics,
+          config,
+          characterMode,
+          selectedCharacterId,
+          audioStartSec,
+          audioAnalysis,
+          modelOverrides,
+          refs: refs.map(r => ({ path: r.path, name: r.name })),
+          audioFile: audioFile ? { path: audioFile.path, name: audioFile.name } : null,
+        }))
+      } catch { /* ignore */ }
+    }, 600)
+    return () => clearTimeout(_saveDraftTimer.current)
+  }, [view, title, description, lyrics, config, characterMode, selectedCharacterId,
+      audioStartSec, audioAnalysis, modelOverrides, refs, audioFile])
+
   const mediaProjectId = resolveReelMediaProjectId(storageProjectId, activeJobId, catalogProjectId)
 
   const addLog = useCallback((msg) => {
@@ -3538,6 +3588,7 @@ export default function CreateReelScreen() {
   }
 
   function handleNew() {
+    try { localStorage.removeItem(_draftKey) } catch { /* ignore */ }
     setDescription('')
     setTitle('')
     setRefs([])
@@ -3547,6 +3598,8 @@ export default function CreateReelScreen() {
     setAudioAnalysis(null)
     setCharacterMode('none')
     setSelectedCharacterId('')
+    setModelOverrides(null)
+    setConfig(DEFAULT_CONFIG)
     setError(null)
     setActiveJobId(null)
     setView('setup')

@@ -50,6 +50,28 @@ _STRIP_PUNCT = ".,!?;: " + chr(34) + chr(39)  # Chars to strip from brief words
 
 log = structlog.get_logger()
 
+
+def _coerce_str(item: object) -> str:
+    """Converte un item (str o dict) a stringa plain — difesa contro LLM che restituisce dict."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return next((v for v in item.values() if isinstance(v, str) and v), str(item))
+    return str(item).strip()
+
+
+def _str_join(lst: object, sep: str = "; ", max_items: int = 0) -> str:
+    """Joina una lista di str|dict in una stringa, ignorando None/vuoti."""
+    if not lst:
+        return ""
+    if isinstance(lst, str):
+        return lst
+    items = [_coerce_str(x) for x in lst if x is not None]
+    items = [x for x in items if x]
+    if max_items:
+        items = items[:max_items]
+    return sep.join(items)
+
 _REEL_COMFYUI_GENERATION_LOCK = asyncio.Lock()
 
 REEL_AGENT_LABELS = {
@@ -214,9 +236,9 @@ def _build_visual_plans_from_edl(
     mood = dn.get("mood", "cinematic")
     visual_theme = dn.get("visual_theme", "")
     motifs = dn.get("visual_motifs") or []
-    motif_str = "; ".join(motifs[:3]) if motifs else ""
+    motif_str = _str_join(motifs[:3], sep="; ")
     anchors = (vision.get("character_anchors") or [])[:3]
-    anchor_str = ". ".join(anchors) if anchors else ""
+    anchor_str = _str_join(anchors, sep=". ")
 
     # Map energy level to shot type / camera movement
     _energy_to_shot = {"low": "medium", "medium": "medium_close", "high": "close_up", "peak": "extreme_close"}
@@ -1047,7 +1069,7 @@ class ReelPipeline(TrailerPipeline):
             _visual_theme = (vis.get("combined_style") or "").strip()
             if not _visual_theme:
                 # derive from brief: first 2 environment nouns
-                _visual_theme = ", ".join(_motifs[:2]) if _motifs else brief_text[:100]
+                _visual_theme = _str_join(_motifs[:2], sep=", ") if _motifs else brief_text[:100]
             # Build narrative arc that reflects the actual brief content
             _arc_env = "Antarctic polar landscape" if _cold_env else _brief_anchor[:60]
             _narrative_arc = (

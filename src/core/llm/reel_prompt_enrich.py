@@ -97,7 +97,10 @@ def _lighting_phrase(dop: dict, mood: str) -> str:
         parts = [
             str(lighting.get("time_of_day") or ""),
             str(lighting.get("mood") or ""),
-            " ".join(lighting.get("sources") or []) if isinstance(lighting.get("sources"), list) else "",
+            " ".join(
+                s if isinstance(s, str) else next((v for v in s.values() if isinstance(v, str)), str(s))
+                for s in (lighting.get("sources") or []) if s
+            ) if isinstance(lighting.get("sources"), list) else "",
         ]
         s = " ".join(p for p in parts if p).strip()
         if s:

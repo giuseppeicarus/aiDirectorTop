@@ -374,8 +374,14 @@ def build_structured_frame_prompt(
     # 7 Lighting
     lighting_raw = dop.get("lighting")
     if isinstance(lighting_raw, dict):
+        sources = lighting_raw.get("sources") or []
+        sources_str = " ".join(
+            s if isinstance(s, str) else next((v for v in s.values() if isinstance(v, str)), str(s))
+            for s in sources
+            if s
+        ) if isinstance(sources, list) else str(sources)
         lighting_block = _join_parts([
-            " ".join(lighting_raw.get("sources") or []) if isinstance(lighting_raw.get("sources"), list) else "",
+            sources_str,
             str(lighting_raw.get("mood") or ""),
             str(lighting_raw.get("time_of_day") or ""),
         ])

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Package,
   Download,
@@ -20,6 +20,9 @@ import {
   X as XIcon,
   AlertTriangle,
   Copy,
+  Trash2,
+  Wifi,
+  WifiOff,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE } from '../utils/apiClient'
@@ -404,8 +407,14 @@ function CloudProviderNotice({ provider }) {
 function OllamaPullPanel({ onDone }) {
   const [pullModel, setPullModel] = useState('')
   const [pulling, setPulling] = useState(false)
-  const [pullStatus, setPullStatus] = useState(null)  // {status, pct, done, error}
-  const readerRef = useRef(null)
+  const [pullStatus, setPullStatus] = useState(null)
+  const esRef = useRef(null)
+
+  const stopPull = () => {
+    esRef.current?.close()
+    esRef.current = null
+    setPulling(false)
+  }
 
   const startPull = (name) => {
     const model = (name || pullModel).trim()
@@ -415,17 +424,18 @@ function OllamaPullPanel({ onDone }) {
 
     const url = `${API_BASE}/llm/ollama/pull-stream?model=${encodeURIComponent(model)}`
     const es = new EventSource(url)
+    esRef.current = es
 
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data)
         if (ev.error) {
           setPullStatus({ status: ev.error, pct: 0, done: true, error: true })
-          es.close(); setPulling(false); return
+          es.close(); esRef.current = null; setPulling(false); return
         }
         setPullStatus({ status: ev.status, pct: ev.pct || 0, done: ev.done || false })
         if (ev.done) {
-          es.close()
+          es.close(); esRef.current = null
           setPulling(false)
           onDone?.()
         }
@@ -433,7 +443,7 @@ function OllamaPullPanel({ onDone }) {
     }
     es.onerror = () => {
       setPullStatus(s => ({ ...s, status: 'Connessione persa', done: true, error: true }))
-      es.close(); setPulling(false)
+      es.close(); esRef.current = null; setPulling(false)
     }
   }
 
@@ -457,14 +467,20 @@ function OllamaPullPanel({ onDone }) {
         <p className="text-[10px] text-[#555568] uppercase tracking-wider mb-2">Modello personalizzato</p>
         <div className="flex gap-2">
           <input value={pullModel} onChange={e => setPullModel(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && startPull()}
+            onKeyDown={e => e.key === 'Enter' && !pulling && startPull()}
             placeholder="es. qwen2.5:14b"
             className="flex-1 font-mono text-xs px-3 py-2 rounded border bg-[#1e1e2a] border-[#252533] text-[#e8e4dd] placeholder:text-[#555568] focus:outline-none focus:border-[#c9a84c]/50 transition-colors" />
-          <button onClick={() => startPull()} disabled={pulling || !pullModel.trim()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded border bg-[#c9a84c]/10 border-[#c9a84c]/25 text-[#c9a84c] hover:bg-[#c9a84c]/20 hover:border-[#c9a84c]/50 disabled:opacity-40 text-xs transition-colors">
-            {pulling ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-            Pull
-          </button>
+          {pulling ? (
+            <button onClick={stopPull}
+              className="flex items-center gap-1.5 px-4 py-2 rounded border bg-[#ef4444]/10 border-[#ef4444]/25 text-[#ef4444] hover:bg-[#ef4444]/20 text-xs transition-colors">
+              <XCircle size={12} /> Stop
+            </button>
+          ) : (
+            <button onClick={() => startPull()} disabled={!pullModel.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 rounded border bg-[#c9a84c]/10 border-[#c9a84c]/25 text-[#c9a84c] hover:bg-[#c9a84c]/20 hover:border-[#c9a84c]/50 disabled:opacity-40 text-xs transition-colors">
+              <Play size={12} /> Pull
+            </button>
+          )}
         </div>
       </div>
 
@@ -505,27 +521,78 @@ function OllamaPullPanel({ onDone }) {
 // ---------------------------------------------------------------------------
 
 function OllamaPanel() {
-  const [models, setModels] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [models, setModels]     = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState(null)
+  const [version, setVersion]   = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     setLoading(true)
-    fetch(`${API_BASE}/llm/ollama/models`)
-      .then(r => r.json())
-      .then(d => { setModels(Array.isArray(d.models) ? d.models : []); setError(null) })
-      .catch(() => setError('Ollama non disponibile'))
-      .finally(() => setLoading(false))
+    setError(null)
+    try {
+      const [modRes, verRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/llm/ollama/models`).then(r => r.json()),
+        fetch(`${API_BASE}/llm/ollama/version`).then(r => r.ok ? r.json() : null).catch(() => null),
+      ])
+      if (modRes.status === 'fulfilled') {
+        setModels(Array.isArray(modRes.value.models) ? modRes.value.models : [])
+      } else {
+        setError('Ollama non disponibile')
+      }
+      if (verRes.status === 'fulfilled' && verRes.value?.version) {
+        setVersion(verRes.value.version)
+      }
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
 
+  async function handleDelete(modelName) {
+    if (!confirm(`Eliminare il modello "${modelName}" da Ollama?`)) return
+    setDeletingId(modelName)
+    try {
+      const res = await fetch(`${API_BASE}/llm/ollama/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelName }),
+      })
+      if (res.ok) {
+        setModels(prev => prev.filter(m => (m.name ?? m) !== modelName))
+      } else {
+        const d = await res.json().catch(() => ({}))
+        alert(`Errore: ${d.detail || res.statusText}`)
+      }
+    } catch (e) {
+      alert(`Errore: ${e.message}`)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <div className="space-y-5">
-      {/* Download panel */}
+      {/* Status header */}
+      {!loading && !error && (
+        <div className="flex items-center gap-2 text-[11px] font-mono text-[#22c55e]">
+          <Wifi size={12} />
+          Ollama connesso
+          {version && <span className="text-[#555568]">· v{version}</span>}
+        </div>
+      )}
+      {!loading && error && (
+        <div className="flex items-center gap-2 text-[11px] font-mono text-[#ef4444]">
+          <WifiOff size={12} />
+          {error}
+        </div>
+      )}
+
+      {/* Pull panel */}
       <section className="rounded-xl border border-[#252533] bg-[#0f0f18] overflow-hidden">
         <div className="px-5 py-4 border-b border-[#252533]">
-          <h3 className="font-['Playfair_Display'] text-base font-semibold text-[#e8e4dd]">Scarica modello Ollama</h3>
+          <h3 className="font-['Playfair_Display'] text-base font-semibold text-[#e8e4dd]">Scarica modello</h3>
           <p className="text-[11px] text-[#9090a8] mt-0.5">Pull con tracking live del download</p>
         </div>
         <div className="px-5 py-4">
@@ -536,14 +603,22 @@ function OllamaPanel() {
       {/* Installed models */}
       <section className="rounded-xl border border-[#252533] bg-[#0f0f18] overflow-hidden">
         <div className="px-5 py-4 border-b border-[#252533] flex items-center justify-between">
-          <h3 className="font-['Playfair_Display'] text-base font-semibold text-[#e8e4dd]">Modelli installati</h3>
-          <button onClick={load} disabled={loading} className="p-1.5 rounded text-[#9090a8] hover:text-[#e8e4dd] hover:bg-[#1e1e2a] transition-colors disabled:opacity-40">
+          <div>
+            <h3 className="font-['Playfair_Display'] text-base font-semibold text-[#e8e4dd]">Modelli installati</h3>
+            {models.length > 0 && (
+              <p className="text-[10px] text-[#555568] font-mono mt-0.5">{models.length} modelli</p>
+            )}
+          </div>
+          <button onClick={load} disabled={loading}
+            className="p-1.5 rounded text-[#9090a8] hover:text-[#e8e4dd] hover:bg-[#1e1e2a] transition-colors disabled:opacity-40">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
         <div className="px-5 py-4">
           {loading ? (
-            <div className="flex items-center gap-2 py-3 text-xs text-[#9090a8]"><Loader2 size={12} className="animate-spin" />Caricamento...</div>
+            <div className="flex items-center gap-2 py-3 text-xs text-[#9090a8]">
+              <Loader2 size={12} className="animate-spin" />Caricamento...
+            </div>
           ) : error ? (
             <div className="flex items-center gap-2 rounded px-3 py-2.5 bg-[#ef4444]/5 border border-[#ef4444]/20 text-xs text-[#ef4444]">
               <AlertCircle size={13} />{error}
@@ -555,12 +630,32 @@ function OllamaPanel() {
               {models.map(m => {
                 const name = m.name ?? m
                 const sizeB = m.size || 0
-                const sizeStr = sizeB > 1e9 ? `${(sizeB/1e9).toFixed(1)} GB` : sizeB > 1e6 ? `${(sizeB/1e6).toFixed(0)} MB` : ''
+                const sizeStr = sizeB > 1e9 ? `${(sizeB/1e9).toFixed(1)} GB`
+                  : sizeB > 1e6 ? `${(sizeB/1e6).toFixed(0)} MB` : ''
+                const family = m.details?.family || m.details?.parameter_size || ''
+                const quant = m.details?.quantization_level || ''
                 return (
-                  <div key={name} className="flex items-center gap-3 px-4 py-2.5">
+                  <div key={name} className="group flex items-center gap-3 px-4 py-3 hover:bg-[#1e1e2a] transition-colors">
                     <Database size={13} className="text-[#9090a8] shrink-0" />
-                    <span className="font-mono text-xs text-[#e8e4dd] flex-1">{name}</span>
-                    {sizeStr && <span className="text-[10px] text-[#555568] font-mono">{sizeStr}</span>}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-mono text-xs text-[#e8e4dd] truncate">{name}</p>
+                      {(family || quant) && (
+                        <p className="font-mono text-[9px] text-[#555568] mt-0.5">
+                          {[family, quant].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                    {sizeStr && <span className="text-[10px] text-[#555568] font-mono shrink-0">{sizeStr}</span>}
+                    <button
+                      onClick={() => handleDelete(name)}
+                      disabled={deletingId === name}
+                      title="Elimina modello"
+                      className="shrink-0 p-1 rounded text-[#555568] hover:text-[#ef4444] opacity-0 group-hover:opacity-100 disabled:opacity-40 transition-all"
+                    >
+                      {deletingId === name
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <Trash2 size={12} />}
+                    </button>
                   </div>
                 )
               })}
@@ -684,12 +779,69 @@ function LLMModelsTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Ollama tab — standalone, available regardless of configured LLM provider
+// ---------------------------------------------------------------------------
+
+function OllamaTab() {
+  const [checking, setChecking] = useState(true)
+  const [available, setAvailable] = useState(false)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/llm/ollama/models`)
+      .then(r => { setAvailable(r.ok); setChecking(false) })
+      .catch(() => { setAvailable(false); setChecking(false) })
+  }, [])
+
+  if (checking) {
+    return (
+      <div className="flex items-center gap-2 py-12 justify-center text-[#9090a8]">
+        <Loader2 size={16} className="animate-spin" />
+        Verifica disponibilità Ollama...
+      </div>
+    )
+  }
+
+  if (!available) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-start gap-3 rounded-xl border border-[#ef4444]/25 bg-[#ef4444]/5 px-5 py-5">
+          <WifiOff size={16} className="text-[#ef4444] shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-[#e8e4dd] mb-1">Ollama non raggiungibile</p>
+            <p className="text-xs text-[#9090a8] leading-relaxed">
+              Assicurati che Ollama sia avviato sul tuo sistema. Di default risponde su{' '}
+              <code className="text-[#c9a84c]">localhost:11434</code>.
+              Puoi cambiare l&apos;URL base in{' '}
+              <span className="text-[#c9a84c]">Servizi → LLM</span>.
+            </p>
+            <button
+              onClick={() => {
+                setChecking(true)
+                fetch(`${API_BASE}/llm/ollama/models`)
+                  .then(r => { setAvailable(r.ok); setChecking(false) })
+                  .catch(() => { setAvailable(false); setChecking(false) })
+              }}
+              className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#32324a] text-xs text-[#9090a8] hover:text-[#e8e4dd] hover:border-[#c9a84c]/40 transition-colors"
+            >
+              <RefreshCw size={12} /> Riprova
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return <OllamaPanel />
+}
+
+// ---------------------------------------------------------------------------
 // Main screen
 // ---------------------------------------------------------------------------
 
 const TABS = [
   { id: 'comfyui', label: 'Modelli ComfyUI', icon: Cpu },
-  { id: 'llm',    label: 'Modelli LLM',     icon: Package },
+  { id: 'llm',     label: 'Modelli LLM',     icon: Package },
+  { id: 'ollama',  label: 'Ollama',           icon: Database },
 ]
 
 export default function ModelsScreen() {
@@ -734,6 +886,7 @@ export default function ModelsScreen() {
       <div className="px-6 py-5 max-w-5xl">
         {activeTab === 'comfyui' && <ComfyUIModelsTab />}
         {activeTab === 'llm'     && <LLMModelsTab />}
+        {activeTab === 'ollama'  && <OllamaTab />}
       </div>
     </div>
   )
